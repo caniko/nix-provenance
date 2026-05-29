@@ -170,27 +170,22 @@ impl RauthyClient {
             .header(reqwest::header::AUTHORIZATION, &self.auth)
     }
 
-    /// Poll until the server answers an authenticated request, validating both
-    /// readiness and the API key. A 401/403 means the key is wrong — fail fast
-    /// instead of retrying.
+    /// Poll the unauthenticated health endpoint until the server is up, then
+    /// validate the API key with a single authenticated call.
+    ///
+    /// Readiness and auth are deliberately separate. Rauthy answers
+    /// `/auth/v1/health` (no auth) with 200 as soon as it is up, whereas the
+    /// authenticated admin endpoints return **400** for a *malformed* key
+    /// (not in `<name>$<secret>` form) and **401/403** for a *rejected* one.
+    /// Probing an admin endpoint for readiness — as this used to — misreads a
+    /// bad key's 400 as "still starting" and burns the entire timeout before
+    /// failing with a misleading "did not become ready in time".
     pub fn wait_ready(&self, attempts: u32, delay: Duration) -> Result<()> {
         let mut last_err = None;
         for attempt in 1..=attempts {
-            match self.req(Method::GET, "/groups").send() {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        return Ok(());
-                    }
-                    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                        let body = resp.text().unwrap_or_default();
-                        bail!(
-                            "API key rejected ({status}) — check the key value and its access \
-                             rights (needs Groups:read at minimum): {body}"
-                        );
-                    }
-                    last_err = Some(anyhow!("readiness probe returned {status}"));
-                }
+            match self.http.get(format!("{}/health", self.api)).send() {
+                Ok(resp) if resp.status().is_success() => return self.check_api_key(),
+                Ok(resp) => last_err = Some(anyhow!("readiness probe returned {}", resp.status())),
                 Err(e) => last_err = Some(anyhow!("readiness probe failed: {e}")),
             }
             if attempt < attempts {
@@ -199,6 +194,33 @@ impl RauthyClient {
         }
         Err(last_err.unwrap_or_else(|| anyhow!("server not ready")))
             .context("rauthy did not become ready in time")
+    }
+
+    /// Validate the configured API key against `/groups` once the server is up,
+    /// turning the auth status into an actionable error.
+    fn check_api_key(&self) -> Result<()> {
+        let resp = self
+            .req(Method::GET, "/groups")
+            .send()
+            .context("validating API key against /groups")?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = resp.text().unwrap_or_default();
+        match status {
+            StatusCode::BAD_REQUEST => bail!(
+                "API key malformed ({status}) — the value must be a full Rauthy API key in \
+                 `<name>$<secret>` form, minted by Rauthy's bootstrap API-key flow or the \
+                 Admin UI (API Keys). A 400 here means rauthy could not even parse it \
+                 (e.g. the `$` separator is missing): {body}"
+            ),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => bail!(
+                "API key rejected ({status}) — check the key value and its access rights \
+                 (needs Users/Groups/Roles/Clients read+write): {body}"
+            ),
+            _ => bail!("unexpected status {status} validating API key: {body}"),
+        }
     }
 
     // ----- groups -----
@@ -297,9 +319,7 @@ impl RauthyClient {
     }
 
     pub fn delete_client(&self, id: &str) -> Result<()> {
-        ok(self
-            .req(Method::DELETE, &format!("/clients/{id}"))
-            .send()?)?;
+        ok(self.req(Method::DELETE, &format!("/clients/{id}")).send()?)?;
         Ok(())
     }
 }

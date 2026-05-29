@@ -5,10 +5,10 @@
 # the `rauthy-provision` reconciler as a Type=oneshot unit ordered after the
 # Rauthy service. This is the analogue of `services.kanidm.provision`.
 #
-# Authentication uses a Rauthy API key (see `apiKeyFile`). The key must carry
-# the Users/Groups/Roles/Clients access groups with read+create+update+delete
-# rights. Create it once in the Rauthy Admin UI (API Keys) and store the
-# `<name>$<secret>` value in the file `apiKeyFile` points at.
+# Authentication uses a Rauthy API key. Prefer `apiKeyEnvironmentFile` with
+# Rauthy's bootstrap `BOOTSTRAP_API_KEY_SECRET`, so the unit assembles
+# `<apiKeyName>$<secret>` at runtime. `apiKeyFile` remains available for an
+# already assembled key.
 {self}: {
   config,
   lib,
@@ -112,24 +112,62 @@
   manifest = {
     groups = lib.mapAttrs (_: g: {inherit (g) present;}) cfg.groups;
     roles = lib.mapAttrs (_: r: {inherit (r) present;}) cfg.roles;
-    users = lib.mapAttrs (_: u: {
-      inherit (u) present language roles groups;
-      given_name = u.givenName;
-      family_name = u.familyName;
-    }) cfg.users;
-    clients = lib.mapAttrs (_: c: {
-      inherit (c) present confidential scopes;
-      name = c.name;
-      redirect_uris = c.redirectUris;
-      post_logout_redirect_uris = c.postLogoutRedirectUris;
-      allowed_origins = c.allowedOrigins;
-      default_scopes = c.defaultScopes;
-      flows_enabled = c.flowsEnabled;
-      enable_pkce = c.enablePkce;
-    }) cfg.clients;
+    users =
+      lib.mapAttrs (_: u: {
+        inherit (u) present language roles groups;
+        given_name = u.givenName;
+        family_name = u.familyName;
+      })
+      cfg.users;
+    clients =
+      lib.mapAttrs (_: c: {
+        inherit (c) present confidential scopes;
+        name = c.name;
+        redirect_uris = c.redirectUris;
+        post_logout_redirect_uris = c.postLogoutRedirectUris;
+        allowed_origins = c.allowedOrigins;
+        default_scopes = c.defaultScopes;
+        flows_enabled = c.flowsEnabled;
+        enable_pkce = c.enablePkce;
+      })
+      cfg.clients;
   };
 
   stateFile = pkgs.writeText "rauthy-provision-state.json" (builtins.toJSON manifest);
+
+  cliArgs =
+    lib.escapeShellArgs
+    ([
+        "--url"
+        cfg.endpoint
+        "--state"
+        (toString stateFile)
+      ]
+      ++ lib.optionals (cfg.apiKeyFile != null) [
+        "--api-key-file"
+        (toString cfg.apiKeyFile)
+      ]
+      ++ lib.optional (!cfg.autoRemove) "--no-auto-remove"
+      ++ lib.optional cfg.acceptInvalidCerts "--accept-invalid-certs");
+
+  provisionScript = pkgs.writeShellScript "rauthy-provision-start" ''
+    set -eu
+    ${optionalString (cfg.apiKeyEnvironmentFile != null) ''
+      if [ -z "''${BOOTSTRAP_API_KEY_SECRET:-}" ]; then
+        echo "BOOTSTRAP_API_KEY_SECRET is missing from services.rauthy.provision.apiKeyEnvironmentFile" >&2
+        exit 1
+      fi
+      if [ "''${#BOOTSTRAP_API_KEY_SECRET}" -lt 64 ]; then
+        echo "BOOTSTRAP_API_KEY_SECRET must be at least 64 characters for Rauthy's bootstrap API-key flow" >&2
+        exit 1
+      fi
+      api_key_secret="''${BOOTSTRAP_API_KEY_SECRET}"
+      unset ENC_KEYS ENC_KEY_ACTIVE HQL_SECRET_RAFT HQL_SECRET_API BOOTSTRAP_ADMIN_PASSWORD_ARGON2ID BOOTSTRAP_API_KEY_SECRET
+      export RAUTHY_PROVISION_API_KEY=${lib.escapeShellArg "${cfg.apiKeyName}$"}"''${api_key_secret}"
+      unset api_key_secret
+    ''}
+    exec ${lib.escapeShellArg (lib.getExe cfg.package)} ${cliArgs}
+  '';
 in {
   options.services.rauthy.provision = {
     enable = mkEnableOption "declarative Rauthy provisioning (users, groups, roles, OIDC clients)";
@@ -153,9 +191,28 @@ in {
       default = null;
       description = ''
         Path to a file containing the Rauthy API key (`<name>$<secret>`),
-        e.g. an agenix secret path. The key must have read+create+update+delete
+        e.g. an agenix secret path. Prefer `apiKeyEnvironmentFile` for
+        bootstrap-generated keys. The key must have read+create+update+delete
         on the Users, Groups, Roles, and Clients access groups.
       '';
+    };
+
+    apiKeyEnvironmentFile = mkOption {
+      type = types.nullOr (types.oneOf [types.path types.str]);
+      default = null;
+      description = ''
+        Environment file containing `BOOTSTRAP_API_KEY_SECRET`, as used by
+        Rauthy's declarative bootstrap API-key flow. When set, the unit exports
+        `RAUTHY_PROVISION_API_KEY=<apiKeyName>$<BOOTSTRAP_API_KEY_SECRET>`
+        before running the reconciler, keeping the secret out of argv and the
+        Nix store.
+      '';
+    };
+
+    apiKeyName = mkOption {
+      type = types.str;
+      default = "rauthy-provision";
+      description = "Name of the Rauthy API key created by bootstrap and paired with `BOOTSTRAP_API_KEY_SECRET`.";
     };
 
     autoRemove = mkOption {
@@ -208,8 +265,16 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.apiKeyFile != null;
-        message = "services.rauthy.provision.apiKeyFile must be set when provisioning is enabled.";
+        assertion = cfg.apiKeyFile != null || cfg.apiKeyEnvironmentFile != null;
+        message = "services.rauthy.provision must set apiKeyFile or apiKeyEnvironmentFile when provisioning is enabled.";
+      }
+      {
+        assertion = !(cfg.apiKeyFile != null && cfg.apiKeyEnvironmentFile != null);
+        message = "services.rauthy.provision must set only one of apiKeyFile or apiKeyEnvironmentFile.";
+      }
+      {
+        assertion = cfg.apiKeyName != "" && !(lib.hasInfix "$" cfg.apiKeyName);
+        message = "services.rauthy.provision.apiKeyName must be non-empty and must not contain '$'.";
       }
     ];
 
@@ -222,17 +287,8 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = lib.concatStringsSep " " ([
-            (lib.getExe cfg.package)
-            "--url"
-            cfg.endpoint
-            "--state"
-            stateFile
-            "--api-key-file"
-            (toString cfg.apiKeyFile)
-          ]
-          ++ lib.optional (!cfg.autoRemove) "--no-auto-remove"
-          ++ lib.optional cfg.acceptInvalidCerts "--accept-invalid-certs");
+        ExecStart = provisionScript;
+        EnvironmentFile = lib.mkIf (cfg.apiKeyEnvironmentFile != null) [(toString cfg.apiKeyEnvironmentFile)];
         # Rauthy may still be warming up when the unit first fires.
         Restart = "on-failure";
         RestartSec = "10s";

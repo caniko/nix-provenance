@@ -97,9 +97,7 @@ fn resolve_api_key(cli: &Cli) -> Result<String> {
         .clone()
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
-        .ok_or_else(|| {
-            anyhow!("no API key: pass --api-key-file or set RAUTHY_PROVISION_API_KEY")
-        })
+        .ok_or_else(|| anyhow!("no API key: pass --api-key-file or set RAUTHY_PROVISION_API_KEY"))
 }
 
 fn log(msg: impl AsRef<str>) {

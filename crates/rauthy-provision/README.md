@@ -24,14 +24,20 @@ listener (e.g. `http://127.0.0.1:8080`) to bypass the reverse proxy.
 
 ### API key
 
-Create an API key once in the Rauthy Admin UI (**API Keys**) with these access
-groups, each granting `read`+`create`+`update`+`delete`:
+Use a Rauthy bootstrap API key or an already assembled API key with these
+access groups, each granting `read`+`create`+`update`+`delete`:
 
 - `Users`, `Groups`, `Roles`, `Clients`
 
 (`Secrets` `read`/`update` is only needed if you later manage client secrets —
-this tool currently does not.) The key value is `<name>$<secret>` and is shown
-only once at creation. Store it in the file passed to `--api-key-file`.
+this tool currently does not.) The reconciler consumes the full
+`<name>$<secret>` value via `--api-key-file` or `RAUTHY_PROVISION_API_KEY`.
+
+For fully declarative bring-up, set Rauthy's `BOOTSTRAP_API_KEY` to a base64
+`ApiKeyRequest` JSON value and keep `BOOTSTRAP_API_KEY_SECRET` in an
+environment file. In the NixOS module, point `apiKeyEnvironmentFile` at that
+same environment file; the unit assembles `<apiKeyName>$<secret>` at runtime
+without putting the secret in argv or the Nix store.
 
 ## State file
 
@@ -92,7 +98,7 @@ deletes the entity if it exists; pass `--no-auto-remove` to skip deletions.
   services.rauthy.provision = {
     enable = true;
     endpoint = "http://127.0.0.1:8080";
-    apiKeyFile = config.age.secrets.rauthy-provision-api-key.path;
+    apiKeyEnvironmentFile = config.age.secrets.rauthy-env.path;
     groups.internal = {};
     users."alice@example.com" = {
       givenName = "Alice";

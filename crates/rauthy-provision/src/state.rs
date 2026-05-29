@@ -136,10 +136,9 @@ mod tests {
 
     #[test]
     fn user_defaults_present_and_language() {
-        let s: State = serde_json::from_str(
-            r#"{ "users": { "a@example.com": { "roles": ["admin"] } } }"#,
-        )
-        .unwrap();
+        let s: State =
+            serde_json::from_str(r#"{ "users": { "a@example.com": { "roles": ["admin"] } } }"#)
+                .unwrap();
         let u = &s.users["a@example.com"];
         assert!(u.present);
         assert_eq!(u.language, "en");
