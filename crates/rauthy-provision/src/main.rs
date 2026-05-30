@@ -177,23 +177,30 @@ fn new_user(email: &str, spec: &UserSpec) -> NewUserRequest {
     }
 }
 
-/// Only `roles` and `groups` are reconciled on update — names and language are
-/// applied at creation only, so upstream profile-claim sync is never fought.
+/// Roles and groups are reconciled ADDITIVELY: the tool ensures every declared
+/// role/group is present but never removes ones it does not manage. This is
+/// deliberate — a Rauthy user may carry roles/groups assigned out-of-band (the
+/// bootstrap `rauthy_admin` role, or a manual Admin-UI assignment), and a full
+/// replace would silently strip them. Names and language are applied at
+/// creation only, so upstream federation profile-claim sync is never fought.
 fn user_drifted(user: &client::UserResponse, spec: &UserSpec) -> bool {
     let cur_groups = user.groups.clone().unwrap_or_default();
-    !same_set(&user.roles, &spec.roles) || !same_set(&cur_groups, &spec.groups)
+    !is_subset(&spec.roles, &user.roles) || !is_subset(&spec.groups, &cur_groups)
 }
 
 fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserRequest {
     // Carry the current name/language/enabled/email_verified through unchanged;
     // a PUT is a full replace, so omitting them would reset server-side values.
+    // roles/groups are the UNION of current + declared so out-of-band roles
+    // (e.g. rauthy_admin) survive.
+    let cur_groups = user.groups.clone().unwrap_or_default();
     UpdateUserRequest {
         email: user.email.clone(),
         given_name: user.given_name.clone(),
         family_name: user.family_name.clone(),
         language: user.language.clone(),
-        roles: spec.roles.clone(),
-        groups: opt_vec(&spec.groups),
+        roles: union(&user.roles, &spec.roles),
+        groups: opt_vec(&union(&cur_groups, &spec.groups)),
         enabled: user.enabled,
         email_verified: user.email_verified,
     }
@@ -285,6 +292,22 @@ fn same_set(a: &[String], b: &[String]) -> bool {
     a == b
 }
 
+/// True when every element of `needle` is present in `haystack`.
+fn is_subset(needle: &[String], haystack: &[String]) -> bool {
+    needle.iter().all(|n| haystack.contains(n))
+}
+
+/// `current` plus any of `wanted` not already present, original order preserved.
+fn union(current: &[String], wanted: &[String]) -> Vec<String> {
+    let mut out = current.to_vec();
+    for w in wanted {
+        if !out.contains(w) {
+            out.push(w.clone());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +353,27 @@ mod tests {
         let u = user(&["a"], None);
         let s = spec(&["a"], &["g1"]);
         assert!(user_drifted(&u, &s));
+    }
+
+    #[test]
+    fn no_drift_when_user_has_extra_unmanaged_role() {
+        // The bootstrap admin carries rauthy_admin, which the spec does not
+        // declare. Additive reconciliation must NOT treat that as drift.
+        let u = user(&["rauthy_admin", "internal"], Some(&["internal"]));
+        let s = spec(&["internal"], &["internal"]);
+        assert!(!user_drifted(&u, &s));
+    }
+
+    #[test]
+    fn update_preserves_unmanaged_roles_and_groups() {
+        let u = user(&["rauthy_admin"], Some(&["other"]));
+        let s = spec(&["internal", "bekiper"], &["internal"]);
+        let upd = update_user(&u, &s);
+        assert!(upd.roles.contains(&"rauthy_admin".to_string()));
+        assert!(upd.roles.contains(&"internal".to_string()));
+        assert!(upd.roles.contains(&"bekiper".to_string()));
+        let g = upd.groups.unwrap();
+        assert!(g.contains(&"other".to_string()));
+        assert!(g.contains(&"internal".to_string()));
     }
 }
