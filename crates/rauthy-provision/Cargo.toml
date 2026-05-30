@@ -27,6 +27,11 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Proof-of-Work solver for Rauthy's request_reset endpoint. The `server`
+# feature is the only one exposing the native `Pow::work` solver (the `client`
+# feature is wasm-only); it is pure Rust (no openssl/C), so it cross-compiles to
+# aarch64 like the rest of the crate. Match Rauthy 0.35.1's spow 0.6.
+spow = { version = "0.6", default-features = false, features = ["server"] }
 
 [profile.release]
 strip = true

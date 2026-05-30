@@ -92,6 +92,18 @@ pub struct UserSpec {
     pub roles: Vec<String>,
     #[serde(default)]
     pub groups: Vec<String>,
+    /// On user CREATION only, ask Rauthy to email the user a set-password link
+    /// (Rauthy's `request_reset` flow). A no-op when the user already exists, so
+    /// at most one email is ever sent per user. Use for external users who have
+    /// no upstream IdP and must set a native Rauthy password.
+    #[serde(default)]
+    pub send_password_email: bool,
+    /// Where Rauthy redirects the user after they finish setting their password.
+    /// Point this at the consuming app's login-initiating route (e.g.
+    /// `https://app.example.com/login`), NOT a raw OIDC callback. Only meaningful
+    /// when `send_password_email` is true.
+    #[serde(default)]
+    pub password_email_redirect_uri: Option<String>,
 }
 
 /// An OIDC client (relying party). After creation the confidential client's

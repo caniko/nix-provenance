@@ -149,6 +149,18 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
             (true, None) => {
                 log(format!("create user {email}"));
                 client.create_user(&new_user(email, spec))?;
+                // Email a set-password link only on first create (never on
+                // update), so at most one email is ever sent per user.
+                if spec.send_password_email {
+                    let redirect = spec.password_email_redirect_uri.as_deref().ok_or_else(|| {
+                        anyhow!(
+                            "user {email} has send_password_email = true but no \
+                             password_email_redirect_uri"
+                        )
+                    })?;
+                    log(format!("send set-password email to {email}"));
+                    client.request_password_reset(email, redirect)?;
+                }
             }
             (true, Some(user)) => {
                 if user_drifted(&user, spec) {

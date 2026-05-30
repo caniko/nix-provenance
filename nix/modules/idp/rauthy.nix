@@ -55,6 +55,26 @@
         default = [];
         description = "Rauthy group names assigned to the user (reconciled on update).";
       };
+      sendPasswordEmail = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Email this user a set-password link on first creation (Rauthy's
+          request_reset flow). No-op once the user exists, so at most one email
+          is ever sent. Use for external users who must set a native Rauthy
+          password. Requires passwordEmailRedirectUri.
+        '';
+      };
+      passwordEmailRedirectUri = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Where Rauthy redirects the user after they set their password. Point
+          it at the consuming app's login-initiating route (e.g.
+          https://app.example.com/login), not a raw OIDC callback. Only used
+          when sendPasswordEmail is true.
+        '';
+      };
     };
   };
 
@@ -117,6 +137,8 @@
         inherit (u) present language roles groups;
         given_name = u.givenName;
         family_name = u.familyName;
+        send_password_email = u.sendPasswordEmail;
+        password_email_redirect_uri = u.passwordEmailRedirectUri;
       })
       cfg.users;
     clients =
