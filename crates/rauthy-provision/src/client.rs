@@ -322,6 +322,54 @@ impl RauthyClient {
         ok(self.req(Method::DELETE, &format!("/clients/{id}")).send()?)?;
         Ok(())
     }
+
+    // ----- password-reset email (set-password link for new users) -----
+
+    /// Ask Rauthy to email `email` a set-password / registration link, landing
+    /// the user at `redirect_uri` once they finish. Drives Rauthy's
+    /// `request_reset` flow, which is **unauthenticated** (no API key) and gated
+    /// by a Proof-of-Work: fetch a challenge from `/pow`, solve it with spow,
+    /// then POST it alongside the email.
+    ///
+    /// For a credential-less user (just created via [`Self::create_user`])
+    /// Rauthy sends a "new user" set-password mail. The endpoint always returns
+    /// 200 for username-enumeration safety, so success here does not prove
+    /// delivery — confirm via the Rauthy/stalwart journals.
+    pub fn request_password_reset(&self, email: &str, redirect_uri: &str) -> Result<()> {
+        // 1. Fetch a PoW challenge (plain-text body, unauthenticated).
+        let challenge = ok(self
+            .http
+            .post(format!("{}/pow", self.api))
+            .send()
+            .context("requesting PoW challenge")?)?
+        .text()
+        .context("reading PoW challenge body")?;
+
+        // 2. Solve it locally. spow parses the difficulty out of the challenge;
+        //    the solved value is the challenge with the winning counter appended.
+        let pow = spow::pow::Pow::work(&challenge)
+            .map_err(|e| anyhow!("solving PoW challenge failed: {e}"))?;
+
+        // 3. POST request_reset (no auth header; email + redirect + solved PoW).
+        ok(self
+            .http
+            .post(format!("{}/users/request_reset", self.api))
+            .json(&RequestResetRequest {
+                email,
+                redirect_uri,
+                pow: &pow,
+            })
+            .send()
+            .context("posting request_reset")?)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RequestResetRequest<'a> {
+    email: &'a str,
+    redirect_uri: &'a str,
+    pow: &'a str,
 }
 
 /// Turn a non-2xx response into an error carrying the response body.
