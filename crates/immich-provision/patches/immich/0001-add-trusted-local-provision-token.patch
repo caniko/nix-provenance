@@ -1,48 +1,21 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Can H. Tartanoglu <can@tartanoglu.com>
-Date: Sun, 31 May 2026 00:00:00 +0200
-Subject: [PATCH] server: add trusted local provisioning token
-
-Add `immich-admin provision-token --ttl <seconds>` so local service
-operators can mint a short-lived admin session token for declarative
-provisioners without storing a long-lived API key. Also make the
-admin-create password field optional at validation time; UserAdminService
-already rejects passwordless creates unless OAuth is enabled.
----
- server/src/commands/index.ts                    |  2 +
- server/src/commands/provision-token.command.ts  | 39 +++++++++++++
- server/src/dtos/user.dto.ts                     |  2 +-
- server/src/services/cli.service.spec.ts         | 28 +++++++++
- server/src/services/cli.service.ts              | 27 +++++++++
- 5 files changed, 97 insertions(+), 1 deletion(-)
- create mode 100644 server/src/commands/provision-token.command.ts
-
 diff --git a/server/src/commands/index.ts b/server/src/commands/index.ts
-index 0000000000..0000000000 100644
+index 2a2dd18..c0ee4eb 100644
 --- a/server/src/commands/index.ts
 +++ b/server/src/commands/index.ts
-@@ -8,6 +8,7 @@ import { DisableOAuthLogin, EnableOAuthLogin } from 'src/commands/oauth-login';
+@@ -10,2 +10,3 @@ import { DisableOAuthLogin, EnableOAuthLogin } from 'src/commands/oauth-login';
  import { DisablePasswordLoginCommand, EnablePasswordLoginCommand } from 'src/commands/password-login';
- import { PromptPasswordQuestions, ResetAdminPasswordCommand } from 'src/commands/reset-admin-password.command';
- import { SchemaCheck } from 'src/commands/schema-check';
 +import { ProvisionTokenCommand } from 'src/commands/provision-token.command';
- import { VersionCommand } from 'src/commands/version.command';
-
- export const commandsAndQuestions = [
-@@ -22,6 +23,7 @@ export const commandsAndQuestions = [
-   DisableOAuthLogin,
-   ListUsersCommand,
+ import { PromptPasswordQuestions, ResetAdminPasswordCommand } from 'src/commands/reset-admin-password.command';
+@@ -26,2 +27,3 @@ export const commandsAndQuestions = [
    VersionCommand,
 +  ProvisionTokenCommand,
    GrantAdminCommand,
-   RevokeAdminCommand,
-   ChangeMediaLocationCommand,
 diff --git a/server/src/commands/provision-token.command.ts b/server/src/commands/provision-token.command.ts
 new file mode 100644
-index 0000000000..0000000000
+index 0000000..dabc77b
 --- /dev/null
 +++ b/server/src/commands/provision-token.command.ts
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,40 @@
 +import { Command, CommandRunner, Option } from 'nest-commander';
 +import { CliService } from 'src/services/cli.service';
 +
@@ -84,25 +57,20 @@ index 0000000000..0000000000
 +  }
 +}
 diff --git a/server/src/dtos/user.dto.ts b/server/src/dtos/user.dto.ts
-index 0000000000..0000000000 100644
+index 75256b9..738b7ae 100644
 --- a/server/src/dtos/user.dto.ts
 +++ b/server/src/dtos/user.dto.ts
-@@ -77,7 +77,7 @@ export const UserAdminCreateSchema = z
-   .object({
+@@ -79,3 +79,3 @@ export const UserAdminCreateSchema = z
      email: toEmail.describe('User email'),
 -    password: z.string().describe('User password'),
 +    password: z.string().optional().describe('User password. Optional when OAuth is enabled.'),
      name: z.string().describe('User name'),
-     avatarColor: UserAvatarColorSchema.nullish(),
-     pinCode: emptyStringToNull(z.string().regex(pinCodeRegex).nullable())
 diff --git a/server/src/services/cli.service.spec.ts b/server/src/services/cli.service.spec.ts
-index 0000000000..0000000000 100644
+index 347d9ee..c47f154 100644
 --- a/server/src/services/cli.service.spec.ts
 +++ b/server/src/services/cli.service.spec.ts
-@@ -66,6 +66,34 @@ describe(CliService.name, () => {
-     });
-   });
-
+@@ -70,2 +70,31 @@ describe(CliService.name, () => {
+ 
 +  describe('createProvisionToken', () => {
 +    it('should only work when there is an admin account', async () => {
 +      mocks.user.getAdmin.mockResolvedValue(void 0);
@@ -133,23 +101,16 @@ index 0000000000..0000000000 100644
 +  });
 +
    describe('disablePasswordLogin', () => {
-     it('should disable password login', async () => {
-       await sut.disablePasswordLogin();
 diff --git a/server/src/services/cli.service.ts b/server/src/services/cli.service.ts
-index 0000000000..0000000000 100644
+index 22f06e2..d248a8b 100644
 --- a/server/src/services/cli.service.ts
 +++ b/server/src/services/cli.service.ts
-@@ -1,6 +1,7 @@
- import { schemaDiff } from '@immich/sql-tools';
+@@ -2,2 +2,3 @@ import { schemaDiff } from '@immich/sql-tools';
  import { Injectable } from '@nestjs/common';
 +import { DateTime } from 'luxon';
  import { isAbsolute, join } from 'node:path';
- import { SALT_ROUNDS } from 'src/constants';
- import { MaintenanceAuthDto } from 'src/dtos/maintenance.dto';
-@@ -62,6 +63,32 @@ export class CliService extends BaseService {
-     return { admin, password, provided: !!providedPassword };
-   }
-
+@@ -76,2 +77,28 @@ export class CliService extends BaseService {
+ 
 +  async createProvisionToken(ttlSeconds: number): Promise<string> {
 +    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 3600) {
 +      throw new Error('Provision token TTL must be an integer between 1 and 3600 seconds');
@@ -177,7 +138,3 @@ index 0000000000..0000000000 100644
 +  }
 +
    async disablePasswordLogin(): Promise<void> {
-     const config = await this.getConfig({ withCache: false });
-     config.passwordLogin.enabled = false;
---
-2.49.0
