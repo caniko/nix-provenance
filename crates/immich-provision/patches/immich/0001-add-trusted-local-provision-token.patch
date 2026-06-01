@@ -79,7 +79,7 @@ diff --git a/server/src/services/cli.service.spec.ts b/server/src/services/cli.s
 index 347d9ee..c47f154 100644
 --- a/server/src/services/cli.service.spec.ts
 +++ b/server/src/services/cli.service.spec.ts
-@@ -70,2 +70,31 @@ describe(CliService.name, () => {
+@@ -70,2 +70,30 @@ describe(CliService.name, () => {
  
 +  describe('createProvisionToken', () => {
 +    it('should only work when there is an admin account', async () => {
@@ -103,7 +103,6 @@ index 347d9ee..c47f154 100644
 +          deviceType: 'immich-provision',
 +          appVersion: null,
 +          parentId: null,
-+          oauthSid: null,
 +          expiresAt: expect.any(Date),
 +        }),
 +      );
@@ -119,7 +118,7 @@ index 22f06e2..d248a8b 100644
  import { Injectable } from '@nestjs/common';
 +import { DateTime } from 'luxon';
  import { isAbsolute, join } from 'node:path';
-@@ -76,2 +77,28 @@ export class CliService extends BaseService {
+@@ -76,2 +77,27 @@ export class CliService extends BaseService {
  
 +  async createProvisionToken(ttlSeconds: number): Promise<string> {
 +    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 3600) {
@@ -140,7 +139,6 @@ index 22f06e2..d248a8b 100644
 +      deviceOS: 'immich-admin',
 +      deviceType: 'immich-provision',
 +      appVersion: null,
-+      oauthSid: null,
 +      expiresAt: DateTime.now().plus({ seconds: ttlSeconds }).toJSDate(),
 +    });
 +
