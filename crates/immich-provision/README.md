@@ -102,3 +102,6 @@ nix flake check
 ```
 
 The full Immich patch tests require an Immich checkout with the patch applied.
+
+For first-time cutovers of existing Immich libraries to Kanidm OIDC, read
+`docs/kanidm-oidc-migration.md` before deploying.
