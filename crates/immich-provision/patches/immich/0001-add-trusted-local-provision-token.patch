@@ -57,14 +57,24 @@ index 0000000..dabc77b
 +  }
 +}
 diff --git a/server/src/dtos/user.dto.ts b/server/src/dtos/user.dto.ts
-index 75256b9..738b7ae 100644
+index ebd0018..70075fa 100644
 --- a/server/src/dtos/user.dto.ts
 +++ b/server/src/dtos/user.dto.ts
-@@ -79,3 +79,3 @@ export const UserAdminCreateSchema = z
-     email: toEmail.describe('User email'),
--    password: z.string().describe('User password'),
-+    password: z.string().optional().describe('User password. Optional when OAuth is enabled.'),
-     name: z.string().describe('User name'),
+@@ -94,9 +94,10 @@ export class UserAdminCreateDto {
+   @Transform(toEmail)
+   email!: string;
+-
+-  @ApiProperty({ description: 'User password' })
++
++  @ApiPropertyOptional({ description: 'User password. Optional when OAuth is enabled.' })
++  @Optional()
+   @IsString()
+-  password!: string;
++  password?: string;
+-
++
+   @ApiProperty({ description: 'User name' })
+   @IsNotEmpty()
 diff --git a/server/src/services/cli.service.spec.ts b/server/src/services/cli.service.spec.ts
 index 347d9ee..c47f154 100644
 --- a/server/src/services/cli.service.spec.ts
