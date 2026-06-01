@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["crates/immich-provision", "crates/rauthy-provision"]
+
+# Shared package metadata. `version` is intentionally NOT inherited — each crate
+# versions and tags independently (immich-provision-vX / rauthy-provision-vX).
+[workspace.package]
+edition = "2021"
+rust-version = "1.82"
+repository = "https://codeberg.org/caniko/nix-provenance"
+authors = ["Can H. Tartanoglu <gpg@rotas.mozmail.com>"]
+
+# Only license-agnostic, feature-stable dependencies are hoisted here. reqwest is
+# deliberately ABSENT: immich uses `rustls-tls` and rauthy uses
+# `rustls-tls-native-roots`, and a single workspace lock would UNION those TLS
+# features (silently changing rauthy's root of trust). spow stays rauthy-local
+# (immich must never link it). Keep reqwest/spow in the member manifests.
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Cargo applies [profile.*] from the workspace ROOT manifest only; member-level
+# profiles are IGNORED. rauthy's former crate-level strip+thin-LTO lives here now
+# and now also applies to immich (an improvement, not a regression).
+[profile.release]
+strip = true
+lto = "thin"

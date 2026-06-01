@@ -1,13 +1,13 @@
 [package]
 name = "rauthy-provision"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.82"
+edition.workspace = true
+rust-version.workspace = true
 description = "Declarative provisioning client for Rauthy (users, groups, roles, OIDC clients) — a kanidm-provision analogue"
 license = "MIT OR Apache-2.0"
-repository = "https://codeberg.org/caniko/rauthy-provision"
-homepage = "https://codeberg.org/caniko/rauthy-provision"
-authors = ["Can H. Tartanoglu <gpg@rotas.mozmail.com>"]
+repository.workspace = true
+homepage = "https://codeberg.org/caniko/nix-provenance"
+authors.workspace = true
 keywords = ["rauthy", "oidc", "provisioning", "iam"]
 categories = ["command-line-utilities"]
 
@@ -16,26 +16,27 @@ name = "rauthy-provision"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4.5", features = ["derive", "env"] }
-# Mirror kanidm-provision's TLS choice: rustls, no openssl C dependency, so the
-# crate cross-compiles / emulates cleanly for aarch64 (thething's RockPro64).
+anyhow.workspace = true
+clap.workspace = true
+# TLS features kept LOCAL — do not hoist into [workspace.dependencies] (see root
+# Cargo.toml). rustls, no openssl C dependency, so the crate cross-compiles /
+# emulates cleanly for aarch64 (thething's RockPro64).
 reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "rustls-tls-native-roots",
   "blocking",
 ] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-# Proof-of-Work solver for Rauthy's request_reset endpoint. The `server`
-# feature is the only one exposing the native `Pow::work` solver (the `client`
-# feature is wasm-only); it is pure Rust (no openssl/C), so it cross-compiles to
-# aarch64 like the rest of the crate. Match Rauthy 0.35.1's spow 0.6.
+serde.workspace = true
+serde_json.workspace = true
+# Proof-of-Work solver for Rauthy's request_reset endpoint. The `server` feature
+# is the only one exposing the native `Pow::work` solver (the `client` feature is
+# wasm-only); it is pure Rust (no openssl/C), so it cross-compiles to aarch64 like
+# the rest of the crate. Match Rauthy 0.35.1's spow 0.6. rauthy-LOCAL: the AGPL
+# immich crate must never link it.
 spow = { version = "0.6", default-features = false, features = ["server"] }
 
-[profile.release]
-strip = true
-lto = "thin"
+# NOTE: [profile.release] (strip + thin-LTO) intentionally lives in the workspace
+# ROOT Cargo.toml — Cargo ignores member-level profiles.
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

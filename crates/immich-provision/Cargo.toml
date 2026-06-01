@@ -1,18 +1,21 @@
 [package]
 name = "immich-provision"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
+edition.workspace = true
+rust-version.workspace = true
 license = "AGPL-3.0-only"
 description = "Declarative Immich identity provisioning for NixOS and Kanidm"
-repository = "https://codeberg.org/caniko/immich-provision"
+repository.workspace = true
+authors.workspace = true
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "4.5", features = ["derive", "env"] }
+anyhow.workspace = true
+clap.workspace = true
+# TLS features kept LOCAL — do not hoist into [workspace.dependencies] (see root
+# Cargo.toml): unifying with rauthy's reqwest would change the TLS root of trust.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 pretty_assertions = "1.4"
