@@ -595,6 +595,7 @@ dependencies = [
  "anyhow",
  "clap",
  "pretty_assertions",
+ "provenance-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -757,6 +758,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "provenance-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -861,6 +871,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "provenance-core",
  "reqwest",
  "serde",
  "serde_json",

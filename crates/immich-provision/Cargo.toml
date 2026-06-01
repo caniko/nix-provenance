@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+provenance-core = { path = "../provenance-core" }
 # TLS features kept LOCAL — do not hoist into [workspace.dependencies] (see root
 # Cargo.toml): unifying with rauthy's reqwest would change the TLS root of trust.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

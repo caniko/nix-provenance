@@ -16,8 +16,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
+use provenance_core::setops::{is_subset, opt_vec, same_set, union};
 
 use client::{
     NewClientRequest, NewUserRequest, RauthyClient, UpdateClientRequest, UpdateUserRequest,
@@ -62,7 +63,13 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let api_key = resolve_api_key(&cli)?;
+    let api_key = provenance_core::secret::resolve(
+        cli.api_key_file.as_deref(),
+        cli.api_key.as_deref(),
+        "API key",
+        "--api-key-file",
+        "RAUTHY_PROVISION_API_KEY",
+    )?;
     let raw = fs::read_to_string(&cli.state)
         .with_context(|| format!("reading state file {}", cli.state.display()))?;
     let state: State = serde_json::from_str(&raw)
@@ -81,23 +88,6 @@ fn main() -> Result<()> {
 
     log("done");
     Ok(())
-}
-
-fn resolve_api_key(cli: &Cli) -> Result<String> {
-    if let Some(path) = &cli.api_key_file {
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("reading API key file {}", path.display()))?;
-        let key = raw.trim().to_string();
-        if key.is_empty() {
-            bail!("API key file {} is empty", path.display());
-        }
-        return Ok(key);
-    }
-    cli.api_key
-        .clone()
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-        .ok_or_else(|| anyhow!("no API key: pass --api-key-file or set RAUTHY_PROVISION_API_KEY"))
 }
 
 fn log(msg: impl AsRef<str>) {
@@ -286,39 +276,6 @@ fn client_drifted(cur: &client::ClientResponse, spec: &ClientSpec) -> bool {
         || !same_set(&cur.redirect_uris, &spec.redirect_uris)
         || !same_set(&cur.scopes, &spec.scopes)
         || !same_set(&cur.flows_enabled, &spec.flows_enabled)
-}
-
-fn opt_vec(v: &[String]) -> Option<Vec<String>> {
-    if v.is_empty() {
-        None
-    } else {
-        Some(v.to_vec())
-    }
-}
-
-/// Order-insensitive equality of two string collections.
-fn same_set(a: &[String], b: &[String]) -> bool {
-    let mut a: Vec<&String> = a.iter().collect();
-    let mut b: Vec<&String> = b.iter().collect();
-    a.sort();
-    b.sort();
-    a == b
-}
-
-/// True when every element of `needle` is present in `haystack`.
-fn is_subset(needle: &[String], haystack: &[String]) -> bool {
-    needle.iter().all(|n| haystack.contains(n))
-}
-
-/// `current` plus any of `wanted` not already present, original order preserved.
-fn union(current: &[String], wanted: &[String]) -> Vec<String> {
-    let mut out = current.to_vec();
-    for w in wanted {
-        if !out.contains(w) {
-            out.push(w.clone());
-        }
-    }
-    out
 }
 
 #[cfg(test)]

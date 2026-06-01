@@ -3,7 +3,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -25,11 +24,11 @@ impl ImmichClient {
         } else {
             format!("{base}/api")
         };
-        let client = Client::builder()
-            .danger_accept_invalid_certs(accept_invalid_certs)
-            .user_agent(concat!("immich-provision/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("building HTTP client")?;
+        let client = provenance_core::http::build_blocking_client(
+            concat!("immich-provision/", env!("CARGO_PKG_VERSION")),
+            accept_invalid_certs,
+            None,
+        )?;
         Ok(Self {
             api_base,
             token: token.trim().to_owned(),
@@ -115,18 +114,9 @@ trait ResponseExt {
 
 impl ResponseExt for reqwest::blocking::Response {
     fn json_ok<T: serde::de::DeserializeOwned>(self, context: &str) -> Result<T> {
-        let status = self.status();
-        if status.is_success() {
-            return self
-                .json()
-                .with_context(|| format!("decoding {context} response"));
-        }
-
-        let body = self.text().unwrap_or_default();
-        if status == StatusCode::UNAUTHORIZED {
-            bail!("{context} request was unauthorized; provisioning token was rejected");
-        }
-        bail!("{context} request failed with HTTP {status}: {body}");
+        // Ergonomic `.json_ok(...)` call sites are preserved; the status/decode
+        // logic itself lives in the shared, permissive provenance-core.
+        provenance_core::http::json_ok(self, context)
     }
 }
 

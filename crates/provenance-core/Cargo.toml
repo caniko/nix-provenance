@@ -1,0 +1,17 @@
+[package]
+name = "provenance-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Shared plumbing for nix-provenance reconcilers (HTTP, secrets, reconcile primitives)"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+# reqwest with NO TLS feature on purpose: the leaf crate's TLS choice
+# (rustls-tls vs rustls-tls-native-roots) wins via additive feature unification,
+# so this permissive core never forces a TLS backend and never links openssl.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }

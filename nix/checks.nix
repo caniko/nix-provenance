@@ -98,6 +98,19 @@ in {
     touch $out
   '';
 
+  # License firewall: the permissive dependency graph (provenance-core and the
+  # MIT/Apache rauthy crate) must never pull in the AGPL immich-provision crate,
+  # and provenance-core itself must stay permissive. The one-directional boundary
+  # (AGPL may consume permissive, never the reverse) is enforced structurally.
+  license-firewall = runCommand "license-firewall" {} ''
+    core='${../crates/provenance-core/Cargo.toml}'
+    rauthy='${../crates/rauthy-provision/Cargo.toml}'
+    grep -q 'license = "MIT OR Apache-2.0"' "$core" || { echo "provenance-core must be MIT OR Apache-2.0"; exit 1; }
+    if grep -q 'immich-provision' "$core"; then echo "provenance-core must not depend on the AGPL immich-provision crate"; exit 1; fi
+    if grep -q 'immich-provision' "$rauthy"; then echo "rauthy-provision (permissive) must not depend on the AGPL immich-provision crate"; exit 1; fi
+    touch $out
+  '';
+
   # The root [profile.release] strip must actually reach the release binaries
   # (member profiles are ignored by Cargo — this proves the hoist worked).
   rauthy-binary-stripped = runCommand "rauthy-binary-stripped" {nativeBuildInputs = [pkgs.file];} ''

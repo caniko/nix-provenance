@@ -12,11 +12,8 @@
 
 use std::collections::BTreeMap;
 
+use provenance_core::serde_ext::default_true;
 use serde::Deserialize;
-
-fn default_true() -> bool {
-    true
-}
 
 fn default_language() -> String {
     "en".to_string()

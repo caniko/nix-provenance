@@ -1,16 +1,9 @@
 use anyhow::{bail, Result};
+use provenance_core::reconcile::Summary;
 use serde_json::{json, Map, Value};
 
 use crate::client::{ImmichClient, ImmichUser};
 use crate::state::{State, UserSpec};
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Summary {
-    pub created: usize,
-    pub updated: usize,
-    pub deleted: usize,
-    pub unchanged: usize,
-}
 
 pub fn reconcile(client: &ImmichClient, state: &State, allow_user_delete: bool) -> Result<Summary> {
     let config = client.system_config()?;

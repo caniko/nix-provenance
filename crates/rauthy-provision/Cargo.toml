@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+provenance-core = { path = "../provenance-core" }
 # TLS features kept LOCAL — do not hoist into [workspace.dependencies] (see root
 # Cargo.toml). rustls, no openssl C dependency, so the crate cross-compiles /
 # emulates cleanly for aarch64 (thething's RockPro64).

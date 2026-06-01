@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
+use provenance_core::serde_ext::double_option;
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize)]
@@ -32,18 +33,6 @@ pub struct UserSpec {
     #[serde(rename = "shouldChangePassword")]
     pub should_change_password: Option<bool>,
     pub delete: DeleteSpec,
-}
-
-mod double_option {
-    use serde::Deserialize;
-
-    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-        T: Deserialize<'de>,
-    {
-        Option::<T>::deserialize(deserializer).map(Some)
-    }
 }
 
 impl Default for UserSpec {

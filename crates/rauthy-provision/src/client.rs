@@ -11,7 +11,8 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use reqwest::blocking::{Client, RequestBuilder, Response};
+use provenance_core::http::ensure_success as ok;
+use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -151,12 +152,11 @@ impl RauthyClient {
     pub fn new(base_url: &str, api_key: &str, accept_invalid_certs: bool) -> Result<Self> {
         let base = base_url.trim_end_matches('/');
         let api = format!("{base}/auth/v1");
-        let http = Client::builder()
-            .danger_accept_invalid_certs(accept_invalid_certs)
-            .timeout(Duration::from_secs(30))
-            .user_agent(concat!("rauthy-provision/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("building HTTP client")?;
+        let http = provenance_core::http::build_blocking_client(
+            concat!("rauthy-provision/", env!("CARGO_PKG_VERSION")),
+            accept_invalid_certs,
+            Some(Duration::from_secs(30)),
+        )?;
         Ok(Self {
             http,
             api,
@@ -370,15 +370,4 @@ struct RequestResetRequest<'a> {
     email: &'a str,
     redirect_uri: &'a str,
     pow: &'a str,
-}
-
-/// Turn a non-2xx response into an error carrying the response body.
-fn ok(resp: Response) -> Result<Response> {
-    let status = resp.status();
-    if status.is_success() {
-        Ok(resp)
-    } else {
-        let body = resp.text().unwrap_or_default();
-        bail!("rauthy API returned {status}: {body}");
-    }
 }

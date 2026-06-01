@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use client::ImmichClient;
@@ -51,7 +51,13 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let token = resolve_token(&cli)?;
+    let token = provenance_core::secret::resolve(
+        cli.token_file.as_deref(),
+        cli.token.as_deref(),
+        "provisioning token",
+        "--token-file",
+        "IMMICH_PROVISION_TOKEN",
+    )?;
     let raw = fs::read_to_string(&cli.state)
         .with_context(|| format!("reading state file {}", cli.state.display()))?;
     let state: State = serde_json::from_str(&raw)
@@ -68,22 +74,4 @@ fn main() -> Result<()> {
         summary.created, summary.updated, summary.deleted, summary.unchanged
     );
     Ok(())
-}
-
-fn resolve_token(cli: &Cli) -> Result<String> {
-    if let Some(path) = &cli.token_file {
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("reading token file {}", path.display()))?;
-        let token = raw.trim().to_owned();
-        if token.is_empty() {
-            bail!("token file {} is empty", path.display());
-        }
-        return Ok(token);
-    }
-
-    cli.token
-        .as_ref()
-        .map(|token| token.trim().to_owned())
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| anyhow!("no token: pass --token-file or set IMMICH_PROVISION_TOKEN"))
 }
