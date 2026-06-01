@@ -1,0 +1,2 @@
+# Config-only tenants (service OIDC via shared Nix only, no Rust crate).
+# e.g. Vikunja-style, wired through kanidm-provision + shared lib helpers.

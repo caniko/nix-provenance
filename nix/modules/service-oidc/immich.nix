@@ -148,8 +148,8 @@ in {
 
     package = mkOption {
       type = types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalExpression "self.packages.\${pkgs.stdenv.hostPlatform.system}.default";
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.immich-provision;
+      defaultText = lib.literalExpression "self.packages.\${pkgs.stdenv.hostPlatform.system}.immich-provision";
       description = "immich-provision package to run.";
     };
 

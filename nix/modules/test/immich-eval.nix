@@ -5,7 +5,7 @@
   self,
   ...
 }: {
-  imports = [self.nixosModules.default];
+  imports = [self.nixosModules.immich];
 
   services.immich = {
     enable = true;

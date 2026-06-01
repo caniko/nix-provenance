@@ -1,0 +1,2 @@
+# LDAP-backed tenants (no HTTP-admin reconciler).
+# e.g. Stalwart kanidm-LDAP migration.
