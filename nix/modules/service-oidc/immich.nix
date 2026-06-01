@@ -126,8 +126,6 @@
         cfg.endpoint
         "--state"
         (toString stateFile)
-        "--token-file"
-        "$token_file"
         "--ready-timeout"
         (toString cfg.readyTimeoutSeconds)
       ]
@@ -142,7 +140,7 @@
     ${cfg.immichAdminCommand} provision-token --ttl ${toString cfg.tokenTtlSeconds} > "$token_file"
     test -s "$token_file"
 
-    exec ${lib.escapeShellArg (lib.getExe' cfg.package "immich-provision")} ${cliArgs}
+    exec ${lib.escapeShellArg (lib.getExe' cfg.package "immich-provision")} ${cliArgs} --token-file "$token_file"
   '';
 in {
   options.services.immich.provision = {
