@@ -1,7 +1,7 @@
 //! Reconcile primitives shared by the reconcilers.
 
 /// Outcome tally for a reconcile pass.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Summary {
     /// Number of entities created because they were present in desired state
     /// but absent from the remote system.
