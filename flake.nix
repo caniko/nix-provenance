@@ -63,6 +63,8 @@
         rauthy = import ./nix/modules/idp/rauthy.nix {inherit self;};
         vikunja = import ./nix/modules/config-only/vikunja.nix {inherit self;};
         forgejo = import ./nix/modules/service-oidc/forgejo.nix {inherit self;};
+        stalwart = import ./nix/modules/ldap/stalwart.nix {inherit self;};
+        externalApp = import ./nix/modules/adapter/external-app.nix {inherit self;};
         default = {imports = [self.nixosModules.rauthy];};
       };
 

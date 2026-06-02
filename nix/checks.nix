@@ -33,6 +33,8 @@
   rauthyEval = evalSystem ./modules/test/rauthy-eval.nix;
   vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
+  stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
+  adapterEval = evalSystem ./modules/test/adapter-eval.nix;
 
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in {
@@ -91,6 +93,38 @@ in {
   in
     runCommand "forgejo-module-eval" {} ''
       test -n ${lib.escapeShellArg serviceConfig}
+      touch $out
+    '';
+
+  stalwart-module-eval = let
+    directory = builtins.toJSON stalwartEval.config.services.stalwart.settings.directory.kanidm;
+  in
+    runCommand "stalwart-module-eval" {} ''
+      test -n ${lib.escapeShellArg directory}
+      touch $out
+    '';
+
+  # The third-party adapter must derive the pink-raven rauthy users (can keyed by
+  # kanidm login, eric/caroline emailed a set-password link) and the kanidm-backend
+  # OAuth2 federation client + person, all from the uniform user schema.
+  adapter-module-eval = let
+    rauthyUsers = builtins.toJSON adapterEval.config.services.rauthy.provision.users;
+    kanidmOauth2 = builtins.toJSON adapterEval.config.services.kanidm.provision.systems.oauth2;
+    kanidmPersons = builtins.toJSON adapterEval.config.services.kanidm.provision.persons;
+  in
+    runCommand "adapter-module-eval" {} ''
+      users=${lib.escapeShellArg rauthyUsers}
+      oauth2=${lib.escapeShellArg kanidmOauth2}
+      persons=${lib.escapeShellArg kanidmPersons}
+      for e in can@tartanoglu.com efirley@protonmail.com carolinestahl@gmx.net; do
+        printf '%s' "$users" | grep -q "$e" || { echo "adapter: rauthy user $e missing" >&2; exit 1; }
+      done
+      # eric + caroline get an emailed set-password link; can does not.
+      printf '%s' "$users" | grep -q '"sendPasswordEmail":true' \
+        || { echo "adapter: no emailed (passwordInitByEmail) rauthy user rendered" >&2; exit 1; }
+      # kanidm backend rendered an OAuth2 federation client + its person.
+      printf '%s' "$oauth2"  | grep -q 'internal-tool'   || { echo "adapter: kanidm oauth2 system missing" >&2; exit 1; }
+      printf '%s' "$persons" | grep -q 'dejana'          || { echo "adapter: kanidm person missing" >&2; exit 1; }
       touch $out
     '';
 

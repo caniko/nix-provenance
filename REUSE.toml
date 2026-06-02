@@ -24,6 +24,18 @@ SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "AGPL-3.0-only"
 
 [[annotations]]
+path = ["nix/lib/stalwart.nix", "nix/modules/ldap/stalwart.nix", "nix/modules/test/stalwart-eval.nix"]
+SPDX-FileCopyrightText = "Can H. Tartanoglu"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+# Third-party identity adapter — pure-Nix wiring over the rauthy/kanidm
+# provisioners, so permissive (no AGPL crate involved).
+[[annotations]]
+path = ["nix/lib/adapter.nix", "nix/modules/adapter/external-app.nix", "nix/modules/test/adapter-eval.nix", "docs/adapter-external-apps.md"]
+SPDX-FileCopyrightText = "Can H. Tartanoglu"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
 path = "crates/rauthy-provision/**"
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
