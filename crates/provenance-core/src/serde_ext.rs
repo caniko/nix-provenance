@@ -14,6 +14,8 @@ pub fn default_true() -> bool {
 pub mod double_option {
     use serde::{Deserialize, Deserializer};
 
+    /// Deserialize an optional field into `Option<Option<T>>`, preserving the
+    /// distinction between an absent field and an explicit JSON `null`.
     pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
     where
         D: Deserializer<'de>,

@@ -8,6 +8,8 @@
 //! that originated in the AGPL immich crate is clean-reimplemented here, never
 //! copied, so no AGPL source text is relicensed.
 
+#![warn(missing_docs)]
+
 pub mod http;
 pub mod reconcile;
 pub mod secret;

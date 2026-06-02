@@ -40,7 +40,7 @@ struct Cli {
     #[arg(long)]
     accept_invalid_certs: bool,
 
-    /// Allow user deletion when the state also sets users.<name>.delete.force = true.
+    /// Allow user deletion when the state also sets `users.<name>.delete.force = true`.
     #[arg(long)]
     allow_user_delete: bool,
 
