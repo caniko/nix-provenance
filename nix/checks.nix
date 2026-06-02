@@ -32,6 +32,7 @@
   immichEval = evalSystem ./modules/test/immich-eval.nix;
   rauthyEval = evalSystem ./modules/test/rauthy-eval.nix;
   vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
+  forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
 
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in {
@@ -81,6 +82,14 @@ in {
     serviceConfig = builtins.toJSON vikunjaEval.config.systemd.services.vikunja-oidc-env.serviceConfig;
   in
     runCommand "vikunja-module-eval" {} ''
+      test -n ${lib.escapeShellArg serviceConfig}
+      touch $out
+    '';
+
+  forgejo-module-eval = let
+    serviceConfig = builtins.toJSON forgejoEval.config.systemd.services.forgejo-seed-oidc.serviceConfig;
+  in
+    runCommand "forgejo-module-eval" {} ''
       test -n ${lib.escapeShellArg serviceConfig}
       touch $out
     '';

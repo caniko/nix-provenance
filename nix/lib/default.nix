@@ -6,8 +6,9 @@
   immich = import ./immich.nix {inherit lib;};
   rauthy = import ./rauthy.nix {inherit lib;};
   vikunja = import ./vikunja.nix {inherit lib;};
+  forgejo = import ./forgejo.nix {inherit lib;};
 in {
-  inherit immich rauthy vikunja;
+  inherit immich rauthy vikunja forgejo;
 
   # Back-compat alias retained ONLY during the canix migration: the live consumer
   # historically called `lib.usersFromKanidmPersons` on the rauthy-provision
