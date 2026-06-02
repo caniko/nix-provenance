@@ -7,6 +7,7 @@
 //! Clients(…). Secrets(read,update) is only needed if you later manage client
 //! secrets (this tool currently does not).
 
+use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -22,6 +23,15 @@ pub struct RauthyClient {
     api: String,
     /// Pre-rendered `API-Key <name>$<secret>` header value.
     auth: String,
+}
+
+impl fmt::Debug for RauthyClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RauthyClient")
+            .field("api", &self.api)
+            .field("auth", &"<redacted>")
+            .finish_non_exhaustive()
+    }
 }
 
 // ---------------------------------------------------------------------------

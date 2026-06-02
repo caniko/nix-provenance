@@ -2,6 +2,7 @@
 
 /// `None` for an empty slice, else an owned copy — lets callers omit empty
 /// optional list fields from a request body.
+#[must_use]
 pub fn opt_vec(v: &[String]) -> Option<Vec<String>> {
     if v.is_empty() {
         None
@@ -11,6 +12,7 @@ pub fn opt_vec(v: &[String]) -> Option<Vec<String>> {
 }
 
 /// Order-insensitive equality of two string collections.
+#[must_use]
 pub fn same_set(a: &[String], b: &[String]) -> bool {
     let mut a: Vec<&String> = a.iter().collect();
     let mut b: Vec<&String> = b.iter().collect();
@@ -20,6 +22,7 @@ pub fn same_set(a: &[String], b: &[String]) -> bool {
 }
 
 /// True when every element of `needle` is present in `haystack`.
+#[must_use]
 pub fn is_subset(needle: &[String], haystack: &[String]) -> bool {
     needle.iter().all(|n| haystack.contains(n))
 }
@@ -27,6 +30,7 @@ pub fn is_subset(needle: &[String], haystack: &[String]) -> bool {
 /// `current` plus any of `wanted` not already present, original order preserved.
 /// The basis of additive reconciliation: declared roles/groups are merged in,
 /// out-of-band ones are never stripped.
+#[must_use]
 pub fn union(current: &[String], wanted: &[String]) -> Vec<String> {
     let mut out = current.to_vec();
     for w in wanted {

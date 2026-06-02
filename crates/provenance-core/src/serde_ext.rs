@@ -1,6 +1,7 @@
 //! serde helpers shared by the state schemas.
 
 /// serde `default` for `bool` fields that should default to `true`.
+#[must_use]
 pub fn default_true() -> bool {
     true
 }

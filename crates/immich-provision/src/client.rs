@@ -1,3 +1,4 @@
+use std::fmt;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,15 @@ pub struct ImmichClient {
     api_base: String,
     token: String,
     client: Client,
+}
+
+impl fmt::Debug for ImmichClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImmichClient")
+            .field("api_base", &self.api_base)
+            .field("token", &"<redacted>")
+            .finish_non_exhaustive()
+    }
 }
 
 impl ImmichClient {
