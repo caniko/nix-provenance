@@ -12,6 +12,7 @@
 mod client;
 mod state;
 
+use std::fmt::Arguments;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -86,12 +87,12 @@ fn main() -> Result<()> {
     reconcile_users(&client, &state, cli.no_auto_remove)?;
     reconcile_clients(&client, &state, cli.no_auto_remove)?;
 
-    log("done");
+    log(format_args!("done"));
     Ok(())
 }
 
-fn log(msg: impl AsRef<str>) {
-    eprintln!("[rauthy-provision] {}", msg.as_ref());
+fn log(msg: Arguments<'_>) {
+    eprintln!("[rauthy-provision] {msg}");
 }
 
 fn reconcile_groups(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
@@ -100,11 +101,11 @@ fn reconcile_groups(client: &RauthyClient, state: &State, no_auto_remove: bool) 
         let found = existing.iter().find(|g| &g.name == name);
         match (spec.present, found) {
             (true, None) => {
-                log(format!("create group {name}"));
+                log(format_args!("create group {name}"));
                 client.create_group(name)?;
             }
             (false, Some(g)) if !no_auto_remove => {
-                log(format!("delete group {name}"));
+                log(format_args!("delete group {name}"));
                 client.delete_group(&g.id)?;
             }
             _ => {}
@@ -119,11 +120,11 @@ fn reconcile_roles(client: &RauthyClient, state: &State, no_auto_remove: bool) -
         let found = existing.iter().find(|r| &r.name == name);
         match (spec.present, found) {
             (true, None) => {
-                log(format!("create role {name}"));
+                log(format_args!("create role {name}"));
                 client.create_role(name)?;
             }
             (false, Some(r)) if !no_auto_remove => {
-                log(format!("delete role {name}"));
+                log(format_args!("delete role {name}"));
                 client.delete_role(&r.id)?;
             }
             _ => {}
@@ -137,7 +138,7 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
         let current = client.get_user_by_email(email)?;
         match (spec.present, current) {
             (true, None) => {
-                log(format!("create user {email}"));
+                log(format_args!("create user {email}"));
                 client.create_user(&new_user(email, spec))?;
                 // Email a set-password link only on first create (never on
                 // update), so at most one email is ever sent per user.
@@ -149,18 +150,18 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
                              password_email_redirect_uri"
                             )
                         })?;
-                    log(format!("send set-password email to {email}"));
+                    log(format_args!("send set-password email to {email}"));
                     client.request_password_reset(email, redirect)?;
                 }
             }
             (true, Some(user)) => {
                 if user_drifted(&user, spec) {
-                    log(format!("update user {email} (roles/groups)"));
+                    log(format_args!("update user {email} (roles/groups)"));
                     client.update_user(&user.id, &update_user(&user, spec))?;
                 }
             }
             (false, Some(user)) if !no_auto_remove => {
-                log(format!("delete user {email}"));
+                log(format_args!("delete user {email}"));
                 client.delete_user(&user.id)?;
             }
             (false, _) => {}
@@ -187,8 +188,8 @@ fn new_user(email: &str, spec: &UserSpec) -> NewUserRequest {
 /// replace would silently strip them. Names and language are applied at
 /// creation only, so upstream federation profile-claim sync is never fought.
 fn user_drifted(user: &client::UserResponse, spec: &UserSpec) -> bool {
-    let cur_groups = user.groups.clone().unwrap_or_default();
-    !is_subset(&spec.roles, &user.roles) || !is_subset(&spec.groups, &cur_groups)
+    let cur_groups = user.groups.as_deref().unwrap_or_default();
+    !is_subset(&spec.roles, &user.roles) || !is_subset(&spec.groups, cur_groups)
 }
 
 fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserRequest {
@@ -196,14 +197,14 @@ fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserReques
     // a PUT is a full replace, so omitting them would reset server-side values.
     // roles/groups are the UNION of current + declared so out-of-band roles
     // (e.g. rauthy_admin) survive.
-    let cur_groups = user.groups.clone().unwrap_or_default();
+    let cur_groups = user.groups.as_deref().unwrap_or_default();
     UpdateUserRequest {
         email: user.email.clone(),
         given_name: user.given_name.clone(),
         family_name: user.family_name.clone(),
         language: user.language.clone(),
         roles: union(&user.roles, &spec.roles),
-        groups: opt_vec(&union(&cur_groups, &spec.groups)),
+        groups: opt_vec(&union(cur_groups, &spec.groups)),
         enabled: user.enabled,
         email_verified: user.email_verified,
     }
@@ -214,7 +215,7 @@ fn reconcile_clients(client: &RauthyClient, state: &State, no_auto_remove: bool)
         let current = client.get_client(id)?;
         match (spec.present, current) {
             (true, None) => {
-                log(format!("create client {id}"));
+                log(format_args!("create client {id}"));
                 client.create_client(&new_client(id, spec))?;
                 // POST sets only id/name/confidential/redirect_uris; the full
                 // config (scopes, flows, PKCE) must follow via PUT.
@@ -222,12 +223,12 @@ fn reconcile_clients(client: &RauthyClient, state: &State, no_auto_remove: bool)
             }
             (true, Some(cur)) => {
                 if client_drifted(&cur, spec) {
-                    log(format!("update client {id}"));
+                    log(format_args!("update client {id}"));
                     client.update_client(id, &update_client(id, spec))?;
                 }
             }
             (false, Some(_)) if !no_auto_remove => {
-                log(format!("delete client {id}"));
+                log(format_args!("delete client {id}"));
                 client.delete_client(id)?;
             }
             (false, _) => {}
