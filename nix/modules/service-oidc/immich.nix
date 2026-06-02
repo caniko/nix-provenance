@@ -155,7 +155,20 @@ in {
 
     endpoint = mkOption {
       type = types.str;
-      default = "http://127.0.0.1:${toString config.services.immich.port}";
+      default = let
+        # services.immich.host may be a hostname, an IPv4 literal, or a bare
+        # IPv6 literal (e.g. "::1"). Node binds the string "localhost" to the
+        # IPv6 loopback [::1] only, so a hardcoded 127.0.0.1 endpoint would
+        # never connect and the readiness probe would time out. Follow the host
+        # Immich is actually configured to listen on, bracketing bare IPv6
+        # literals for use in a URL authority.
+        host = config.services.immich.host;
+        authority =
+          if lib.hasInfix ":" host
+          then "[${host}]"
+          else host;
+      in "http://${authority}:${toString config.services.immich.port}";
+      defaultText = lib.literalExpression "\"http://\${config.services.immich.host}:\${toString config.services.immich.port}\"";
       description = "Immich base URL. The CLI appends /api if needed.";
     };
 
