@@ -9,6 +9,11 @@ use anyhow::{anyhow, bail, Context, Result};
 /// Resolve a secret, preferring `file` over `inline`, trimming surrounding
 /// whitespace and rejecting empties. `what` names the secret in error messages;
 /// `flag_hint` and `env_hint` are surfaced when neither source is provided.
+///
+/// # Errors
+///
+/// Returns an error when the selected file cannot be read, when the resolved
+/// value is empty after trimming, or when neither source provides a value.
 pub fn resolve(
     file: Option<&Path>,
     inline: Option<&str>,

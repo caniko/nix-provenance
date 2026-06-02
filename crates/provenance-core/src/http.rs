@@ -14,6 +14,11 @@ use serde::de::DeserializeOwned;
 /// whatever the *calling* crate enabled (`rustls-tls` vs
 /// `rustls-tls-native-roots`) — features unify additively within a single
 /// binary's build, so the leaf crate's choice wins and core never links openssl.
+///
+/// # Errors
+///
+/// Returns an error when the underlying [`Client`] builder rejects the supplied
+/// configuration, such as an invalid user agent header value.
 pub fn build_blocking_client(
     user_agent: &str,
     accept_invalid_certs: bool,
@@ -30,6 +35,11 @@ pub fn build_blocking_client(
 
 /// Return the response unchanged if it is 2xx, otherwise an error carrying the
 /// status and response body (with a dedicated message for 401 Unauthorized).
+///
+/// # Errors
+///
+/// Returns an error for every non-success HTTP status. If reading the response
+/// body fails, the status is still reported and the body text is omitted.
 pub fn ensure_success(resp: Response) -> Result<Response> {
     let status = resp.status();
     if status.is_success() {
@@ -43,6 +53,11 @@ pub fn ensure_success(resp: Response) -> Result<Response> {
 }
 
 /// Decode a 2xx JSON response into `T`, attributing failures to `context`.
+///
+/// # Errors
+///
+/// Returns an error when [`ensure_success`] rejects the status or when the
+/// response body cannot be decoded as `T`.
 pub fn json_ok<T: DeserializeOwned>(resp: Response, context: &str) -> Result<T> {
     let resp = ensure_success(resp).with_context(|| format!("{context} request failed"))?;
     resp.json()

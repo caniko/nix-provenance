@@ -16,6 +16,11 @@ pub mod double_option {
 
     /// Deserialize an optional field into `Option<Option<T>>`, preserving the
     /// distinction between an absent field and an explicit JSON `null`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the deserializer's error when the present value cannot be
+    /// deserialized as `T`.
     pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
     where
         D: Deserializer<'de>,

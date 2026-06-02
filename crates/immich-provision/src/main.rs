@@ -1,3 +1,11 @@
+//! immich-provision — declarative provisioning client for Immich users.
+//!
+//! The binary reads a JSON state file, resolves a short-lived local
+//! provisioning token from a file or environment value, waits for Immich to
+//! answer, and reconciles declared users over Immich's admin API. Deletion is
+//! guarded by both a command-line flag and per-user `delete.force` state so a
+//! rendered state file cannot remove users by accident.
+
 mod client;
 mod reconcile;
 mod state;
