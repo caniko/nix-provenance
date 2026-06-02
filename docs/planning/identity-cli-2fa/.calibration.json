@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "plan": {
+    "id": "788b1dd6-3dc2-4c3c-b372-b9770a0037ad",
+    "name": "Plan: identity-cli-2fa — kanidm credential CLI (posix + TOTP) → Bitwarden → Stalwart LDAP cutover",
+    "flavor": "claude",
+    "worktype": null,
+    "created_at": 1780421497,
+    "phase_count": 5,
+    "wave_count": 3,
+    "max_chain_depth": 3,
+    "repo_spread": 6,
+    "routing_dist": {
+      "high": 1,
+      "max": 1,
+      "medium": 3
+    },
+    "shape_hash": "c0ed4895596c99c79a9c94839ed8377776c29397d03562939c3c8057bc6076f9"
+  },
+  "triggers": [
+    {
+      "name": "shared-file-contention",
+      "input_value": 1.0,
+      "threshold": 2.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "external-repo-phases",
+      "input_value": 5.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": "External repo coordination"
+    },
+    {
+      "name": "convergence-point",
+      "input_value": 3.0,
+      "threshold": 3.0,
+      "fired": true,
+      "section_added": "Merge-readiness checklist"
+    },
+    {
+      "name": "ownership-boundary-spread",
+      "input_value": 6.0,
+      "threshold": 2.0,
+      "fired": true,
+      "section_added": "PR sequencing & cross-owner coordination"
+    },
+    {
+      "name": "risk-concentration",
+      "input_value": 1.0,
+      "threshold": 2.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "risk-late-in-plan",
+      "input_value": 1.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": "Late-risk warning"
+    },
+    {
+      "name": "infrastructure-spof",
+      "input_value": 3.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": "infra-SPOF"
+    },
+    {
+      "name": "revendor-phase",
+      "input_value": 2.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": "Compat surface"
+    },
+    {
+      "name": "long-serial-chain",
+      "input_value": 3.0,
+      "threshold": 4.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "mid-plan-rerouting",
+      "input_value": 5.0,
+      "threshold": 10.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "trivial-phase-swamp",
+      "input_value": 1.5,
+      "threshold": 4.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "no-integrated-verification",
+      "input_value": 1.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": null
+    },
+    {
+      "name": "routing-tier-inversion",
+      "input_value": 1.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": null
+    },
+    {
+      "name": "mechanical-streak",
+      "input_value": 0.0,
+      "threshold": 3.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "hidden-prerequisite",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": null
+    }
+  ],
+  "phases": [
+    {
+      "ordinal": 1,
+      "slug": "scaffold-identity-cli",
+      "routing_tier": "medium",
+      "files": [
+        "Cargo.toml` (workspace `members`), `Cargo.lock",
+        "REUSE.toml`, `LICENSING.md",
+        "crates/identity-cli/Cargo.toml`, `crates/identity-cli/src/lib.rs`, `crates/identity-cli/src/main.rs",
+        "nix/packages.nix`, `nix/checks.nix"
+      ]
+    },
+    {
+      "ordinal": 2,
+      "slug": "kanidm-provision-command",
+      "routing_tier": "high",
+      "files": [
+        "crates/identity-cli/Cargo.toml` only if a dep feature needs enabling",
+        "crates/identity-cli/src/kanidm.rs` (new — the command logic + library fns)",
+        "crates/identity-cli/src/lib.rs`, `crates/identity-cli/src/main.rs` (subcommand registration — **shared with Phase 03**, rebase if 03 landed first)"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "slug": "bitwarden-export",
+      "routing_tier": "medium",
+      "files": [
+        "crates/identity-cli/src/bitwarden.rs` (new)",
+        "crates/identity-cli/src/lib.rs`, `crates/identity-cli/src/main.rs` (subcommand registration — **shared with Phase 02**, rebase if 02 landed first)"
+      ]
+    },
+    {
+      "ordinal": 4,
+      "slug": "canix-subsume",
+      "routing_tier": "medium",
+      "files": [
+        "canix `cli/Cargo.toml`, `cli/Cargo.lock",
+        "canix `cli/src/commands/…` (a new module + registration in `cli/src/cli.rs` / the `secret` group)"
+      ]
+    },
+    {
+      "ordinal": 5,
+      "slug": "stalwart-ldap-cutover",
+      "routing_tier": "max",
+      "files": [
+        "canix `root/hosts/thething/server/kanidm-provision.nix` (only if the kanidm-seed ordering / posix-enable needs adjustment)",
+        "canix `root/hosts/thething/server/stalwart.nix` (re-enable `kanidmLdap`, auth/storage directory, seed-accounts, ordering)"
+      ]
+    }
+  ],
+  "meta_heuristics_fired": [
+    "threshold-proximity",
+    "high-stakes-combo"
+  ],
+  "tags": {
+    "flavor": "claude",
+    "risk": "high",
+    "scope": "cross-org"
+  },
+  "verify": null
+}
