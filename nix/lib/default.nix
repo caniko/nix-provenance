@@ -5,8 +5,9 @@
 {lib}: let
   immich = import ./immich.nix {inherit lib;};
   rauthy = import ./rauthy.nix {inherit lib;};
+  vikunja = import ./vikunja.nix {inherit lib;};
 in {
-  inherit immich rauthy;
+  inherit immich rauthy vikunja;
 
   # Back-compat alias retained ONLY during the canix migration: the live consumer
   # historically called `lib.usersFromKanidmPersons` on the rauthy-provision

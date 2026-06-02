@@ -1,6 +1,6 @@
 # Flake checks. Per-crate build/clippy/test, plus shared nixfmt, both module-eval
-# smoke tests, the Immich patch-applies guard, and the structural guards that keep
-# the TLS-feature isolation and the stripped release binary honest.
+# smoke tests, the Immich patch-applies guard, and the structural guards that
+# keep the TLS-feature isolation and the stripped release binary honest.
 {
   pkgs,
   lib,
@@ -31,6 +31,7 @@
 
   immichEval = evalSystem ./modules/test/immich-eval.nix;
   rauthyEval = evalSystem ./modules/test/rauthy-eval.nix;
+  vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
 
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in {
@@ -72,6 +73,14 @@ in {
     serviceConfig = builtins.toJSON rauthyEval.config.systemd.services.rauthy-provision.serviceConfig;
   in
     runCommand "rauthy-module-eval" {} ''
+      test -n ${lib.escapeShellArg serviceConfig}
+      touch $out
+    '';
+
+  vikunja-module-eval = let
+    serviceConfig = builtins.toJSON vikunjaEval.config.systemd.services.vikunja-oidc-env.serviceConfig;
+  in
+    runCommand "vikunja-module-eval" {} ''
       test -n ${lib.escapeShellArg serviceConfig}
       touch $out
     '';

@@ -14,6 +14,11 @@ SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "AGPL-3.0-only"
 
 [[annotations]]
+path = ["nix/lib/vikunja.nix", "nix/modules/config-only/vikunja.nix", "nix/modules/test/vikunja-eval.nix"]
+SPDX-FileCopyrightText = "Can H. Tartanoglu"
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
 path = "crates/rauthy-provision/**"
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"

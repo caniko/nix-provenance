@@ -61,6 +61,7 @@
       nixosModules = {
         immich = import ./nix/modules/service-oidc/immich.nix {inherit self;};
         rauthy = import ./nix/modules/idp/rauthy.nix {inherit self;};
+        vikunja = import ./nix/modules/config-only/vikunja.nix {inherit self;};
         default = {imports = [self.nixosModules.rauthy];};
       };
 
