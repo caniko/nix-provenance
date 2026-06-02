@@ -21,21 +21,35 @@
 
   immichArgs = mkArgs "immich-provision";
   rauthyArgs = mkArgs "rauthy-provision";
+  identityArgs = mkArgs "identity-cli";
 
   immichDeps = craneLib.buildDepsOnly immichArgs;
   rauthyDeps = craneLib.buildDepsOnly rauthyArgs;
+  identityDeps = craneLib.buildDepsOnly identityArgs;
 in {
   args = {
     immich-provision = immichArgs;
     rauthy-provision = rauthyArgs;
+    identity-cli = identityArgs;
   };
 
   cargoArtifacts = {
     immich-provision = immichDeps;
     rauthy-provision = rauthyDeps;
+    identity-cli = identityDeps;
   };
 
   packages = {
+    identity-cli = craneLib.buildPackage (identityArgs
+      // {
+        cargoArtifacts = identityDeps;
+        meta = {
+          description = "Identity administration CLI for Kanidm and Bitwarden-backed workflows";
+          mainProgram = "identity-cli";
+          license = [lib.licenses.mpl20];
+        };
+      });
+
     immich-provision = craneLib.buildPackage (immichArgs
       // {
         cargoArtifacts = immichDeps;

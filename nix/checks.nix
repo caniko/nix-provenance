@@ -12,6 +12,7 @@
   packages,
   args,
   cargoArtifacts,
+  docs,
 }: let
   inherit (pkgs) runCommand;
 
@@ -38,15 +39,20 @@
 
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in {
-  # Build both crates.
+  # Build all crates.
+  identity-cli = packages.identity-cli;
   immich-provision = packages.immich-provision;
   rauthy-provision = packages.rauthy-provision;
+  docs = docs;
+  site = docs;
 
   # Lint each crate against its isolated deps.
+  identity-clippy = mkClippy "identity-cli";
   immich-clippy = mkClippy "immich-provision";
   rauthy-clippy = mkClippy "rauthy-provision";
 
   # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
+  identity-test = craneLib.cargoTest (args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;});
   immich-test = craneLib.cargoTest (args.immich-provision // {cargoArtifacts = cargoArtifacts.immich-provision;});
   rauthy-nextest = craneLib.cargoNextest (args.rauthy-provision // {cargoArtifacts = cargoArtifacts.rauthy-provision;});
 

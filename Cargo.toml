@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/provenance-core", "crates/immich-provision", "crates/rauthy-provision"]
+members = [
+  "crates/provenance-core",
+  "crates/immich-provision",
+  "crates/rauthy-provision",
+  "crates/identity-cli",
+]
 
 # Shared package metadata. `version` is intentionally NOT inherited — each crate
 # versions and tags independently (immich-provision-vX / rauthy-provision-vX).

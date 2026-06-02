@@ -25,6 +25,7 @@
           inherit system;
           overlays = [(import rust-overlay)];
         };
+        inherit (pkgs) lib;
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = ["rustfmt" "clippy"];
         };
@@ -32,20 +33,45 @@
         src = craneLib.cleanCargoSource ./.;
 
         crates = import ./nix/packages.nix {
-          inherit (pkgs) lib;
+          inherit lib;
           inherit craneLib src;
         };
+
+        docsPackage = pkgs.stdenv.mkDerivation {
+          pname = "nix-provenance-docs";
+          version = "unstable";
+          src = builtins.path {
+            name = "nix-provenance-docs-src";
+            path = ./docs;
+          };
+          nativeBuildInputs = [pkgs.mdbook];
+          phases = ["buildPhase" "installPhase"];
+          buildPhase = ''
+            cp -r --no-preserve=mode "$src" docs
+            chmod -R u+w docs
+            mdbook build docs
+          '';
+          installPhase = ''
+            cp -r docs/book "$out"
+          '';
+        };
       in {
-        packages = crates.packages;
+        packages =
+          crates.packages
+          // {
+            docs = docsPackage;
+            site = docsPackage;
+          };
 
         checks = import ./nix/checks.nix {
           inherit pkgs nixpkgs craneLib src self system;
-          inherit (pkgs) lib;
+          inherit lib;
           inherit (crates) packages args cargoArtifacts;
+          docs = docsPackage;
         };
 
         devShells.default = craneLib.devShell {
-          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra];
+          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook];
         };
 
         formatter = pkgs.alejandra;
@@ -69,6 +95,7 @@
       };
 
       overlays.default = final: _prev: {
+        identity-cli = self.packages.${final.stdenv.hostPlatform.system}.identity-cli;
         immich-provision = self.packages.${final.stdenv.hostPlatform.system}.immich-provision;
         rauthy-provision = self.packages.${final.stdenv.hostPlatform.system}.rauthy-provision;
       };
