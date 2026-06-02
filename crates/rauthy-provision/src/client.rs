@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use provenance_core::http::ensure_success as ok;
-use reqwest::blocking::{Client, RequestBuilder};
+use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -180,6 +180,12 @@ impl RauthyClient {
             .header(reqwest::header::AUTHORIZATION, &self.auth)
     }
 
+    fn send_ok(&self, req: RequestBuilder, context: impl Into<String>) -> Result<Response> {
+        let context = context.into();
+        let resp = req.send().with_context(|| context.clone())?;
+        ok(resp).with_context(|| context)
+    }
+
     /// Poll the unauthenticated health endpoint until the server is up, then
     /// validate the API key with a single authenticated call.
     ///
@@ -236,40 +242,48 @@ impl RauthyClient {
     // ----- groups -----
 
     pub fn list_groups(&self) -> Result<Vec<GroupResponse>> {
-        let resp = ok(self.req(Method::GET, "/groups").send()?)?;
+        let resp = self.send_ok(self.req(Method::GET, "/groups"), "requesting Rauthy groups")?;
         resp.json().context("decoding groups list")
     }
 
     pub fn create_group(&self, name: &str) -> Result<()> {
-        ok(self
-            .req(Method::POST, "/groups")
-            .json(&GroupRequest { group: name })
-            .send()?)?;
+        self.send_ok(
+            self.req(Method::POST, "/groups")
+                .json(&GroupRequest { group: name }),
+            format!("creating Rauthy group {name}"),
+        )?;
         Ok(())
     }
 
     pub fn delete_group(&self, id: &str) -> Result<()> {
-        ok(self.req(Method::DELETE, &format!("/groups/{id}")).send()?)?;
+        self.send_ok(
+            self.req(Method::DELETE, &format!("/groups/{id}")),
+            format!("deleting Rauthy group {id}"),
+        )?;
         Ok(())
     }
 
     // ----- roles -----
 
     pub fn list_roles(&self) -> Result<Vec<RoleResponse>> {
-        let resp = ok(self.req(Method::GET, "/roles").send()?)?;
+        let resp = self.send_ok(self.req(Method::GET, "/roles"), "requesting Rauthy roles")?;
         resp.json().context("decoding roles list")
     }
 
     pub fn create_role(&self, name: &str) -> Result<()> {
-        ok(self
-            .req(Method::POST, "/roles")
-            .json(&RoleRequest { role: name })
-            .send()?)?;
+        self.send_ok(
+            self.req(Method::POST, "/roles")
+                .json(&RoleRequest { role: name }),
+            format!("creating Rauthy role {name}"),
+        )?;
         Ok(())
     }
 
     pub fn delete_role(&self, id: &str) -> Result<()> {
-        ok(self.req(Method::DELETE, &format!("/roles/{id}")).send()?)?;
+        self.send_ok(
+            self.req(Method::DELETE, &format!("/roles/{id}")),
+            format!("deleting Rauthy role {id}"),
+        )?;
         Ok(())
     }
 
@@ -278,58 +292,74 @@ impl RauthyClient {
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserResponse>> {
         let resp = self
             .req(Method::GET, &format!("/users/email/{email}"))
-            .send()?;
+            .send()
+            .with_context(|| format!("looking up Rauthy user {email}"))?;
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let resp = ok(resp)?;
+        let resp = ok(resp).with_context(|| format!("looking up Rauthy user {email}"))?;
         Ok(Some(resp.json().context("decoding user")?))
     }
 
     pub fn create_user(&self, body: &NewUserRequest) -> Result<()> {
-        ok(self.req(Method::POST, "/users").json(body).send()?)?;
+        self.send_ok(
+            self.req(Method::POST, "/users").json(body),
+            format!("creating Rauthy user {}", body.email),
+        )?;
         Ok(())
     }
 
     pub fn update_user(&self, id: &str, body: &UpdateUserRequest) -> Result<()> {
-        ok(self
-            .req(Method::PUT, &format!("/users/{id}"))
-            .json(body)
-            .send()?)?;
+        self.send_ok(
+            self.req(Method::PUT, &format!("/users/{id}")).json(body),
+            format!("updating Rauthy user {id}"),
+        )?;
         Ok(())
     }
 
     pub fn delete_user(&self, id: &str) -> Result<()> {
-        ok(self.req(Method::DELETE, &format!("/users/{id}")).send()?)?;
+        self.send_ok(
+            self.req(Method::DELETE, &format!("/users/{id}")),
+            format!("deleting Rauthy user {id}"),
+        )?;
         Ok(())
     }
 
     // ----- clients -----
 
     pub fn get_client(&self, id: &str) -> Result<Option<ClientResponse>> {
-        let resp = self.req(Method::GET, &format!("/clients/{id}")).send()?;
+        let resp = self
+            .req(Method::GET, &format!("/clients/{id}"))
+            .send()
+            .with_context(|| format!("looking up Rauthy client {id}"))?;
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let resp = ok(resp)?;
+        let resp = ok(resp).with_context(|| format!("looking up Rauthy client {id}"))?;
         Ok(Some(resp.json().context("decoding client")?))
     }
 
     pub fn create_client(&self, body: &NewClientRequest) -> Result<()> {
-        ok(self.req(Method::POST, "/clients").json(body).send()?)?;
+        self.send_ok(
+            self.req(Method::POST, "/clients").json(body),
+            format!("creating Rauthy client {}", body.id),
+        )?;
         Ok(())
     }
 
     pub fn update_client(&self, id: &str, body: &UpdateClientRequest) -> Result<()> {
-        ok(self
-            .req(Method::PUT, &format!("/clients/{id}"))
-            .json(body)
-            .send()?)?;
+        self.send_ok(
+            self.req(Method::PUT, &format!("/clients/{id}")).json(body),
+            format!("updating Rauthy client {id}"),
+        )?;
         Ok(())
     }
 
     pub fn delete_client(&self, id: &str) -> Result<()> {
-        ok(self.req(Method::DELETE, &format!("/clients/{id}")).send()?)?;
+        self.send_ok(
+            self.req(Method::DELETE, &format!("/clients/{id}")),
+            format!("deleting Rauthy client {id}"),
+        )?;
         Ok(())
     }
 
