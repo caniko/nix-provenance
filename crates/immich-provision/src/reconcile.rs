@@ -193,6 +193,14 @@ mod tests {
     }
 
     #[test]
+    fn normalize_email_trims_and_lowercases() {
+        assert_eq!(
+            normalize_email(" Alice@Example.COM \n"),
+            "alice@example.com"
+        );
+    }
+
+    #[test]
     fn update_request_only_contains_declared_safe_drift() {
         let state: State = serde_json::from_str(
             r#"{

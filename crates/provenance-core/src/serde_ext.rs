@@ -29,3 +29,40 @@ pub mod double_option {
         Option::<T>::deserialize(deserializer).map(Some)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[derive(Debug, Deserialize)]
+    struct Enabled {
+        #[serde(default = "default_true")]
+        enabled: bool,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Patch {
+        #[serde(default, deserialize_with = "double_option::deserialize")]
+        label: Option<Option<String>>,
+    }
+
+    #[test]
+    fn default_true_sets_absent_bool_to_true() {
+        let parsed: Enabled = serde_json::from_str("{}").unwrap();
+        assert!(parsed.enabled);
+    }
+
+    #[test]
+    fn double_option_distinguishes_absent_null_and_value() {
+        let absent: Patch = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.label, None);
+
+        let null: Patch = serde_json::from_str(r#"{ "label": null }"#).unwrap();
+        assert_eq!(null.label, Some(None));
+
+        let value: Patch = serde_json::from_str(r#"{ "label": "photos" }"#).unwrap();
+        assert_eq!(value.label, Some(Some("photos".to_string())));
+    }
+}

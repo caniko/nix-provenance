@@ -352,4 +352,56 @@ mod tests {
         assert!(g.contains(&"other".to_string()));
         assert!(g.contains(&"internal".to_string()));
     }
+
+    #[test]
+    fn client_drift_ignores_unordered_sets() {
+        let current = client::ClientResponse {
+            redirect_uris: vec!["https://app/alt".to_string(), "https://app/cb".to_string()],
+            scopes: vec![
+                "email".to_string(),
+                "openid".to_string(),
+                "profile".to_string(),
+            ],
+            flows_enabled: vec![
+                "refresh_token".to_string(),
+                "authorization_code".to_string(),
+            ],
+            enabled: true,
+        };
+        let spec: ClientSpec = serde_json::from_value(serde_json::json!({
+            "redirect_uris": ["https://app/cb", "https://app/alt"]
+        }))
+        .unwrap();
+
+        assert!(!client_drifted(&current, &spec));
+    }
+
+    #[test]
+    fn client_drift_detects_disabled_or_missing_redirect() {
+        let spec: ClientSpec = serde_json::from_value(serde_json::json!({
+            "redirect_uris": ["https://app/cb"]
+        }))
+        .unwrap();
+        let disabled = client::ClientResponse {
+            redirect_uris: vec!["https://app/cb".to_string()],
+            scopes: vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string(),
+            ],
+            flows_enabled: vec![
+                "authorization_code".to_string(),
+                "refresh_token".to_string(),
+            ],
+            enabled: false,
+        };
+        assert!(client_drifted(&disabled, &spec));
+
+        let missing_redirect = client::ClientResponse {
+            enabled: true,
+            redirect_uris: Vec::new(),
+            ..disabled
+        };
+        assert!(client_drifted(&missing_redirect, &spec));
+    }
 }

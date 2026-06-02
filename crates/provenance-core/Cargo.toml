@@ -15,3 +15,6 @@ serde.workspace = true
 # (rustls-tls vs rustls-tls-native-roots) wins via additive feature unification,
 # so this permissive core never forces a TLS backend and never links openssl.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+
+[dev-dependencies]
+serde_json.workspace = true
