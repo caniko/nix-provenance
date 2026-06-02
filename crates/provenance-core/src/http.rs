@@ -21,7 +21,7 @@ pub fn build_blocking_client(
 ) -> Result<Client> {
     let mut builder = Client::builder()
         .danger_accept_invalid_certs(accept_invalid_certs)
-        .user_agent(user_agent.to_owned());
+        .user_agent(user_agent);
     if let Some(timeout) = timeout {
         builder = builder.timeout(timeout);
     }

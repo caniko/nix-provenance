@@ -14,10 +14,14 @@ pub fn opt_vec(v: &[String]) -> Option<Vec<String>> {
 /// Order-insensitive equality of two string collections.
 #[must_use]
 pub fn same_set(a: &[String], b: &[String]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
     let mut a: Vec<&String> = a.iter().collect();
     let mut b: Vec<&String> = b.iter().collect();
-    a.sort();
-    b.sort();
+    a.sort_unstable();
+    b.sort_unstable();
     a == b
 }
 
@@ -32,7 +36,8 @@ pub fn is_subset(needle: &[String], haystack: &[String]) -> bool {
 /// out-of-band ones are never stripped.
 #[must_use]
 pub fn union(current: &[String], wanted: &[String]) -> Vec<String> {
-    let mut out = current.to_vec();
+    let mut out = Vec::with_capacity(current.len() + wanted.len());
+    out.extend_from_slice(current);
     for w in wanted {
         if !out.contains(w) {
             out.push(w.clone());

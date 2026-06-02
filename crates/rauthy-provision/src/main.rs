@@ -198,13 +198,18 @@ fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserReques
     // roles/groups are the UNION of current + declared so out-of-band roles
     // (e.g. rauthy_admin) survive.
     let cur_groups = user.groups.as_deref().unwrap_or_default();
+    let groups = union(cur_groups, &spec.groups);
     UpdateUserRequest {
         email: user.email.clone(),
         given_name: user.given_name.clone(),
         family_name: user.family_name.clone(),
         language: user.language.clone(),
         roles: union(&user.roles, &spec.roles),
-        groups: opt_vec(&union(cur_groups, &spec.groups)),
+        groups: if groups.is_empty() {
+            None
+        } else {
+            Some(groups)
+        },
         enabled: user.enabled,
         email_verified: user.email_verified,
     }
