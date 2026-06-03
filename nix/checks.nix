@@ -36,6 +36,7 @@
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
   stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
+  kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
 
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in {
@@ -107,6 +108,19 @@ in {
   in
     runCommand "stalwart-module-eval" {} ''
       test -n ${lib.escapeShellArg directory}
+      touch $out
+    '';
+
+  # The kanidm-credentials reconcile module must evaluate to a concrete oneshot,
+  # and its reconcile script must pass shellcheck (forced by depending on the
+  # built ExecStart below).
+  kanidm-credentials-module-eval = let
+    svc = kanidmCredentialsEval.config.systemd.services.kanidm-credentials;
+    serviceConfig = builtins.toJSON svc.serviceConfig;
+  in
+    runCommand "kanidm-credentials-module-eval" {} ''
+      test -n ${lib.escapeShellArg serviceConfig}
+      test -x ${svc.serviceConfig.ExecStart}
       touch $out
     '';
 

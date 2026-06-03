@@ -90,6 +90,7 @@
         vikunja = import ./nix/modules/config-only/vikunja.nix {inherit self;};
         forgejo = import ./nix/modules/service-oidc/forgejo.nix {inherit self;};
         stalwart = import ./nix/modules/ldap/stalwart.nix {inherit self;};
+        kanidmCredentials = import ./nix/modules/kanidm/credentials.nix {inherit self;};
         externalApp = import ./nix/modules/adapter/external-app.nix {inherit self;};
         default = {imports = [self.nixosModules.rauthy];};
       };

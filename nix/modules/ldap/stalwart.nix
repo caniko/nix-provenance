@@ -20,10 +20,14 @@ in {
       description = "services.stalwart.settings.directory.<id> key to populate.";
     };
 
-    address = mkOption {
+    url = mkOption {
       type = types.str;
       example = "ldaps://auth.tartanoglu.com:3636";
-      description = "kanidm LDAP gateway URL. ldaps is recommended.";
+      description = ''
+        kanidm LDAP gateway URL (Stalwart `directory.<id>.url`). ldaps is
+        recommended; with an ldaps:// URL implicit TLS is used regardless of the
+        StartTLS `tls.enable` flag.
+      '';
     };
 
     baseDn = mkOption {
@@ -36,9 +40,45 @@ in {
       type = types.str;
       default = "dn=token";
       description = ''
-        LDAP bind DN for a kanidm service-account API token. Kanidm documents
-        API-token LDAP binds as dn=token, with the token supplied as the bind
-        secret.
+        LDAP bind DN for the SEARCH bind. Kanidm only grants elevated read
+        (e.g. to persons' mail) to a service-account API token bound as
+        `dn=token` — a person/posix bind collapses to anonymous read and cannot
+        see mail. So keep this `dn=token` and supply a service-account token as
+        the bind secret.
+      '';
+    };
+
+    authMethod = mkOption {
+      type = types.enum ["template" "lookup" "default"];
+      default = "template";
+      description = ''
+        Per-user authentication method (Stalwart `bind.auth.method`). kanidm
+        requires a real LDAP *bind* to authenticate a user, so the Stalwart
+        default ("default" = local password-hash comparison) does NOT work with
+        kanidm. Use "template" (bind as `authTemplate`; login is the kanidm
+        name/spn) or "lookup" (search via the service bind, then bind as the
+        discovered DN; login may be any attribute `filter.name` matches, e.g.
+        mail).
+      '';
+    };
+
+    authTemplate = mkOption {
+      type = types.str;
+      default = "identifier=?";
+      description = ''
+        Bind-DN template for authMethod = "template" (Stalwart
+        `bind.auth.template`). `?` is replaced with the supplied login. kanidm
+        accepts `identifier=<name|spn>` as a bind DN.
+      '';
+    };
+
+    authSearch = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        For authMethod = "template": whether the post-auth principal load reuses
+        the user's connection (true) or the service bind (false). kanidm's
+        attribute reads need the token service bind, so this stays false.
       '';
     };
 
@@ -104,7 +144,8 @@ in {
     services.stalwart.settings = {
       storage.directory = cfg.directoryId;
       directory.${cfg.directoryId} = ldapLib.kanidmLdapDirectory {
-        inherit (cfg) address baseDn bindDn bindSecretMacro allowInvalidCerts;
+        inherit (cfg) url baseDn bindDn bindSecretMacro allowInvalidCerts;
+        inherit (cfg) authMethod authTemplate authSearch;
       };
     };
 

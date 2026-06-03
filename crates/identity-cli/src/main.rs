@@ -46,6 +46,11 @@ struct KanidmArgs {
     #[arg(long, env = "KANIDM_IDM_ADMIN_PASSWORD_FILE")]
     idm_admin_password_file: String,
 
+    /// File containing the `admin` password. Required only for domain-level
+    /// operations (e.g. `set-ldap-unix-bind`) that `idm_admin` cannot perform.
+    #[arg(long, env = "KANIDM_ADMIN_PASSWORD_FILE")]
+    admin_password_file: Option<String>,
+
     #[command(subcommand)]
     command: KanidmCommand,
 }
@@ -56,11 +61,99 @@ enum KanidmCommand {
     /// Provision primary, optional TOTP, backup-code, and POSIX credentials.
     Provision(KanidmProvisionArgs),
 
-    /// Toggle LDAP binds against Kanidm POSIX passwords.
+    /// Toggle LDAP binds against Kanidm POSIX passwords (authenticates as
+    /// `admin`; requires --admin-password-file).
     SetLdapUnixBind {
         /// Enable or disable POSIX-password LDAP binds.
         #[arg(required = true, action = clap::ArgAction::Set)]
         enabled: bool,
+    },
+
+    /// Set only the POSIX/unix password for a person (no primary credential
+    /// update, so it bypasses MFA-required commit gating).
+    SetPosixPassword {
+        /// Target Kanidm account name.
+        account: String,
+
+        /// File containing the POSIX/LDAP password to set.
+        #[arg(long)]
+        posix_from: String,
+    },
+
+    /// Service-account operations (idiomatic LDAP search-bind identity).
+    ServiceAccount {
+        #[command(subcommand)]
+        command: ServiceAccountCommand,
+    },
+
+    /// Add members to a Kanidm group (e.g. grant a service account mail read
+    /// via `idm_people_pii_read`).
+    GroupAddMembers {
+        /// Group name.
+        group: String,
+
+        /// One or more member names to add.
+        #[arg(required = true)]
+        members: Vec<String>,
+    },
+
+    /// Remove members from a Kanidm group.
+    GroupRemoveMembers {
+        /// Group name.
+        group: String,
+
+        /// One or more member names to remove.
+        #[arg(required = true)]
+        members: Vec<String>,
+    },
+
+    /// Delete a person's POSIX/unix credential.
+    DeletePosixPassword {
+        /// Target Kanidm account name.
+        account: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+#[cfg(feature = "kanidm")]
+enum ServiceAccountCommand {
+    /// Idempotently create a service account.
+    Create {
+        /// Service account name.
+        name: String,
+
+        /// Display name.
+        #[arg(long)]
+        display_name: String,
+
+        /// Group or account that manages this service account afterwards.
+        #[arg(long, default_value = "idm_admins")]
+        managed_by: String,
+    },
+
+    /// Generate a fresh API token for a service account. The token is a secret;
+    /// write it to a file with --out (mode 0600) rather than echoing it.
+    ApiToken {
+        /// Service account name.
+        name: String,
+
+        /// Token label.
+        #[arg(long, default_value = "identity-cli")]
+        label: String,
+
+        /// Issue a read-write token (default: read-only).
+        #[arg(long)]
+        read_write: bool,
+
+        /// Write the token to this file (0600) instead of stdout.
+        #[arg(long)]
+        out: Option<String>,
+    },
+
+    /// Delete a service account (and its API tokens).
+    Delete {
+        /// Service account name.
+        name: String,
     },
 }
 
@@ -159,6 +252,7 @@ async fn run_kanidm(args: KanidmArgs) -> Result<()> {
     let config = identity_cli::kanidm::ClientConfig {
         url: args.url,
         idm_admin_password_file: args.idm_admin_password_file,
+        admin_password_file: args.admin_password_file,
     };
 
     match args.command {
@@ -180,8 +274,86 @@ async fn run_kanidm(args: KanidmArgs) -> Result<()> {
             identity_cli::kanidm::set_ldap_unix_bind(&config, enabled).await?;
             println!("ldap_unix_bind={enabled}");
         }
+        KanidmCommand::SetPosixPassword {
+            account,
+            posix_from,
+        } => {
+            identity_cli::kanidm::set_posix_password(&config, &account, &posix_from).await?;
+            println!("posix_password_set={account}");
+        }
+        KanidmCommand::ServiceAccount { command } => match command {
+            ServiceAccountCommand::Create {
+                name,
+                display_name,
+                managed_by,
+            } => {
+                let created = identity_cli::kanidm::ensure_service_account(
+                    &config,
+                    &name,
+                    &display_name,
+                    &managed_by,
+                )
+                .await?;
+                println!(
+                    "service_account={name} {}",
+                    if created { "created" } else { "exists" }
+                );
+            }
+            ServiceAccountCommand::ApiToken {
+                name,
+                label,
+                read_write,
+                out,
+            } => {
+                let token =
+                    identity_cli::kanidm::generate_api_token(&config, &name, &label, read_write)
+                        .await?;
+                match out {
+                    Some(path) => {
+                        write_secret_file(&path, &token)?;
+                        println!("api_token_written={path}");
+                    }
+                    None => println!("{token}"),
+                }
+            }
+            ServiceAccountCommand::Delete { name } => {
+                identity_cli::kanidm::delete_service_account(&config, &name).await?;
+                println!("service_account_deleted={name}");
+            }
+        },
+        KanidmCommand::GroupAddMembers { group, members } => {
+            identity_cli::kanidm::group_add_members(&config, &group, &members).await?;
+            println!("group_members_added={group}");
+        }
+        KanidmCommand::GroupRemoveMembers { group, members } => {
+            identity_cli::kanidm::group_remove_members(&config, &group, &members).await?;
+            println!("group_members_removed={group}");
+        }
+        KanidmCommand::DeletePosixPassword { account } => {
+            identity_cli::kanidm::delete_posix_password(&config, &account).await?;
+            println!("posix_password_deleted={account}");
+        }
     }
 
+    Ok(())
+}
+
+/// Write a secret to a file with `0600` permissions and no trailing newline so
+/// downstream consumers read the exact token bytes.
+#[cfg(feature = "kanidm")]
+fn write_secret_file(path: &str, secret: &str) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|err| anyhow::anyhow!("opening {path} for token write: {err}"))?;
+    file.write_all(secret.as_bytes())
+        .map_err(|err| anyhow::anyhow!("writing token to {path}: {err}"))?;
     Ok(())
 }
 

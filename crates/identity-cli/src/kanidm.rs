@@ -14,6 +14,7 @@ use totp_rs::{Algorithm, TOTP};
 
 const DEFAULT_URL: &str = "https://auth.tartanoglu.com";
 const IDM_ADMIN: &str = "idm_admin";
+const ADMIN: &str = "admin";
 const GENERATED_PASSWORD_LEN: usize = 24;
 const TOTP_LABEL: &str = "identity-cli";
 
@@ -24,6 +25,11 @@ pub struct ClientConfig {
     pub url: String,
     /// Path containing the `idm_admin` password.
     pub idm_admin_password_file: String,
+    /// Optional path containing the `admin` password, required only for
+    /// domain-level operations (e.g. `set-ldap-unix-bind`) that `idm_admin`
+    /// cannot perform — kanidm's ACPs hide the domain entry from `idm_admin`,
+    /// so those operations must authenticate as `admin`.
+    pub admin_password_file: Option<String>,
 }
 
 impl ClientConfig {
@@ -32,6 +38,7 @@ impl ClientConfig {
         Self {
             url: DEFAULT_URL.to_string(),
             idm_admin_password_file,
+            admin_password_file: None,
         }
     }
 }
@@ -128,30 +135,165 @@ pub async fn provision(
 }
 
 /// Toggle whether LDAP accepts Kanidm POSIX passwords for bind.
+///
+/// This mutates the kanidm *domain* entry, which `idm_admin` cannot see or
+/// modify (kanidm returns `404 NoMatchingEntries`). It must authenticate as
+/// `admin`, so `ClientConfig::admin_password_file` is required.
 pub async fn set_ldap_unix_bind(config: &ClientConfig, enable: bool) -> Result<()> {
-    let client = authenticated_client(config).await?;
+    let client = authenticated_admin_client(config).await?;
     client
         .idm_set_ldap_allow_unix_password_bind(enable)
         .await
         .kanidm_context("setting ldap allow unix password bind")
 }
 
+/// Set only the POSIX (unix) password for a person, without touching the
+/// primary credential.
+///
+/// Unlike [`provision`], this never opens a credential-update session, so it is
+/// not subject to the account's MFA policy (a password-only primary commit is
+/// rejected with `MfaRequired` on MFA-required accounts). The POSIX credential
+/// is single-factor by design and is what kanidm's LDAP unix-password bind
+/// checks, so this is the correct path for LDAP/mail auth on MFA-required
+/// accounts.
+pub async fn set_posix_password(
+    config: &ClientConfig,
+    account: &str,
+    posix_password_file: &str,
+) -> Result<()> {
+    let password = read_secret_file(posix_password_file)
+        .with_context(|| format!("reading posix password file {posix_password_file}"))?;
+    let client = authenticated_client(config).await?;
+    client
+        .idm_person_account_unix_cred_put(account, &password)
+        .await
+        .kanidm_context(format!("setting POSIX password for {account}"))
+}
+
+/// Idempotently ensure a kanidm service account exists.
+///
+/// Service accounts are the idiomatic identity for an application's LDAP search
+/// bind (bound as `dn=token` with an API token). `managed_by` is the group or
+/// account that administers it afterwards (it must include the caller so the
+/// caller can subsequently mint tokens). Returns `true` if the account was
+/// created, `false` if it already existed.
+pub async fn ensure_service_account(
+    config: &ClientConfig,
+    name: &str,
+    display_name: &str,
+    managed_by: &str,
+) -> Result<bool> {
+    let client = authenticated_client(config).await?;
+    let existing = client
+        .idm_service_account_get(name)
+        .await
+        .kanidm_context(format!("checking whether service account {name} exists"))?;
+    if existing.is_some() {
+        return Ok(false);
+    }
+    client
+        .idm_service_account_create(name, display_name, managed_by)
+        .await
+        .kanidm_context(format!("creating service account {name}"))?;
+    Ok(true)
+}
+
+/// Generate a fresh API token for a service account.
+///
+/// The returned token is a secret (a JWS) and is the bind secret used by an
+/// LDAP consumer binding as `dn=token`. Read-only by default; `read_write`
+/// only when the consumer must write to kanidm. No expiry is set.
+pub async fn generate_api_token(
+    config: &ClientConfig,
+    account: &str,
+    label: &str,
+    read_write: bool,
+) -> Result<String> {
+    let client = authenticated_client(config).await?;
+    client
+        .idm_service_account_generate_api_token(account, label, None, read_write, false)
+        .await
+        .kanidm_context(format!("generating API token for {account}"))
+}
+
+/// Add members to a kanidm group.
+///
+/// Used to grant a service account the read access it needs over LDAP — e.g.
+/// adding it to `idm_people_pii_read` so the search bind can read persons'
+/// `mail` attribute (service accounts cannot read PII by default).
+pub async fn group_add_members(
+    config: &ClientConfig,
+    group: &str,
+    members: &[String],
+) -> Result<()> {
+    let client = authenticated_client(config).await?;
+    let refs: Vec<&str> = members.iter().map(String::as_str).collect();
+    client
+        .idm_group_add_members(group, &refs)
+        .await
+        .kanidm_context(format!("adding members to group {group}"))
+}
+
+/// Remove members from a kanidm group (inverse of [`group_add_members`]).
+pub async fn group_remove_members(
+    config: &ClientConfig,
+    group: &str,
+    members: &[String],
+) -> Result<()> {
+    let client = authenticated_client(config).await?;
+    let refs: Vec<&str> = members.iter().map(String::as_str).collect();
+    client
+        .idm_group_remove_members(group, &refs)
+        .await
+        .kanidm_context(format!("removing members from group {group}"))
+}
+
+/// Delete a service account (inverse of [`ensure_service_account`]). Also
+/// destroys any API tokens it owns.
+pub async fn delete_service_account(config: &ClientConfig, name: &str) -> Result<()> {
+    let client = authenticated_client(config).await?;
+    client
+        .idm_service_account_delete(name)
+        .await
+        .kanidm_context(format!("deleting service account {name}"))
+}
+
+/// Delete a person's POSIX/unix credential (inverse of [`set_posix_password`]).
+pub async fn delete_posix_password(config: &ClientConfig, account: &str) -> Result<()> {
+    let client = authenticated_client(config).await?;
+    client
+        .idm_person_account_unix_cred_delete(account)
+        .await
+        .kanidm_context(format!("deleting POSIX credential for {account}"))
+}
+
 async fn authenticated_client(config: &ClientConfig) -> Result<kanidm_client::KanidmClient> {
-    let password = read_secret_file(&config.idm_admin_password_file).with_context(|| {
-        format!(
-            "reading idm_admin password file {}",
-            config.idm_admin_password_file
-        )
+    authenticated_client_as(&config.url, IDM_ADMIN, &config.idm_admin_password_file).await
+}
+
+async fn authenticated_admin_client(config: &ClientConfig) -> Result<kanidm_client::KanidmClient> {
+    let password_file = config.admin_password_file.as_deref().ok_or_else(|| {
+        anyhow!("this operation requires the kanidm `admin` account; pass --admin-password-file")
     })?;
+    authenticated_client_as(&config.url, ADMIN, password_file).await
+}
+
+async fn authenticated_client_as(
+    url: &str,
+    account: &str,
+    password_file: &str,
+) -> Result<kanidm_client::KanidmClient> {
+    let password = read_secret_file(password_file)
+        .with_context(|| format!("reading {account} password file {password_file}"))?;
     let client = KanidmClientBuilder::new()
-        .address(config.url.clone())
+        .address(url.to_string())
         .build()
-        .kanidm_context(format!("building kanidm client for {}", config.url))?;
+        .kanidm_context(format!("building kanidm client for {url}"))?;
 
     client
-        .auth_simple_password(IDM_ADMIN, &password)
+        .auth_simple_password(account, &password)
         .await
-        .kanidm_context("authenticating to kanidm as idm_admin")?;
+        .kanidm_context(format!("authenticating to kanidm as {account}"))?;
 
     Ok(client)
 }

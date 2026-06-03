@@ -19,7 +19,7 @@
 
     kanidmLdap = {
       enable = true;
-      address = "ldaps://auth.example.com:3636";
+      url = "ldaps://auth.example.com:3636";
       baseDn = "dc=auth,dc=example,dc=com";
       bindSecretMacro = "%{file:/run/credentials/stalwart.service/kanidm_bind}%";
     };
