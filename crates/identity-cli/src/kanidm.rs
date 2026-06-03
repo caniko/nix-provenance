@@ -170,6 +170,39 @@ pub async fn set_posix_password(
         .kanidm_context(format!("setting POSIX password for {account}"))
 }
 
+/// Extend a person with POSIX (unix) account attributes.
+pub async fn extend_posix_account(
+    config: &ClientConfig,
+    account: &str,
+    gid_number: Option<u32>,
+    login_shell: Option<&str>,
+) -> Result<()> {
+    let client = authenticated_client(config).await?;
+    client
+        .idm_person_account_unix_extend(account, gid_number, login_shell)
+        .await
+        .kanidm_context(format!("extending {account} with POSIX attributes"))
+}
+
+/// Return whether a Kanidm person exists.
+pub async fn person_exists(config: &ClientConfig, account: &str) -> Result<bool> {
+    let client = authenticated_client(config).await?;
+    let person = client
+        .idm_person_account_get(account)
+        .await
+        .kanidm_context(format!("checking whether person {account} exists"))?;
+    Ok(person.is_some())
+}
+
+/// Delete a Kanidm person account.
+pub async fn delete_person(config: &ClientConfig, account: &str) -> Result<()> {
+    let client = authenticated_client(config).await?;
+    client
+        .idm_person_account_delete(account)
+        .await
+        .kanidm_context(format!("deleting person {account}"))
+}
+
 /// Idempotently ensure a kanidm service account exists.
 ///
 /// Service accounts are the idiomatic identity for an application's LDAP search

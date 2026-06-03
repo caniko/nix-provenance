@@ -35,8 +35,9 @@ module:
 
 - `adapter.kanidmLogin`: credential descriptor (constant)
 - `adapter.passwordInitByEmail { redirectUri ? null; }`: credential descriptor
-- `adapter.rauthyUsers { users, loginUrl ? null, language ? "en"; }`:
-  renders `services.rauthy.provision.users`
+- `adapter.rauthyUsers { users, loginUrl ? null, language ? "en", commonGroups ? []; }`:
+  renders `services.rauthy.provision.users`. `commonGroups` is applied to every
+  user (on top of each user's own `groups`)
 - `adapter.rauthyGroupsOf users`: the distinct rauthy group names referenced
 - `adapter.kanidmOAuth2System { originUrl, group, ... }`: generic OAuth2 system
   attrset for kanidm
@@ -88,14 +89,28 @@ in {
 This sets:
 
 - `services.rauthy.provision.clients.pink-raven`: a public PKCE client
+  (`confidential = false`, `enablePkce = true`)
 - `services.rauthy.provision.users."can@tartanoglu.com"`: passwordless,
   federated auto-link user
 - `services.rauthy.provision.users."efirley@protonmail.com"` and
-  `"carolinestahl@gmx.net"`: native users with `sendPasswordEmail = true`
-- `services.rauthy.provision.groups."pink-raven-users"`: the access group
+  `"carolinestahl@gmx.net"`: native users with `sendPasswordEmail = true` and
+  `passwordEmailRedirectUri = loginUrl`
 
-Access control still lives in the application. Being a Rauthy user here only
-lets these users authenticate; the app decides their roles.
+No rauthy group is created here: `accessGroup` is unset, because pink-raven
+gates access from its own application-side allowlist. Access control still
+lives in the application — being a Rauthy user here only lets these users
+authenticate; the app decides their roles.
+
+### The `accessGroup` option
+
+`accessGroup` controls whether the adapter provisions an app-wide group:
+
+- **rauthy backend** — optional. When set (e.g. `accessGroup =
+  "pink-raven-users"`) the group is created **and assigned to every one of the
+  app's users**. When unset (the default), no group is created — leave it unset
+  when the app gates access itself.
+- **kanidm backend** — a group is always required (it is the OAuth2 scopeMap
+  target); an unset `accessGroup` falls back to `"<name>-users"`.
 
 ## Kanidm backend
 
@@ -119,6 +134,27 @@ services.provenance.externalApps.internal-tool = {
 This sets `services.kanidm.provision.systems.oauth2.internal-tool`,
 `services.kanidm.provision.persons.dejana`, and the `internal-tool-users`
 group.
+
+## Real-world consumer: canix
+
+The adapter factors out a pattern that canix previously hand-wrote in
+`root/hosts/thething/server/rauthy.nix` — `usersFromKanidmPersons` to federate
+the internal humans, then external users appended with `sendPasswordEmail`. The
+live wiring there shows two details worth copying:
+
+- **A user can be written by both the federation and the adapter.** canix
+  federates every internal human (including `can`) into Rauthy with the
+  `internal`/`bekiper` groups (for a separate app), and *also* lists `can` in
+  the pink-raven adapter block with `adapter.kanidmLogin`. Both definitions key
+  the same email, so they **merge into one Rauthy user**. For the merge to be
+  conflict-free the scalar fields must agree: give the adapter user the **same
+  `displayName` as the kanidm person** so the derived given/family names match.
+  Groups are list-merged (union), so `can` ends up with the federation's
+  `internal`/`bekiper` groups and the adapter adds none (no `accessGroup`).
+- **`mailServerConfigured = true` is the SMTP acknowledgement.** On that host
+  Rauthy relays the set-password mail through Stalwart (the `SMTP_*` env in the
+  Rauthy environment file), so the warning is acknowledged. Without a working
+  mail path, `eric`/`caroline` never receive their link.
 
 ## Pitfalls
 

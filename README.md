@@ -10,8 +10,8 @@ Rust crate — the directory taxonomy makes that explicit:
 | Kind | Provisions | Tenants |
 |------|-----------|---------|
 | **IdP** (`nix/modules/idp/`) | an identity provider | `rauthy-provision` |
-| **service-side OIDC** (`nix/modules/service-oidc/`) | a downstream service's users + OIDC wiring | `immich-provision`, Forgejo |
-| **config-only** (`nix/modules/config-only/`) | service OIDC via shared Nix only, no crate | Vikunja |
+| **service-side OIDC** (`nix/modules/service-oidc/`) | a downstream service's users + OIDC wiring | `immich-provision`, `vikunja-provision`, Forgejo |
+| **config-only** (`nix/modules/config-only/`) | service OIDC via shared Nix only, no crate | Vikunja SSO |
 | **LDAP** (`nix/modules/ldap/`) | LDAP-backed services | Stalwart |
 | **adapter** (`nix/modules/adapter/`) | a non-tenant third-party app's users + OIDC client, into kanidm or rauthy | pink-raven (consumer) |
 
@@ -21,6 +21,7 @@ Rust crate — the directory taxonomy makes that explicit:
 |-------|-----------|---------|
 | [`immich-provision`](crates/immich-provision) | Immich users via a patched short-lived provision-token | `AGPL-3.0-only` |
 | [`rauthy-provision`](crates/rauthy-provision) | Rauthy users / groups / roles / OIDC clients | `MIT OR Apache-2.0` |
+| [`vikunja-provision`](crates/vikunja-provision) | Vikunja teams and memberships via the API | `MIT OR Apache-2.0` |
 
 See [LICENSING.md](LICENSING.md) for the per-path SPDX map and the
 permissive-core rule. See [docs/architecture.md](docs/architecture.md) for the
@@ -28,8 +29,8 @@ tenant taxonomy and the add-a-tenant checklist.
 
 ## Flake outputs
 
-- `packages.<system>.{immich-provision,rauthy-provision}`
-- `nixosModules.{immich,rauthy,vikunja,forgejo,stalwart,externalApp}` (plus
+- `packages.<system>.{immich-provision,rauthy-provision,vikunja-provision}`
+- `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,externalApp}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter}` — `usersFromKanidmPersons`
   for Immich/Rauthy, service-specific `kanidmOAuth2System` helpers for Immich,
@@ -66,8 +67,9 @@ services.provenance.externalApps.pink-raven = {
 };
 ```
 
-See [docs/adapter-external-apps.md](docs/adapter-external-apps.md) for the full
-surface, the kanidm backend, and the canix consumer wiring.
+See the [Third-party External Apps guide](docs/src/guides/external-apps.md) for
+the full surface, the `accessGroup` option, the kanidm backend, and the canix
+consumer wiring.
 
 ## Development
 

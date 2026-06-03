@@ -80,6 +80,20 @@ enum KanidmCommand {
         posix_from: String,
     },
 
+    /// Extend a person with POSIX/unix account attributes.
+    PosixExtend {
+        /// Target Kanidm account name.
+        account: String,
+
+        /// POSIX gidNumber.
+        #[arg(long)]
+        gid_number: Option<u32>,
+
+        /// POSIX login shell.
+        #[arg(long)]
+        login_shell: Option<String>,
+    },
+
     /// Service-account operations (idiomatic LDAP search-bind identity).
     ServiceAccount {
         #[command(subcommand)]
@@ -105,6 +119,18 @@ enum KanidmCommand {
         /// One or more member names to remove.
         #[arg(required = true)]
         members: Vec<String>,
+    },
+
+    /// Return whether a Kanidm person account exists.
+    PersonExists {
+        /// Target Kanidm account name.
+        account: String,
+    },
+
+    /// Delete a Kanidm person account.
+    DeletePerson {
+        /// Target Kanidm account name.
+        account: String,
     },
 
     /// Delete a person's POSIX/unix credential.
@@ -281,6 +307,20 @@ async fn run_kanidm(args: KanidmArgs) -> Result<()> {
             identity_cli::kanidm::set_posix_password(&config, &account, &posix_from).await?;
             println!("posix_password_set={account}");
         }
+        KanidmCommand::PosixExtend {
+            account,
+            gid_number,
+            login_shell,
+        } => {
+            identity_cli::kanidm::extend_posix_account(
+                &config,
+                &account,
+                gid_number,
+                login_shell.as_deref(),
+            )
+            .await?;
+            println!("posix_extended={account}");
+        }
         KanidmCommand::ServiceAccount { command } => match command {
             ServiceAccountCommand::Create {
                 name,
@@ -328,6 +368,17 @@ async fn run_kanidm(args: KanidmArgs) -> Result<()> {
         KanidmCommand::GroupRemoveMembers { group, members } => {
             identity_cli::kanidm::group_remove_members(&config, &group, &members).await?;
             println!("group_members_removed={group}");
+        }
+        KanidmCommand::PersonExists { account } => {
+            let exists = identity_cli::kanidm::person_exists(&config, &account).await?;
+            println!(
+                "person={account} {}",
+                if exists { "exists" } else { "missing" }
+            );
+        }
+        KanidmCommand::DeletePerson { account } => {
+            identity_cli::kanidm::delete_person(&config, &account).await?;
+            println!("person_deleted={account}");
         }
         KanidmCommand::DeletePosixPassword { account } => {
             identity_cli::kanidm::delete_posix_password(&config, &account).await?;
