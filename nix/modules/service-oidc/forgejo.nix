@@ -6,6 +6,7 @@
 }: let
   inherit (lib) mkEnableOption mkIf mkOption types;
   cfg = config.services.forgejo.provision;
+  forgejoConfig = "${config.services.forgejo.customDir}/conf/app.ini";
 
   seedScript = pkgs.writeShellScript "forgejo-seed-oidc" ''
     set -eu
@@ -18,10 +19,17 @@
 
     secret="$(< "$CREDENTIALS_DIRECTORY/oidc-secret")"
     name=${lib.escapeShellArg cfg.authName}
+    forgejo_cli() {
+      forgejo \
+        --work-path ${lib.escapeShellArg config.services.forgejo.stateDir} \
+        --custom-path ${lib.escapeShellArg config.services.forgejo.customDir} \
+        --config ${lib.escapeShellArg forgejoConfig} \
+        "$@"
+    }
 
     # Older Forgejo can emit vertical ID:/Name: lines; newer Forgejo emits a
     # whitespace/tab table. Missing an existing source would create duplicates.
-    list="$(forgejo admin auth list --vertical 2>/dev/null || forgejo admin auth list 2>/dev/null || true)"
+    list="$(forgejo_cli admin auth list --vertical 2>/dev/null || forgejo_cli admin auth list 2>/dev/null || true)"
     id="$(printf '%s\n' "$list" | awk -v n="$name" '
       /^ID:/   { cur=$2 }
       /^Name:/ { if ($2 == n) { print cur; exit } }
@@ -29,7 +37,7 @@
     ')"
 
     if [ -z "''${id:-}" ]; then
-      forgejo admin auth add-oauth \
+      forgejo_cli admin auth add-oauth \
         --name "$name" \
         --provider openidConnect \
         --auto-discover-url ${lib.escapeShellArg cfg.discoveryUrl} \
@@ -37,7 +45,7 @@
         --secret "$secret" \
         --scopes ${lib.escapeShellArg cfg.scopes}
     else
-      forgejo admin auth update-oauth \
+      forgejo_cli admin auth update-oauth \
         --id "$id" \
         --name "$name" \
         --provider openidConnect \

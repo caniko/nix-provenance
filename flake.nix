@@ -40,6 +40,13 @@
           inherit lib;
           inherit craneLib src;
         };
+        packages =
+          crates.packages
+          // {
+            docs = docsPackage;
+            site = docsPackage;
+            inherit (pkgs) stalwart stalwart-cli;
+          };
 
         docsPackage = pkgs.stdenv.mkDerivation {
           pname = "nix-provenance-docs";
@@ -60,18 +67,13 @@
           '';
         };
       in {
-        packages =
-          crates.packages
-          // {
-            docs = docsPackage;
-            site = docsPackage;
-            inherit (pkgs) stalwart stalwart-cli;
-          };
+        inherit packages;
 
         checks = import ./nix/checks.nix {
           inherit pkgs nixpkgs craneLib src self system;
           inherit lib;
-          inherit (crates) packages args cargoArtifacts;
+          inherit packages;
+          inherit (crates) args cargoArtifacts;
           docs = docsPackage;
         };
 

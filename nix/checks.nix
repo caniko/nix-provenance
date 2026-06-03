@@ -120,10 +120,14 @@ in {
     '';
 
   forgejo-module-eval = let
-    serviceConfig = builtins.toJSON forgejoEval.config.systemd.services.forgejo-seed-oidc.serviceConfig;
+    svc = forgejoEval.config.systemd.services.forgejo-seed-oidc;
+    serviceConfig = builtins.toJSON svc.serviceConfig;
   in
     runCommand "forgejo-module-eval" {} ''
       test -n ${lib.escapeShellArg serviceConfig}
+      test -x ${svc.serviceConfig.ExecStart}
+      grep -q -- '--config' ${svc.serviceConfig.ExecStart}
+      grep -q -- '/custom/conf/app.ini' ${svc.serviceConfig.ExecStart}
       touch $out
     '';
 
