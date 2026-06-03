@@ -1,9 +1,10 @@
 {lib}: {
   # Emits services.kanidm.provision.systems.oauth2.vikunja.
-  # Vikunja documents a nested object-array vikunja_groups claim for team sync,
-  # but kanidm-provision currently accepts only string claim-map values. Encode
-  # the supported string-claim fallback once here so consumers do not rediscover
-  # that constraint.
+  # Vikunja team sync needs an object-array claim shaped like
+  # [{name, oidcID}], and kanidm-provision can model array claim maps. The
+  # missing support is in kanidm core's richer claim-value model (kanidm#2641),
+  # so the inert string-array fallback is intentionally omitted. Teams are
+  # managed out-of-band by vikunja-provision; see upstreaming/bridges.md.
   kanidmOAuth2System = {
     frontendHostname,
     basicSecretFile,
@@ -11,17 +12,12 @@
     group ? "vikunja-users",
     displayName ? "Vikunja",
     preferShortUsername ? true,
-    scopes ? ["openid" "profile" "email" "vikunja_groups"],
-    groupClaimValues ? {${group} = [group];},
+    scopes ? ["openid" "profile" "email"],
   }: {
     inherit displayName basicSecretFile preferShortUsername;
     public = false;
     originUrl = "https://${frontendHostname}/auth/openid/${providerId}";
     originLanding = "https://${frontendHostname}/";
     scopeMaps.${group} = scopes;
-    claimMaps.vikunja_groups = {
-      joinType = "array";
-      valuesByGroup = groupClaimValues;
-    };
   };
 }

@@ -21,21 +21,25 @@
 
   immichArgs = mkArgs "immich-provision";
   rauthyArgs = mkArgs "rauthy-provision";
+  vikunjaArgs = mkArgs "vikunja-provision";
   identityArgs = mkArgs "identity-cli";
 
   immichDeps = craneLib.buildDepsOnly immichArgs;
   rauthyDeps = craneLib.buildDepsOnly rauthyArgs;
+  vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
 in {
   args = {
     immich-provision = immichArgs;
     rauthy-provision = rauthyArgs;
+    vikunja-provision = vikunjaArgs;
     identity-cli = identityArgs;
   };
 
   cargoArtifacts = {
     immich-provision = immichDeps;
     rauthy-provision = rauthyDeps;
+    vikunja-provision = vikunjaDeps;
     identity-cli = identityDeps;
   };
 
@@ -66,6 +70,16 @@ in {
         meta = {
           description = "Declarative provisioning client for Rauthy (users, groups, roles, OIDC clients)";
           mainProgram = "rauthy-provision";
+          license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    vikunja-provision = craneLib.buildPackage (vikunjaArgs
+      // {
+        cargoArtifacts = vikunjaDeps;
+        meta = {
+          description = "Declarative provisioning client for Vikunja teams and memberships";
+          mainProgram = "vikunja-provision";
           license = with lib.licenses; [mit asl20];
         };
       });

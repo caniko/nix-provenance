@@ -9,9 +9,11 @@ repository root.
 |------|---------|--------|
 | `crates/immich-provision/**` | `AGPL-3.0-only` | immich-provision |
 | `crates/rauthy-provision/**` | `MIT OR Apache-2.0` | rauthy-provision |
+| `crates/vikunja-provision/**` | `MIT OR Apache-2.0` | vikunja-provision |
 | `crates/provenance-core/**` | `MIT OR Apache-2.0` | nix-provenance (shared core) |
 | `nix/lib/immich.nix`, `nix/modules/service-oidc/immich.nix`, `nix/modules/test/immich-eval.nix`, `docs/rfcs/**`, `docs/kanidm-oidc-migration.md`, `docs/src/guides/kanidm-oidc-migration.md`, `docs/src/rfcs/**` | `AGPL-3.0-only` | immich-provision |
 | `nix/lib/rauthy.nix`, `nix/modules/idp/rauthy.nix` | `MIT OR Apache-2.0` | rauthy-provision |
+| `nix/modules/service-oidc/vikunja.nix`, `nix/modules/test/vikunja-provision-eval.nix` | `MIT OR Apache-2.0` | vikunja-provision |
 | `docs/adapter-external-apps.md`, `docs/src/guides/external-apps.md` | `MIT OR Apache-2.0` | nix-provenance |
 | everything else (`flake.nix`, `nix/lib/default.nix`, `nix/packages.nix`, `nix/checks.nix`, root files, `docs/book.toml`, `docs/architecture.md`, `docs/src/{SUMMARY.md,introduction.md,getting-started/**,concepts/**,reference/**}`, `.forgejo/**`) | `MIT OR Apache-2.0` | nix-provenance |
 

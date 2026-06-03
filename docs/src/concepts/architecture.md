@@ -27,8 +27,8 @@ kind:
 | Directory | Kind | Reconciler | Examples |
 |-----------|------|------------|----------|
 | `idp/` | provisions an **identity provider** | Rust crate | `rauthy-provision` (kanidm uses upstream `kanidm-provision`) |
-| `service-oidc/` | wires a **downstream service** to OIDC plus reconciles its users | Rust crate | `immich-provision` |
-| `config-only/` | service OIDC via **shared Nix only** | none | Vikunja-style (future) |
+| `service-oidc/` | wires a **downstream service** to OIDC plus reconciles its users | Rust crate | `immich-provision`, `vikunja-provision` (teams via API; OIDC remains SSO-only) |
+| `config-only/` | service OIDC via **shared Nix only** | none | Vikunja SSO |
 | `ldap/` | **LDAP**-backed services | none (not the HTTP spine) | Stalwart |
 | `adapter/` | a **non-tenant** third-party app's users plus OIDC client, into kanidm or rauthy | none (writes the IdP's own provisioner) | pink-raven (consumer) |
 

@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "plan": {
+    "id": "5d01c58f-e320-44a0-8749-d574ef6b3862",
+    "name": "Plan: `vikunja-provision` — declarative Vikunja team/membership reconciler",
+    "flavor": "codex",
+    "worktype": null,
+    "created_at": 1780477495,
+    "phase_count": 3,
+    "wave_count": 2,
+    "max_chain_depth": 2,
+    "repo_spread": 4,
+    "routing_dist": {
+      "low": 1,
+      "medium": 2
+    },
+    "shape_hash": "fe3a372c8ac114dbf3ea4245884c78c1c557195dad29cb6995ee9ccaa57db6a3"
+  },
+  "triggers": [
+    {
+      "name": "shared-file-contention",
+      "input_value": 1.0,
+      "threshold": 2.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "external-repo-phases",
+      "input_value": 3.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": "External repo coordination"
+    },
+    {
+      "name": "convergence-point",
+      "input_value": 1.0,
+      "threshold": 3.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "ownership-boundary-spread",
+      "input_value": 4.0,
+      "threshold": 2.0,
+      "fired": true,
+      "section_added": "PR sequencing & cross-owner coordination"
+    },
+    {
+      "name": "risk-concentration",
+      "input_value": 0.0,
+      "threshold": 2.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "risk-late-in-plan",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "infrastructure-spof",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "revendor-phase",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "long-serial-chain",
+      "input_value": 2.0,
+      "threshold": 4.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "mid-plan-rerouting",
+      "input_value": 3.0,
+      "threshold": 10.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "trivial-phase-swamp",
+      "input_value": 3.0,
+      "threshold": 4.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "no-integrated-verification",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "routing-tier-inversion",
+      "input_value": 1.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": null
+    },
+    {
+      "name": "mechanical-streak",
+      "input_value": 1.0,
+      "threshold": 3.0,
+      "fired": false,
+      "section_added": null
+    },
+    {
+      "name": "hidden-prerequisite",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": null
+    }
+  ],
+  "phases": [
+    {
+      "ordinal": 1,
+      "slug": "retire-inert-claim",
+      "routing_tier": "low",
+      "files": [
+        "nix/lib/vikunja.nix` — delete the claim block + the `groupClaimValues` param;",
+        "nix/modules/config-only/vikunja.nix` — fix the `scope` default + description."
+      ]
+    },
+    {
+      "ordinal": 2,
+      "slug": "build-crate",
+      "routing_tier": "medium",
+      "files": [
+        "Cargo.toml` (root) — add the crate to `members`.",
+        "crates/vikunja-provision/Cargo.toml` — new (mirror rauthy; no spow).",
+        "crates/vikunja-provision/src/client.rs` — blocking client + business codes.",
+        "crates/vikunja-provision/src/main.rs` — Cli + reconcile + tests.",
+        "crates/vikunja-provision/src/state.rs` — desired-state types.",
+        "crates/vikunja-provision/{LICENSE-MIT,LICENSE-APACHE,README.md}` — new."
+      ]
+    },
+    {
+      "ordinal": 3,
+      "slug": "nix-integration",
+      "routing_tier": "medium",
+      "files": [
+        "REUSE.toml`, `docs/src/reference/licensing.md`, `README.md`, `docs/architecture.md`.",
+        "flake.nix` — `nixosModules.vikunjaProvision` + overlay entry.",
+        "nix/checks.nix` — build/clippy/test + `vikunja-provision-module-eval` (+ optional",
+        "nix/modules/service-oidc/vikunja.nix` — new reconciler module.",
+        "nix/modules/test/vikunja-provision-eval.nix` — new eval test.",
+        "nix/packages.nix` — `vikunja-provision` args/deps/package."
+      ]
+    }
+  ],
+  "meta_heuristics_fired": [
+    "threshold-proximity"
+  ],
+  "tags": {
+    "flavor": "codex",
+    "risk": "low",
+    "scope": "cross-org"
+  },
+  "verify": null
+}

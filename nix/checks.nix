@@ -33,6 +33,7 @@
   immichEval = evalSystem ./modules/test/immich-eval.nix;
   rauthyEval = evalSystem ./modules/test/rauthy-eval.nix;
   vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
+  vikunjaProvisionEval = evalSystem ./modules/test/vikunja-provision-eval.nix;
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
   stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
@@ -44,6 +45,7 @@ in {
   identity-cli = packages.identity-cli;
   immich-provision = packages.immich-provision;
   rauthy-provision = packages.rauthy-provision;
+  vikunja-provision = packages.vikunja-provision;
   stalwart = packages.stalwart;
   stalwart-cli = packages.stalwart-cli;
   docs = docs;
@@ -53,11 +55,17 @@ in {
   identity-clippy = mkClippy "identity-cli";
   immich-clippy = mkClippy "immich-provision";
   rauthy-clippy = mkClippy "rauthy-provision";
+  vikunja-clippy = mkClippy "vikunja-provision";
 
   # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
   identity-test = craneLib.cargoTest (args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;});
   immich-test = craneLib.cargoTest (args.immich-provision // {cargoArtifacts = cargoArtifacts.immich-provision;});
   rauthy-nextest = craneLib.cargoNextest (args.rauthy-provision // {cargoArtifacts = cargoArtifacts.rauthy-provision;});
+  vikunja-test = craneLib.cargoTest (args.vikunja-provision
+    // {
+      cargoArtifacts = cargoArtifacts.vikunja-provision;
+      doCheck = true;
+    });
 
   # Workspace-wide rustfmt.
   fmt = craneLib.cargoFmt {inherit src;};
@@ -94,6 +102,20 @@ in {
   in
     runCommand "vikunja-module-eval" {} ''
       test -n ${lib.escapeShellArg serviceConfig}
+      touch $out
+    '';
+
+  vikunja-provision-module-eval = let
+    svc = vikunjaProvisionEval.config.systemd.services.vikunja-provision;
+    serviceConfig = builtins.toJSON svc.serviceConfig;
+  in
+    runCommand "vikunja-provision-module-eval" {} ''
+      test -n ${lib.escapeShellArg serviceConfig}
+      test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
+      test ${lib.escapeShellArg (toString svc.serviceConfig.RemainAfterExit)} = 1
+      printf '%s\n' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.LoadCredential)} | grep -q 'vikunja-token:/run/secrets/vikunja-provision-token'
+      printf '%s\n' ${lib.escapeShellArg (builtins.toJSON svc.after)} | grep -q 'vikunja.service'
+      test -x ${svc.serviceConfig.ExecStart}
       touch $out
     '';
 
@@ -164,10 +186,12 @@ in {
   tls-feature-isolation = runCommand "tls-feature-isolation" {} ''
     immich='${../crates/immich-provision/Cargo.toml}'
     rauthy='${../crates/rauthy-provision/Cargo.toml}'
+    vikunja='${../crates/vikunja-provision/Cargo.toml}'
     root='${../Cargo.toml}'
     grep -q 'rustls-tls"' "$immich" || { echo "immich reqwest must enable rustls-tls"; exit 1; }
     if grep -q 'native-roots' "$immich"; then echo "immich reqwest must NOT enable native-roots (TLS root drift)"; exit 1; fi
     grep -q 'rustls-tls-native-roots' "$rauthy" || { echo "rauthy reqwest must enable rustls-tls-native-roots"; exit 1; }
+    grep -q 'rustls-tls-native-roots' "$vikunja" || { echo "vikunja reqwest must enable rustls-tls-native-roots"; exit 1; }
     if grep -qE '^[[:space:]]*reqwest[[:space:]]*=' "$root"; then echo "reqwest must NOT be hoisted into [workspace.dependencies]"; exit 1; fi
     touch $out
   '';
@@ -179,9 +203,11 @@ in {
   license-firewall = runCommand "license-firewall" {} ''
     core='${../crates/provenance-core/Cargo.toml}'
     rauthy='${../crates/rauthy-provision/Cargo.toml}'
+    vikunja='${../crates/vikunja-provision/Cargo.toml}'
     grep -q 'license = "MIT OR Apache-2.0"' "$core" || { echo "provenance-core must be MIT OR Apache-2.0"; exit 1; }
     if grep -q 'immich-provision' "$core"; then echo "provenance-core must not depend on the AGPL immich-provision crate"; exit 1; fi
     if grep -q 'immich-provision' "$rauthy"; then echo "rauthy-provision (permissive) must not depend on the AGPL immich-provision crate"; exit 1; fi
+    if grep -q 'immich-provision' "$vikunja"; then echo "vikunja-provision (permissive) must not depend on the AGPL immich-provision crate"; exit 1; fi
     touch $out
   '';
 

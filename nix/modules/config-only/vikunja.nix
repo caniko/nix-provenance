@@ -9,12 +9,10 @@
   envFile = "/run/vikunja-oidc/env";
 in {
   # Vikunja OIDC is config-only: Vikunja self-registers/link users through
-  # OIDC, so there is no HTTP-admin reconciler crate. The kanidm-side
-  # vikunja_groups claim uses the string fallback shape because
-  # kanidm-provision does not yet accept Vikunja's nested object-array team
-  # claim. Redirect URIs are /auth/openid/<providerId>, and the rendered env var
-  # embeds the upper-cased provider id. usernamefallback and emailfallback must
-  # stay paired for existing local accounts to link cleanly.
+  # OIDC, while team membership is managed out-of-band by vikunja-provision.
+  # Redirect URIs are /auth/openid/<providerId>, and the rendered env var embeds
+  # the upper-cased provider id. usernamefallback and emailfallback must stay
+  # paired for existing local accounts to link cleanly.
   options.services.vikunja.oidc = {
     enable = mkEnableOption "declarative Vikunja kanidm OIDC wiring";
 
@@ -48,8 +46,8 @@ in {
 
     scope = mkOption {
       type = types.str;
-      default = "openid profile email vikunja_groups";
-      description = "OIDC scope string; must include vikunja_groups to receive the team claim.";
+      default = "openid profile email";
+      description = "OIDC scope string used for Vikunja login.";
     };
 
     usernamefallback = mkOption {

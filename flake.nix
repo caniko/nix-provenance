@@ -93,6 +93,7 @@
         immich = import ./nix/modules/service-oidc/immich.nix {inherit self;};
         rauthy = import ./nix/modules/idp/rauthy.nix {inherit self;};
         vikunja = import ./nix/modules/config-only/vikunja.nix {inherit self;};
+        vikunjaProvision = import ./nix/modules/service-oidc/vikunja.nix {inherit self;};
         forgejo = import ./nix/modules/service-oidc/forgejo.nix {inherit self;};
         stalwart = import ./nix/modules/ldap/stalwart.nix {inherit self;};
         kanidmCredentials = import ./nix/modules/kanidm/credentials.nix {inherit self;};
@@ -105,6 +106,7 @@
           identity-cli = self.packages.${final.stdenv.hostPlatform.system}.identity-cli;
           immich-provision = self.packages.${final.stdenv.hostPlatform.system}.immich-provision;
           rauthy-provision = self.packages.${final.stdenv.hostPlatform.system}.rauthy-provision;
+          vikunja-provision = self.packages.${final.stdenv.hostPlatform.system}.vikunja-provision;
         }
         // (import ./nix/overlays/stalwart-016.nix final _prev);
 
