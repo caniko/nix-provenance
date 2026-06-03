@@ -98,9 +98,17 @@
         description = "App login-initiating route. Default redirect target for emailed set-password links.";
       };
       accessGroup = mkOption {
-        type = types.str;
-        default = "${name}-users";
-        description = "Group granting access to the app (a rauthy group + scopeMap, or the kanidm scopeMap target).";
+        type = types.nullOr types.str;
+        default = null;
+        example = "${name}-users";
+        description = ''
+          Group granting access to the app. On the rauthy backend it is OPTIONAL:
+          when set, it is created and assigned to every one of the app's users (an
+          app-wide access group); when null no group is created — leave it null
+          when the app gates access itself (e.g. its own allowlist). On the kanidm
+          backend a group is always required (it is the OAuth2 scopeMap target);
+          null falls back to "<name>-users".
+        '';
       };
 
       # ---- OIDC client wiring ----
@@ -154,13 +162,19 @@
     };
   });
 
+  # kanidm always needs a scopeMap target group; fall back to "<name>-users".
+  kanidmGroupOf = n: a:
+    if a.accessGroup != null
+    then a.accessGroup
+    else "${n}-users";
+
   # kanidm originLanding is a required string upstream; only forward it when the
   # consumer set it, otherwise let lib.adapter default it to the first redirect.
-  kanidmSystemFor = a:
+  kanidmSystemFor = n: a:
     adapter.kanidmOAuth2System ({
         displayName = a.displayName;
         originUrl = a.redirectUris;
-        group = a.accessGroup;
+        group = kanidmGroupOf n a;
         public = !a.confidential;
         basicSecretFile = a.basicSecretFile;
         scopes = a.scopes;
@@ -217,35 +231,39 @@ in {
         rauthyApps;
 
       # Merge all rauthy apps' users (keyed by email). Distinct apps keying the
-      # same email is a real conflict (loud Nix merge error) — intentional.
+      # same email is a real conflict (loud Nix merge error) — intentional. An
+      # app's accessGroup, when set, is applied to all its users.
       users = mkMerge (lib.mapAttrsToList (
           _: a:
             adapter.rauthyUsers {
               inherit (a) users;
               loginUrl = a.loginUrl;
+              commonGroups = lib.optional (a.accessGroup != null) a.accessGroup;
             }
         )
         rauthyApps);
 
-      # Auto-provision every referenced rauthy group (accessGroup + per-user).
-      groups = lib.genAttrs (lib.unique (lib.concatMap (a: [a.accessGroup] ++ adapter.rauthyGroupsOf a.users) (lib.attrValues rauthyApps))) (_: {});
+      # Provision only groups actually referenced: a non-null accessGroup plus any
+      # per-user groups. An app that gates access itself (accessGroup = null) adds
+      # no spurious group.
+      groups = lib.genAttrs (lib.unique (lib.concatMap (a: (lib.optional (a.accessGroup != null) a.accessGroup) ++ adapter.rauthyGroupsOf a.users) (lib.attrValues rauthyApps))) (_: {});
     };
 
     # ---- kanidm backend output ----
     services.kanidm.provision = mkIf (kanidmApps != {}) {
-      systems.oauth2 = lib.mapAttrs (_: kanidmSystemFor) kanidmApps;
+      systems.oauth2 = lib.mapAttrs kanidmSystemFor kanidmApps;
 
       persons = mkMerge (lib.mapAttrsToList (
-          _: a:
+          n: a:
             adapter.kanidmPersons {
               inherit (a) users;
-              group = a.accessGroup;
+              group = kanidmGroupOf n a;
             }
         )
         kanidmApps);
 
       # Declare every referenced kanidm group (members auto-derive from persons).
-      groups = lib.genAttrs (lib.unique (lib.concatMap (a: [a.accessGroup] ++ adapter.rauthyGroupsOf a.users) (lib.attrValues kanidmApps))) (_: {});
+      groups = lib.genAttrs (lib.unique (lib.concatMap (n: lib.singleton (kanidmGroupOf n kanidmApps.${n}) ++ adapter.rauthyGroupsOf kanidmApps.${n}.users) (lib.attrNames kanidmApps))) (_: {});
     };
   };
 }

@@ -93,6 +93,9 @@ in rec {
     # their own. Usually the consuming app's login route.
     loginUrl ? null,
     language ? "en",
+    # Groups applied to EVERY user in the set (e.g. an app-wide access group),
+    # on top of each user's own `groups`.
+    commonGroups ? [],
   }:
     lib.mapAttrs' (
       name: u: let
@@ -125,7 +128,7 @@ in rec {
               familyName = u.familyName or nm.family;
               inherit language;
               roles = u.roles or [];
-              groups = u.groups or [];
+              groups = lib.unique (commonGroups ++ (u.groups or []));
             }
             // lib.optionalAttrs emailed {
               sendPasswordEmail = true;

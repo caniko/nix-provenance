@@ -101,7 +101,11 @@ This sets, with no per-app boilerplate:
   (federated auto-link), and `"efirley@protonmail.com"` /
   `"carolinestahl@gmx.net"` — native with `sendPasswordEmail = true` and
   `passwordEmailRedirectUri = loginUrl`.
-- `services.rauthy.provision.groups."pink-raven-users"` — the access group.
+
+No rauthy group is created here: `accessGroup` is unset, because pink-raven
+gates access from its own `oidcSeedUsers` allowlist. Set `accessGroup =
+"pink-raven-users"` if you want an app-wide group created and assigned to every
+user instead.
 
 > Access control still lives where it belongs: pink-raven gates logins from its
 > own `oidcSeedUsers` allowlist. Being a Rauthy user here only lets these three
