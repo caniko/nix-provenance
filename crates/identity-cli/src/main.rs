@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use anyhow::Result;
-#[cfg(any(feature = "kanidm", feature = "bitwarden"))]
+#[cfg(any(feature = "kanidm", feature = "bitwarden", feature = "rauthy"))]
 use clap::Args;
 use clap::{Parser, Subcommand};
 
@@ -29,10 +29,45 @@ enum Commands {
         command: BitwardenCommand,
     },
 
+    /// Rauthy email-credential helpers (list / resend set-password links).
+    #[cfg(feature = "rauthy")]
+    Rauthy(RauthyArgs),
+
     /// Placeholder used only when all feature-gated commands are disabled.
-    #[cfg(not(any(feature = "kanidm", feature = "bitwarden")))]
+    #[cfg(not(any(feature = "kanidm", feature = "bitwarden", feature = "rauthy")))]
     #[command(hide = true)]
     Noop,
+}
+
+#[derive(Args, Debug)]
+#[cfg(feature = "rauthy")]
+struct RauthyArgs {
+    /// Rauthy base URL (the `/auth/v1` API path is appended automatically).
+    #[arg(long, env = "RAUTHY_URL", default_value = "https://id.tartanoglu.com")]
+    url: String,
+
+    /// Path to the rauthy-provision JSON state file — the source of truth for
+    /// which users are email-derived and where their set-password link lands.
+    #[arg(long, env = "RAUTHY_PROVISION_STATE")]
+    state: std::path::PathBuf,
+
+    #[command(subcommand)]
+    command: RauthyCommand,
+}
+
+#[derive(Subcommand, Debug)]
+#[cfg(feature = "rauthy")]
+enum RauthyCommand {
+    /// List every email-derived user (provisioned with an emailed set-password
+    /// link), as defined in the state file.
+    ListEmailUsers,
+
+    /// Resend a user a fresh set-password / reset email. The user may be given
+    /// by email, email local-part, or display/given name.
+    ResetPassword {
+        /// User identifier (email, local-part, or name).
+        username: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -260,7 +295,10 @@ async fn main() -> ExitCode {
         #[cfg(feature = "bitwarden")]
         Commands::Bitwarden { command } => run_bitwarden(command),
 
-        #[cfg(not(any(feature = "kanidm", feature = "bitwarden")))]
+        #[cfg(feature = "rauthy")]
+        Commands::Rauthy(args) => run_rauthy(args).await,
+
+        #[cfg(not(any(feature = "kanidm", feature = "bitwarden", feature = "rauthy")))]
         Commands::Noop => Ok(()),
     };
 
@@ -429,6 +467,30 @@ fn run_bitwarden(command: BitwardenCommand) -> Result<()> {
             identity_cli::bitwarden::upsert_login(item)
         }
     }
+}
+
+#[cfg(feature = "rauthy")]
+async fn run_rauthy(args: RauthyArgs) -> Result<()> {
+    match args.command {
+        RauthyCommand::ListEmailUsers => {
+            let users = identity_cli::rauthy::email_users(&args.state)?;
+            if users.is_empty() {
+                println!("(no email-derived users in {})", args.state.display());
+            }
+            for user in users {
+                match user.name {
+                    Some(name) => println!("{}\t{name}", user.email),
+                    None => println!("{}", user.email),
+                }
+            }
+        }
+        RauthyCommand::ResetPassword { username } => {
+            let user = identity_cli::rauthy::find_user(&args.state, &username)?;
+            identity_cli::rauthy::reset_password(&args.url, &user).await?;
+            println!("reset_email_sent={}", user.email);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "kanidm")]

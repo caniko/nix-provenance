@@ -34,10 +34,21 @@ kanidm_client = { git = "https://github.com/kanidm/kanidm.git", tag = "v1.10.3",
 kanidm_proto = { git = "https://github.com/kanidm/kanidm.git", tag = "v1.10.3", package = "kanidm_proto", optional = true }
 totp-rs = { version = "5", optional = true }
 
+# Rauthy reset-password helpers. async reqwest with rustls (no openssl C dep, so
+# it cross-compiles to aarch64 like rauthy-provision); TLS feature kept LOCAL —
+# do not hoist into [workspace.dependencies]. spow solves Rauthy's request_reset
+# Proof-of-Work (server feature = the native solver), matching rauthy-provision.
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls-native-roots",
+], optional = true }
+spow = { version = "0.6", default-features = false, features = ["server"], optional = true }
+
 [features]
-default = ["kanidm", "bitwarden"]
+default = ["kanidm", "bitwarden", "rauthy"]
 kanidm = ["dep:kanidm_client", "dep:kanidm_proto", "dep:totp-rs"]
 bitwarden = ["dep:base64"]
+rauthy = ["dep:reqwest", "dep:spow"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

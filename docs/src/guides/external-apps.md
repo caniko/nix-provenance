@@ -156,6 +156,37 @@ live wiring there shows two details worth copying:
   Rauthy environment file), so the warning is acknowledged. Without a working
   mail path, `eric`/`caroline` never receive their link.
 
+## Resending set-password emails (`identity-cli rauthy`)
+
+The set-password email is sent **once, on user creation** — the reconciler never
+re-sends it (`rauthy-provision` only drives `request_reset` for a newly created
+user). So if a user's link expired or never arrived, there is no declarative way
+to resend. `identity-cli` closes that gap with a `rauthy` subcommand that reads
+the provision **state file** (the source of truth for which users are
+email-derived and where their link lands) and drives the same `request_reset`
+flow on demand:
+
+```console
+# List every email-derived user defined in the state (one per emailed user):
+$ identity-cli rauthy --state /path/to/rauthy-provision-state.json list-email-users
+efirley@protonmail.com     Eric
+carolinestahl@gmx.net      Caroline
+
+# Resend one a fresh link (match by email, email local-part, or name):
+$ identity-cli rauthy --url https://id.tartanoglu.com \
+    --state /path/to/rauthy-provision-state.json reset-password eric
+reset_email_sent=efirley@protonmail.com
+```
+
+`--url` (env `RAUTHY_URL`) and `--state` (env `RAUTHY_PROVISION_STATE`) make it
+ergonomic to run from anywhere that can reach Rauthy over HTTP — e.g. **from the
+app host (atlas) against Rauthy on the IdP host (thething)**, since
+`request_reset` is unauthenticated (Proof-of-Work gated, solved locally). The
+state file is host-agnostic JSON: install it (or a minimal email-derived subset)
+alongside `identity-cli` on whichever host operators use. Rauthy answers 200 even
+for unknown emails (enumeration safety), so confirm delivery via the Rauthy /
+mail-server logs, not the command's exit code.
+
 ## Pitfalls
 
 - Emailed users without SMTP: verify delivery through Rauthy and Stalwart

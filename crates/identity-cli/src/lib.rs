@@ -5,3 +5,6 @@ pub mod bitwarden;
 
 #[cfg(feature = "kanidm")]
 pub mod kanidm;
+
+#[cfg(feature = "rauthy")]
+pub mod rauthy;
