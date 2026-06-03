@@ -98,6 +98,7 @@
         vikunjaProvision = import ./nix/modules/service-oidc/vikunja.nix {inherit self;};
         forgejo = import ./nix/modules/service-oidc/forgejo.nix {inherit self;};
         stalwart = import ./nix/modules/ldap/stalwart.nix {inherit self;};
+        stalwart016 = import ./nix/modules/mail/stalwart016.nix {inherit self;};
         kanidmCredentials = import ./nix/modules/kanidm/credentials.nix {inherit self;};
         externalApp = import ./nix/modules/adapter/external-app.nix {inherit self;};
         default = {imports = [self.nixosModules.rauthy];};

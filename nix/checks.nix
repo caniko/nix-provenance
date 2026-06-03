@@ -17,11 +17,13 @@
   inherit (pkgs) runCommand;
 
   mkClippy = pname:
-    craneLib.cargoClippy (args.${pname}
+    craneLib.cargoClippy (
+      args.${pname}
       // {
         cargoArtifacts = cargoArtifacts.${pname};
         cargoClippyExtraArgs = "--all-targets -- --deny warnings";
-      });
+      }
+    );
 
   evalSystem = module:
     nixpkgs.lib.nixosSystem {
@@ -36,6 +38,7 @@
   vikunjaProvisionEval = evalSystem ./modules/test/vikunja-provision-eval.nix;
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
   stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
+  stalwart016VmTest = import ./modules/test/stalwart016-vmtest.nix {inherit pkgs self system;};
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
 
@@ -58,14 +61,22 @@ in {
   vikunja-clippy = mkClippy "vikunja-provision";
 
   # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
-  identity-test = craneLib.cargoTest (args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;});
-  immich-test = craneLib.cargoTest (args.immich-provision // {cargoArtifacts = cargoArtifacts.immich-provision;});
-  rauthy-nextest = craneLib.cargoNextest (args.rauthy-provision // {cargoArtifacts = cargoArtifacts.rauthy-provision;});
-  vikunja-test = craneLib.cargoTest (args.vikunja-provision
+  identity-test = craneLib.cargoTest (
+    args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;}
+  );
+  immich-test = craneLib.cargoTest (
+    args.immich-provision // {cargoArtifacts = cargoArtifacts.immich-provision;}
+  );
+  rauthy-nextest = craneLib.cargoNextest (
+    args.rauthy-provision // {cargoArtifacts = cargoArtifacts.rauthy-provision;}
+  );
+  vikunja-test = craneLib.cargoTest (
+    args.vikunja-provision
     // {
       cargoArtifacts = cargoArtifacts.vikunja-provision;
       doCheck = true;
-    });
+    }
+  );
 
   # Workspace-wide rustfmt.
   fmt = craneLib.cargoFmt {inherit src;};
@@ -132,12 +143,31 @@ in {
     '';
 
   stalwart-module-eval = let
-    directory = builtins.toJSON stalwartEval.config.services.stalwart.settings.directory.kanidm;
+    directory = builtins.toJSON stalwartEval.config.services.stalwart.kanidmLdap.registryObject;
   in
     runCommand "stalwart-module-eval" {} ''
-      test -n ${lib.escapeShellArg directory}
+      directory=${lib.escapeShellArg directory}
+      test -n "$directory"
+      printf '%s' "$directory" | grep -Fq '"@type":"Ldap"' || { echo "stalwart: missing @type=Ldap (0.16 Directory discriminator is PascalCase; lowercase is rejected by stalwart-cli apply)" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"bindAuthentication":true' || { echo "stalwart: missing bindAuthentication=true" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"filterLogin":' || { echo "stalwart: missing filterLogin" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"filterMailbox":' || { echo "stalwart: missing filterMailbox" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"bindDn":"dn=token"' || { echo "stalwart: missing bindDn=dn=token" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"baseDn":"dc=auth,dc=example,dc=com"' || { echo "stalwart: missing baseDn" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"bindSecret":' || { echo "stalwart: missing bindSecret" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"filePath":"/run/credentials/stalwart.service/kanidm_bind"' || { echo "stalwart: missing bindSecret.filePath" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"@type":"File"' || { echo "stalwart: missing bindSecret @type=File (0.16 SecretKey variant is PascalCase)" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"attrEmail":{"mail":true}' || { echo "stalwart: attrEmail must be a 0.16 SET object {value:true}, not an array (Map<T> rejects arrays)" >&2; exit 1; }
+      printf '%s' "$directory" | grep -Fq '"description":' || { echo "stalwart: missing LdapDirectory description (required-non-empty in 0.16)" >&2; exit 1; }
+      if printf '%s' "$directory" | grep -Fq '"bind":{'; then echo "stalwart: found legacy bind object" >&2; exit 1; fi
+      if printf '%s' "$directory" | grep -Fq '"filter":{'; then echo "stalwart: found legacy filter object" >&2; exit 1; fi
+      if printf '%s' "$directory" | grep -Fq '"attributes":'; then echo "stalwart: found legacy attributes map" >&2; exit 1; fi
+      if printf '%s' "$directory" | grep -Fq '"base-dn"'; then echo "stalwart: found legacy base-dn key" >&2; exit 1; fi
+      if printf '%s' "$directory" | grep -Fq '"allow-invalid-certs"'; then echo "stalwart: found legacy allow-invalid-certs key" >&2; exit 1; fi
       touch $out
     '';
+
+  stalwart016-vmtest = stalwart016VmTest;
 
   # The kanidm-credentials reconcile module must evaluate to a concrete oneshot,
   # and its reconcile script must pass shellcheck (forced by depending on the
@@ -217,11 +247,13 @@ in {
 
   # The root [profile.release] strip must actually reach the release binaries
   # (member profiles are ignored by Cargo — this proves the hoist worked).
-  rauthy-binary-stripped = runCommand "rauthy-binary-stripped" {nativeBuildInputs = [pkgs.file];} ''
-    if file -b ${packages.rauthy-provision}/bin/rauthy-provision | grep -q 'not stripped'; then
-      echo "rauthy-provision release binary is not stripped (profile.release hoist lost?)" >&2
-      exit 1
-    fi
-    touch $out
-  '';
+  rauthy-binary-stripped =
+    runCommand "rauthy-binary-stripped" {nativeBuildInputs = [pkgs.file];}
+    ''
+      if file -b ${packages.rauthy-provision}/bin/rauthy-provision | grep -q 'not stripped'; then
+        echo "rauthy-provision release binary is not stripped (profile.release hoist lost?)" >&2
+        exit 1
+      fi
+      touch $out
+    '';
 }

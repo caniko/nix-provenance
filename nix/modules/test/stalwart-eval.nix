@@ -10,6 +10,7 @@
     enable = true;
     stateVersion = "25.11";
     settings.storage = {
+      directory = "kanidm";
       data = "internal";
       blob = "internal";
       fts = "internal";
@@ -21,7 +22,10 @@
       enable = true;
       url = "ldaps://auth.example.com:3636";
       baseDn = "dc=auth,dc=example,dc=com";
-      bindSecretMacro = "%{file:/run/credentials/stalwart.service/kanidm_bind}%";
+      bindSecret = {
+        type = "file";
+        filePath = "/run/credentials/stalwart.service/kanidm_bind";
+      };
     };
   };
 

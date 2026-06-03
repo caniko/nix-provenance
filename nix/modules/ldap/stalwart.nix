@@ -3,13 +3,69 @@
   lib,
   ...
 }: let
-  inherit (lib) mkEnableOption mkIf mkOption types;
+  inherit
+    (lib)
+    mkEnableOption
+    mkIf
+    mkOption
+    types
+    ;
   cfg = config.services.stalwart.kanidmLdap;
   ldapLib = self.lib.stalwart;
   storage = config.services.stalwart.settings.storage or {};
-  storageRoles = ["data" "blob" "fts" "lookup"];
+  storageRoles = [
+    "data"
+    "blob"
+    "fts"
+    "lookup"
+  ];
   retainedStorageRoles =
-    lib.all (role: lib.hasAttr role storage && storage.${role} != cfg.directoryId) storageRoles;
+    lib.all (
+      role: lib.hasAttr role storage && storage.${role} != cfg.directoryId
+    )
+    storageRoles;
+  bindSecretType = types.submodule (
+    {...}: {
+      options = {
+        type = mkOption {
+          type = types.enum [
+            "file"
+            "environment-variable"
+            "value"
+          ];
+          description = "Registry secret variant to render for Stalwart 0.16.";
+        };
+
+        filePath = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Runtime credential path for type = file.";
+        };
+
+        variableName = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Environment variable name for type = environment-variable.";
+        };
+
+        secret = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Literal secret for eval-only fixtures or tests.";
+        };
+      };
+    }
+  );
+  renderedBindSecret =
+    if cfg.bindSecret == null
+    then null
+    else if cfg.bindSecret.type == "file"
+    then ldapLib.mkBindSecretFile cfg.bindSecret.filePath
+    else if cfg.bindSecret.type == "environment-variable"
+    then ldapLib.mkBindSecretEnv cfg.bindSecret.variableName
+    else ldapLib.mkBindSecretValue cfg.bindSecret.secret;
+  defaultFilterLogin = "(&(${cfg.classAttr}=person)(|(name=?)(spn=?)(mail=?)))";
+  defaultFilterMailbox = "(&(${cfg.classAttr}=person)(|(mail=?)(mailAlternateAddress=?)))";
 in {
   options.services.stalwart.kanidmLdap = {
     enable = mkEnableOption "kanidm LDAP directory backend for Stalwart";
@@ -17,16 +73,16 @@ in {
     directoryId = mkOption {
       type = types.str;
       default = "kanidm";
-      description = "services.stalwart.settings.directory.<id> key to populate.";
+      description = "Directory id phase 04 will assign to the rendered registry object.";
     };
 
     url = mkOption {
       type = types.str;
       example = "ldaps://auth.tartanoglu.com:3636";
       description = ''
-        kanidm LDAP gateway URL (Stalwart `directory.<id>.url`). ldaps is
-        recommended; with an ldaps:// URL implicit TLS is used regardless of the
-        StartTLS `tls.enable` flag.
+        kanidm LDAP gateway URL for the rendered Stalwart 0.16 registry object.
+        ldaps is recommended; with an ldaps:// URL implicit TLS is used regardless
+        of the StartTLS `useTls` flag.
       '';
     };
 
@@ -48,54 +104,78 @@ in {
       '';
     };
 
-    authMethod = mkOption {
-      type = types.enum ["template" "lookup" "default"];
-      default = "template";
+    bindSecret = mkOption {
+      type = types.nullOr bindSecretType;
+      default = null;
       description = ''
-        Per-user authentication method (Stalwart `bind.auth.method`). kanidm
-        requires a real LDAP *bind* to authenticate a user, so the Stalwart
-        default ("default" = local password-hash comparison) does NOT work with
-        kanidm. Use "template" (bind as `authTemplate`; login is the kanidm
-        name/spn) or "lookup" (search via the service bind, then bind as the
-        discovered DN; login may be any attribute `filter.name` matches, e.g.
-        mail).
+        Structured bind secret for the rendered 0.16 registry object. Use a
+        runtime `file` credential for real deployments; `value` exists only for
+        eval fixtures and other non-production tests.
       '';
     };
 
-    authTemplate = mkOption {
+    bindAuthentication = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Render `bindAuthentication` in the 0.16 LDAP registry object. This must
+        stay true for kanidm because Stalwart otherwise falls back to a local
+        password-hash compare that kanidm cannot satisfy.
+      '';
+    };
+
+    filterLogin = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        LDAP login filter for the rendered 0.16 directory object. When unset, it
+        defaults to `(&(${cfg.classAttr}=person)(|(name=?)(spn=?)(mail=?)))`.
+      '';
+    };
+
+    filterMailbox = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        LDAP mailbox lookup filter for the rendered 0.16 directory object. When
+        unset, it defaults to
+        `(&(${cfg.classAttr}=person)(|(mail=?)(mailAlternateAddress=?)))`.
+      '';
+    };
+
+    classAttr = mkOption {
       type = types.str;
-      default = "identifier=?";
+      default = "objectClass";
       description = ''
-        Bind-DN template for authMethod = "template" (Stalwart
-        `bind.auth.template`). `?` is replaced with the supplied login. kanidm
-        accepts `identifier=<name|spn>` as a bind DN.
+        Attribute used in the default login/mailbox filters to match person
+        entries. Stalwart 0.16 defaults `attrClass` to `["objectClass"]`; phase
+        07 smoke verifies whether the live kanidm LDAP gateway prefers `class`
+        or `objectClass` in the filter expression.
       '';
     };
 
-    authSearch = mkOption {
+    useTls = mkOption {
       type = types.bool;
       default = false;
       description = ''
-        For authMethod = "template": whether the post-auth principal load reuses
-        the user's connection (true) or the service bind (false). kanidm's
-        attribute reads need the token service bind, so this stays false.
-      '';
-    };
-
-    bindSecretMacro = mkOption {
-      type = types.str;
-      example = "%{file:/run/credentials/stalwart.service/kanidm_bind}%";
-      description = ''
-        Stalwart %{file:...}% macro resolving the bind token at config-load.
-        Mirror the existing Stalwart credential pattern; the credential must be
-        present in services.stalwart.credentials.
+        Enable StartTLS for the rendered 0.16 LDAP directory object. Leave false
+        for ldaps:// URLs, which already use implicit TLS.
       '';
     };
 
     allowInvalidCerts = mkOption {
       type = types.bool;
       default = false;
-      description = "Temporary escape hatch for ldaps certificate-chain debugging only.";
+      description = "Temporary escape hatch for LDAP certificate-chain debugging only.";
+    };
+
+    registryObject = mkOption {
+      type = types.attrsOf types.anything;
+      readOnly = true;
+      description = ''
+        Rendered Stalwart 0.16 LDAP Directory registry object. Phase 04 consumes
+        this object and places it into the final `registryConfig`.
+      '';
     };
 
     requireStorageRetention = mkOption {
@@ -118,12 +198,48 @@ in {
       }
       {
         assertion =
-          !cfg.requireStorageRetention
-          || (storage.directory == cfg.directoryId && retainedStorageRoles);
+          !cfg.requireStorageRetention || (storage.directory == cfg.directoryId && retainedStorageRoles);
         message = ''
           services.stalwart.kanidmLdap: storage.directory must be "${cfg.directoryId}"
           while storage.data/blob/fts/lookup stay on the mailbox store. The
           directory swap must not repoint mailbox storage.
+        '';
+      }
+      {
+        assertion = cfg.bindSecret != null;
+        message = ''
+          services.stalwart.kanidmLdap.bindSecret is required. On Stalwart 0.16 a
+          missing bindSecret silently degrades to anonymous LDAP reads.
+        '';
+      }
+      {
+        assertion = cfg.bindDn != "";
+        message = ''
+          services.stalwart.kanidmLdap.bindDn must be non-empty. The empty-string
+          default would silently degrade the 0.16 LDAP registry object to
+          anonymous reads.
+        '';
+      }
+      {
+        assertion = cfg.bindAuthentication;
+        message = ''
+          services.stalwart.kanidmLdap.bindAuthentication must remain true for
+          kanidm. False makes Stalwart attempt a local password-hash compare
+          that kanidm's LDAP gateway cannot satisfy.
+        '';
+      }
+      {
+        assertion =
+          cfg.bindSecret
+          == null
+          || (
+            (cfg.bindSecret.type == "file" && cfg.bindSecret.filePath != null)
+            || (cfg.bindSecret.type == "environment-variable" && cfg.bindSecret.variableName != null)
+            || (cfg.bindSecret.type == "value" && cfg.bindSecret.secret != null)
+          );
+        message = ''
+          services.stalwart.kanidmLdap.bindSecret must set the field matching its
+          type: `filePath`, `variableName`, or `secret`.
         '';
       }
     ];
@@ -141,12 +257,26 @@ in {
       ''
     ];
 
-    services.stalwart.settings = {
-      storage.directory = cfg.directoryId;
-      directory.${cfg.directoryId} = ldapLib.kanidmLdapDirectory {
-        inherit (cfg) url baseDn bindDn bindSecretMacro allowInvalidCerts;
-        inherit (cfg) authMethod authTemplate authSearch;
-      };
+    services.stalwart.kanidmLdap.registryObject = ldapLib.kanidmLdapDirectory {
+      inherit
+        (cfg)
+        url
+        baseDn
+        bindDn
+        bindAuthentication
+        classAttr
+        useTls
+        allowInvalidCerts
+        ;
+      bindSecret = renderedBindSecret;
+      filterLogin =
+        if cfg.filterLogin == null
+        then defaultFilterLogin
+        else cfg.filterLogin;
+      filterMailbox =
+        if cfg.filterMailbox == null
+        then defaultFilterMailbox
+        else cfg.filterMailbox;
     };
 
     systemd.services.stalwart = {
