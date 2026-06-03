@@ -44,6 +44,8 @@ in {
   identity-cli = packages.identity-cli;
   immich-provision = packages.immich-provision;
   rauthy-provision = packages.rauthy-provision;
+  stalwart = packages.stalwart;
+  stalwart-cli = packages.stalwart-cli;
   docs = docs;
   site = docs;
 

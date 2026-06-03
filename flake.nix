@@ -21,9 +21,13 @@
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
+        stalwartOverlay = import ./nix/overlays/stalwart-016.nix;
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [(import rust-overlay)];
+          overlays = [
+            (import rust-overlay)
+            stalwartOverlay
+          ];
         };
         inherit (pkgs) lib;
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
@@ -61,6 +65,7 @@
           // {
             docs = docsPackage;
             site = docsPackage;
+            inherit (pkgs) stalwart stalwart-cli;
           };
 
         checks = import ./nix/checks.nix {
@@ -95,10 +100,14 @@
         default = {imports = [self.nixosModules.rauthy];};
       };
 
-      overlays.default = final: _prev: {
-        identity-cli = self.packages.${final.stdenv.hostPlatform.system}.identity-cli;
-        immich-provision = self.packages.${final.stdenv.hostPlatform.system}.immich-provision;
-        rauthy-provision = self.packages.${final.stdenv.hostPlatform.system}.rauthy-provision;
-      };
+      overlays.default = final: _prev:
+        {
+          identity-cli = self.packages.${final.stdenv.hostPlatform.system}.identity-cli;
+          immich-provision = self.packages.${final.stdenv.hostPlatform.system}.immich-provision;
+          rauthy-provision = self.packages.${final.stdenv.hostPlatform.system}.rauthy-provision;
+        }
+        // (import ./nix/overlays/stalwart-016.nix final _prev);
+
+      overlays.stalwart016 = import ./nix/overlays/stalwart-016.nix;
     };
 }
