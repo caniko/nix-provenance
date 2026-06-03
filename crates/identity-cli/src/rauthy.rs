@@ -207,7 +207,10 @@ mod tests {
 
     fn write_state(label: &str, json: &str) -> TempState {
         let mut path = std::env::temp_dir();
-        path.push(format!("identity-cli-rauthy-{}-{label}.json", std::process::id()));
+        path.push(format!(
+            "identity-cli-rauthy-{}-{label}.json",
+            std::process::id()
+        ));
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(json.as_bytes()).unwrap();
         TempState(path)
@@ -229,7 +232,10 @@ mod tests {
         let users = email_users(&t.0).unwrap();
         let emails: Vec<&str> = users.iter().map(|u| u.email.as_str()).collect();
         // can is excluded (kanidmLogin / send_password_email = false).
-        assert_eq!(emails, vec!["carolinestahl@gmx.net", "efirley@protonmail.com"]);
+        assert_eq!(
+            emails,
+            vec!["carolinestahl@gmx.net", "efirley@protonmail.com"]
+        );
     }
 
     #[test]
@@ -237,11 +243,17 @@ mod tests {
         let t = write_state("match", STATE);
         // exact email
         assert_eq!(
-            find_user(&t.0, "efirley@protonmail.com").unwrap().name.as_deref(),
+            find_user(&t.0, "efirley@protonmail.com")
+                .unwrap()
+                .name
+                .as_deref(),
             Some("Eric")
         );
         // email local-part
-        assert_eq!(find_user(&t.0, "carolinestahl").unwrap().name.as_deref(), Some("Caroline"));
+        assert_eq!(
+            find_user(&t.0, "carolinestahl").unwrap().name.as_deref(),
+            Some("Caroline")
+        );
         // given name, case-insensitive
         assert_eq!(
             find_user(&t.0, "eric").unwrap().email,
