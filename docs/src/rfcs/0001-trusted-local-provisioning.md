@@ -2,92 +2,120 @@
 
 ## Summary
 
-Add a local-only Immich server command that mints a short-lived admin session
-token for provisioning tools, and allow admin-created users to omit `password`
-when OAuth is enabled.
+Add `immich-admin provision-token`, a server-local command that mints a
+short-lived admin session token for infrastructure automation running on the
+Immich host. The token is a normal Immich session token. It is then used against
+the existing admin API.
 
-This lets NixOS and similar systems declare Immich users and OIDC settings
-without storing a long-lived admin API key, without scraping the UI, and
-without writing directly to Immich's database.
+Also allow `UserAdminCreateDto.password` to be omitted when OAuth is enabled.
+Together, these changes let declarative operators manage Immich users and OIDC
+without storing a long-lived admin API key, scraping the UI, or writing directly
+to the database.
 
 ## Motivation
 
-Immich already exposes most of the required declarative surface:
+Immich already supports most of the surfaces a declarative operator needs.
+System settings can come from `IMMICH_CONFIG_FILE`, OAuth settings are part of
+normal system config, and users can be reconciled through the admin API. The
+missing piece is bootstrap authentication for automation that already controls
+the local service.
 
-- system configuration can be supplied through `IMMICH_CONFIG_FILE`
-- OAuth settings are represented in normal Immich system config
-- OAuth login links an existing local account by matching email when `oauthId`
-  is empty
+API keys are the right default for ordinary third-party applications. They are
+not a good bootstrap primitive for host-level automation, because a persistent
+admin credential has to exist before the automation can safely manage the
+instance. That pushes operators toward manual setup, secret sprawl, or database
+writes.
 
-The missing piece is safe bootstrap authentication for headless provisioning.
-Today an operator must either keep a long-lived admin API key, perform manual UI
-actions, or mutate the database out of band. Those choices are a poor fit for
-NixOS-style declarative systems and for high-value photo libraries.
+This proposal keeps Immich's API-first administration model. It only adds a
+short local bridge from service access to a temporary session, then returns to
+the existing API surface.
 
-Kanidm's recovery and local-administration discussion and Rauthy's bootstrap
-API-key discussion both point at the same principle: local root already has
-authority over the service, so the service should expose a narrow, auditable
-local path instead of forcing operators to persist broad remote credentials.
+## Fit with Immich
+
+Immich already has an administrative server CLI for local recovery and
+operations, including password reset, password-login toggles, OAuth-login
+toggles, maintenance mode, and user listing. `provision-token` belongs in that
+same family:
+
+- It is run inside the server environment by an operator that already has
+  service-level access.
+- It creates a normal session through Immich's existing session storage and
+  validation path.
+- It adds no remote endpoint and no new API authentication scheme.
+- It leaves provisioning actions on the documented admin API, where normal
+  validation and business logic still apply.
+
+The intended users are NixOS modules, Ansible roles, Kubernetes operators, Helm
+post-install jobs, Terraform or OpenTofu providers, GitOps systems, and similar
+host-owned automation. Desktop clients, mobile clients, and general third-party
+integrations should continue to use Immich's normal authentication flows and API
+keys.
 
 ## Proposal
 
-Add:
-
 ```sh
-immich-admin provision-token --ttl 300
+immich-admin provision-token --ttl 300   # seconds, 1..3600, default 300
 ```
 
-The command:
+The command runs inside the server environment, finds the admin account, creates
+a normal admin session with `expiresAt = now + ttl` through the **existing**
+session table, and prints the raw bearer token to stdout. It adds no new auth
+primitive and persists nothing outside the session table.
 
-1. Runs only inside the server environment, with database access.
-2. Finds the existing Immich admin account.
-3. Creates a normal admin session with `expiresAt = now + ttl`.
-4. Prints the raw bearer token to stdout.
-5. Does not persist token material outside the existing session table.
+Separately, make `UserAdminCreateDto.password` optional. `UserAdminService.create`
+already rejects passwordless creates when OAuth is disabled, so the authorization
+policy stays centralized in service code.
 
-Also change `UserAdminCreateDto.password` from required to optional. The
-existing `UserAdminService.create` already rejects passwordless creates when
-OAuth is disabled, so the runtime authorization policy remains centralized in
-service code.
+Reference implementation:
+`crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch`
+(verified to apply against Immich v2.7.5).
 
 ## Security model
 
-- The command grants no power beyond what local root and service-user access
-  already have.
-- The token is short lived and uses the existing session validation path.
-- Consumers should pass the token by a private runtime file or pipe, not a Nix
+- Grants no power beyond existing local root / service-user access.
+- The token is short-lived and validated through the existing session path.
+- The command fails if no admin exists and rejects non-positive or oversized TTLs.
+- Consumers must pass the token via a private runtime file or pipe, never a Nix
   store path, agenix secret, or process argument.
-- The command should fail if no admin user exists.
-- It should reject non-positive or unreasonably large TTL values.
 
-## Declarative provisioning semantics
+## Declarative semantics
 
-Provisioners should:
+Provisioners should match users by normalized email, create OAuth-only users
+without a password when OAuth is enabled, and avoid writing `oauthId`.
 
-- match users by normalized email
-- create OAuth-only users without password when OAuth is enabled
-- never write `oauthId`
-- let first OAuth login set `oauthId` through Immich's existing email-link
-  behavior
-- make destructive operations opt-in with explicit double locks
+The `oauthId` value is provider-defined and may be pairwise. Letting Immich set
+it during OAuth login avoids guessing the subject in external tooling. For
+freshly provisioned users, the first OAuth login is expected to bind the
+provider identity. For migrations of existing local users with attached
+libraries, operators must verify the email-linking behavior against the exact
+Immich version before enabling the migration.
+
+Destructive operations should remain explicitly gated. A reconciler should not
+delete users unless both a global delete flag and a per-user delete flag are set.
 
 ## Alternatives
 
-- Long-lived API key: works today, but turns a bootstrap implementation detail
-  into a permanent secret.
-- Direct database writes: fragile across Immich releases and bypasses business
-  logic.
-- Manual UI provisioning: not repeatable and does not satisfy declarative
-  infrastructure goals.
-- Pre-setting `oauthId`: brittle because the exact subject value is controlled
-  by the OIDC provider and may be pairwise or otherwise provider-defined.
+- **Long-lived API key**: works today, but turns a bootstrap detail into a
+  permanent admin secret. API keys remain the right answer for many
+  integrations, but they are a poor fit for first-run host automation.
+- **Direct database writes**: fragile across releases and bypass business logic.
+- **Manual UI provisioning**: not repeatable.
+- **Pre-setting `oauthId`**: brittle because the subject comes from the provider
+  and may be pairwise.
+- **Remote bootstrap endpoint**: easier for automation to call, but it creates a
+  new remotely reachable privileged path. A server-local CLI keeps the bootstrap
+  boundary tied to existing host access.
 
 ## Test requirements
 
-- `immich-admin provision-token --ttl 300` returns a bearer token accepted by
-  an admin API endpoint.
-- The token stops working after expiry.
-- The command fails when no admin account exists.
-- Admin user creation without password succeeds only when OAuth is enabled.
-- OAuth callback for a matching-email, empty-`oauthId` user still links that
-  existing user rather than creating a duplicate.
+- `provision-token --ttl 300` returns a token that an admin API endpoint
+  accepts, the token stops working after expiry, and the command fails when no
+  admin exists.
+- The minted token validates through Immich's existing session/token validation
+  code path.
+- Passwordless admin creation succeeds only when OAuth is enabled.
+- Passwordless admin creation fails when OAuth is disabled.
+- No create or update request from the provisioner writes `oauthId`.
+- An OAuth callback for a matching-email, empty-`oauthId` user is covered by an
+  integration test or version-specific migration check before relying on it for
+  existing libraries.

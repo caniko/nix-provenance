@@ -14,7 +14,7 @@ SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MPL-2.0"
 
 [[annotations]]
-path = ["nix/lib/immich.nix", "nix/modules/service-oidc/immich.nix", "nix/modules/test/immich-eval.nix", "docs/rfcs/**", "docs/kanidm-oidc-migration.md"]
+path = ["nix/lib/immich.nix", "nix/modules/service-oidc/immich.nix", "nix/modules/test/immich-eval.nix", "docs/kanidm-oidc-migration.md"]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "AGPL-3.0-only"
 
