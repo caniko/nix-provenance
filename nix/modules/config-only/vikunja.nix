@@ -103,8 +103,6 @@ in {
     systemd.services.vikunja-oidc-env = {
       description = "Render Vikunja OIDC client secret to an env file";
       before = ["vikunja.service"];
-      after = ["agenix.service"];
-      requires = ["agenix.service"];
       path = [pkgs.coreutils];
       script = ''
         set -eu
