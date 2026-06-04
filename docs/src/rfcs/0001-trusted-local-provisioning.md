@@ -1,4 +1,4 @@
-# RFC 0001: Trusted Local Provisioning for Immich
+# Trusted Local Provisioning for Immich
 
 ## Summary
 
@@ -51,6 +51,23 @@ host-owned automation. Desktop clients, mobile clients, and general third-party
 integrations should continue to use Immich's normal authentication flows and API
 keys.
 
+## API contract impact
+
+This is not a fourth authentication scheme. Immich continues to authenticate API
+requests through its existing session, API-key, and shared-key paths.
+`provision-token` only gives local automation a short-lived session that the API
+already knows how to validate.
+
+Making `UserAdminCreateDto.password` optional is a real API contract change, but
+the intended contract is narrow:
+
+- Existing clients may keep sending `password`.
+- Passwordless create is valid only for admin-created OAuth users.
+- The service layer rejects passwordless create when OAuth is disabled.
+- The web UI does not need to expose a new passwordless local-user workflow.
+- OpenAPI and generated SDKs should show `password` as optional, with endpoint
+  documentation explaining the OAuth-enabled precondition.
+
 ## Proposal
 
 ```sh
@@ -86,9 +103,10 @@ without a password when OAuth is enabled, and avoid writing `oauthId`.
 The `oauthId` value is provider-defined and may be pairwise. Letting Immich set
 it during OAuth login avoids guessing the subject in external tooling. For
 freshly provisioned users, the first OAuth login is expected to bind the
-provider identity. For migrations of existing local users with attached
-libraries, operators must verify the email-linking behavior against the exact
-Immich version before enabling the migration.
+provider identity. That linking behavior should be covered by tests if Immich
+accepts passwordless OAuth-user creation. For migrations of existing local users
+with attached libraries, operators must still verify the email-linking behavior
+against the exact Immich version before enabling the migration.
 
 Destructive operations should remain explicitly gated. A reconciler should not
 delete users unless both a global delete flag and a per-user delete flag are set.
