@@ -2,6 +2,19 @@
 
 > Continuation of #1584. Posting here per @sebadob's confirmation (2026‑06‑03) that the encrypted-container mechanism belongs on this issue now that #1585 (`api_keys.json`) has merged. I (caniko) have a backend implementation in progress and will open a draft PR once the shape below is agreed.
 
+## 0. Resolved with @sebadob (these supersede the body where they conflict)
+
+Maintainer decisions after the first round — folded in; older body text that conflicts is overridden by this list:
+
+- **Separate enums, not a unified `BootstrapSecret`** — confirmed; per-type `Generate` variant. `"generate"` sentinel confirmed (clients: absent already = public+PKCE).
+- **No key-id work on our side** — cryptr's header already carries the enc-key id and auto-selects while the key is in `ENC_KEYS`; reads are rotation-safe for free. (§5's "we tag it" framing is dropped.)
+- **Exposure correction** — API-key secrets are sha256-hashed *and* encrypted (fast hash on purpose; not decryptable). They behave like argon2'd **user** passwords: for **both users and API keys the container is the sole plaintext**; only **clients** are DB-recoverable. So API-key `generate` is **not** a unique new exposure — users already carry it. sebadob: **include API keys.** (Supersedes §9's "one genuinely NEW exposure" framing.)
+- **Auto-purge: default-on 600s, `0` off — plus a startup check.** A shutdown before the timer would strand the file, so also purge-if-expired on every startup; stamp the deadline in the **cleartext** header so startup checks with stat+read, no decrypt. (Extends §6.)
+- **Location:** `${data_dir}` — confirmed (Q1 closed).
+- **CLI:** drop `-secrets` → `rauthy bootstrap {get,purge}`. `get --format raw|json|env` (env = KEY=VALUE/line). Cleartext export via a **`secrets_export_path` config option** (server writes cleartext at first boot), not a CLI `export` (CLI `export` deferred). (Supersedes §7's name + verbs.)
+- **K8s: TBD, out of the first PRs.** Preferred future = give the Rauthy pod a **ServiceAccount** and have the **server write generated secrets straight into a native K8s `Secret` via the K8s API** — in that mode no encrypted container / no our-side crypto is needed. This supersedes §8's CLI-image-Job-as-primary.
+- **Open micro-questions:** subcommand name `bootstrap` vs `bootstrap-data`; ship `secrets_export_path` in PR 1 (CLI `export` later)?
+
 ## 1. Framing
 
 In #1584 you redirected away from an admin-token/UDS CLI and described the mechanism you'd actually want:
