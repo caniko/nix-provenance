@@ -11,7 +11,11 @@ pkgs.testers.nixosTest {
     lib,
     pkgs,
     ...
-  }: {
+  }: let
+    migrationExport = pkgs.writeText "stalwart016-migration.ndjson" ''
+      {"@type":"create","object":"Domain","value":{"migrated.test":{"name":"migrated.test"}}}
+    '';
+  in {
     imports = [self.nixosModules.stalwart016];
 
     services.stalwart016 = {
@@ -22,21 +26,8 @@ pkgs.testers.nixosTest {
       recoveryAdmin.passwordFile = pkgs.writeText "stalwart-recovery-admin" "phase03-recovery-password";
 
       provision = {
+        migrationApplyFiles = [migrationExport];
         queryObjects = ["NetworkListener" "Domain"];
-        registryConfig = [
-          {
-            "@type" = "destroy";
-            object = "Domain";
-            value.name = "example.test";
-          }
-          {
-            "@type" = "create";
-            object = "Domain";
-            value."example.test" = {
-              name = "example.test";
-            };
-          }
-        ];
       };
     };
 
@@ -64,12 +55,24 @@ pkgs.testers.nixosTest {
     machine.succeed("grep -F 'smtp' /var/lib/stalwart016/query-NetworkListener.json")
     machine.succeed("grep -F 'submission' /var/lib/stalwart016/query-NetworkListener.json")
     machine.succeed("grep -F 'imaps' /var/lib/stalwart016/query-NetworkListener.json")
-    machine.succeed("grep -F 'example.test' /var/lib/stalwart016/query-Domain.json")
+    machine.succeed("grep -F 'migrated.test' /var/lib/stalwart016/query-Domain.json")
+    machine.succeed("test -s /var/lib/stalwart016/migration-applied")
+    machine.succeed("grep -F 'migration_files=' /var/lib/stalwart016/migration-applied")
+    machine.succeed("test -s /var/lib/stalwart016/registry-applied")
+    machine.succeed("grep -F 'generated_plan=' /var/lib/stalwart016/registry-applied")
 
     machine.succeed("systemctl restart stalwart.service")
     machine.wait_for_unit("stalwart.service")
     machine.succeed("systemctl is-active --quiet stalwart.service")
     machine.wait_until_succeeds("ss -ltn | grep -E ':(25|587|993)[[:space:]]'")
-    machine.succeed("grep -F 'example.test' /var/lib/stalwart016/query-Domain.json")
+    machine.succeed("grep -F 'migrated.test' /var/lib/stalwart016/query-Domain.json")
+
+    # Force only the registry phase to rerun. The migration document is a bare
+    # create and would fail on duplicate Domain if migrationApplyFiles replayed.
+    machine.succeed("rm /var/lib/stalwart016/registry-applied")
+    machine.succeed("systemctl restart stalwart.service")
+    machine.wait_for_unit("stalwart.service")
+    machine.succeed("systemctl is-active --quiet stalwart.service")
+    machine.succeed("grep -F 'migrated.test' /var/lib/stalwart016/query-Domain.json")
   '';
 }

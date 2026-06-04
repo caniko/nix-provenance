@@ -61,7 +61,9 @@
   generatedPlanFile =
     pkgs.writeText "stalwart016-apply.ndjson"
     (lib.concatMapStrings (op: builtins.toJSON op + "\n") generatedPlan);
-  applyFiles = cfg.provision.applyFiles ++ lib.optional (generatedPlan != []) generatedPlanFile;
+  migrationApplyFiles = cfg.provision.migrationApplyFiles ++ cfg.provision.applyFiles;
+  registryApplyFiles = lib.optional (generatedPlan != []) generatedPlanFile;
+  hasGeneratedPlan = generatedPlan != [];
 
   # Runtime (non-store) apply inputs — e.g. a live migrate_v016.py export — must be
   # readable from inside the service sandbox. The unit runs with PrivateTmp +
@@ -69,7 +71,7 @@
   # so their parent directories are bind-mounted read-only into the namespace. The `-`
   # prefix makes a missing source non-fatal (the provision script's pathful guard then
   # reports exactly which input is missing). Store-path inputs are already visible.
-  applyInputDirs = lib.pipe cfg.provision.applyFiles [
+  applyInputDirs = lib.pipe migrationApplyFiles [
     (map toString)
     (lib.filter (p: lib.hasPrefix "/" p && !(lib.hasPrefix builtins.storeDir p)))
     (map builtins.dirOf)
@@ -85,15 +87,46 @@
     name = "stalwart016-provision";
     runtimeInputs = [
       pkgs.coreutils
+      pkgs.gnugrep
       cfg.package
       cfg.cliPackage
     ];
     text = ''
       set -euo pipefail
 
-      marker_file=${lib.escapeShellArg cfg.provision.markerFile}
-      if [ -e "$marker_file" ]; then
-        echo "stalwart016: provisioning already completed ($marker_file exists); skipping recovery apply"
+      migration_marker_file=${lib.escapeShellArg cfg.provision.migrationMarkerFile}
+      registry_marker_file=${lib.escapeShellArg cfg.provision.registryMarkerFile}
+      legacy_marker_file=${lib.escapeShellArg cfg.provision.markerFile}
+      generated_plan_file=${lib.escapeShellArg (toString generatedPlanFile)}
+
+      mkdir -p "$(dirname "$migration_marker_file")" "$(dirname "$registry_marker_file")"
+
+      # Older module revisions used one global marker. Treat it as proof that any
+      # non-idempotent migration inputs already ran, but do not let it suppress a
+      # changed registry plan.
+      if [ -e "$legacy_marker_file" ] && [ ! -e "$migration_marker_file" ]; then
+        {
+          printf 'completed_at=%s\n' "$(date -Is)"
+          printf 'legacy_marker=%s\n' "$legacy_marker_file"
+        } > "$migration_marker_file"
+      fi
+
+      migration_pending=0
+      ${lib.optionalString (migrationApplyFiles != []) ''
+        if [ ! -e "$migration_marker_file" ]; then
+          migration_pending=1
+        fi
+      ''}
+
+      registry_pending=0
+      ${lib.optionalString hasGeneratedPlan ''
+        if ! grep -Fx "generated_plan=$generated_plan_file" "$registry_marker_file" >/dev/null 2>&1; then
+          registry_pending=1
+        fi
+      ''}
+
+      if [ "$migration_pending" != 1 ] && [ "$registry_pending" != 1 ]; then
+        echo "stalwart016: migration and registry provisioning already current; skipping recovery apply"
         exit 0
       fi
 
@@ -119,6 +152,12 @@
       export XDG_CONFIG_HOME=/var/lib/stalwart016/.config
       mkdir -p "$XDG_CONFIG_HOME"
 
+      if timeout 1 ${pkgs.bash}/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080' >/dev/null 2>&1; then
+        echo "stalwart016: refusing to start recovery mode because 127.0.0.1:8080 is already listening" >&2
+        echo "stalwart016: stop the conflicting service before provisioning; on thething this is usually rauthy.service" >&2
+        exit 1
+      fi
+
       export STALWART_RECOVERY_MODE=1
       export STALWART_RECOVERY_ADMIN="${lib.escapeShellArg cfg.recoveryAdmin.username}:$recovery_password"
       export STALWART_HOSTNAME=${lib.escapeShellArg cfg.hostname}
@@ -134,7 +173,10 @@
 
       ready=0
       for _ in $(seq 1 ${toString cfg.provision.startupAttempts}); do
-        if timeout 1 ${pkgs.bash}/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080' >/dev/null 2>&1; then
+        if STALWART_URL=${lib.escapeShellArg cfg.provision.recoveryUrl} \
+          STALWART_USER=${lib.escapeShellArg cfg.recoveryAdmin.username} \
+          STALWART_PASSWORD="$recovery_password" \
+          ${lib.getExe cfg.cliPackage} query ${lib.escapeShellArg cfg.provision.recoveryProbeObject} --json > /var/lib/stalwart016/recovery-probe.json 2>/dev/null; then
           ready=1
           break
         fi
@@ -146,22 +188,47 @@
         exit 1
       fi
 
-      ${lib.concatMapStringsSep "\n" (file: ''
-          apply_file=${lib.escapeShellArg (toString file)}
-          # Fail with the offending PATH (stalwart-cli's own "No such file or
-          # directory (os error 2)" names no file). Runtime inputs hidden by the
-          # sandbox (PrivateTmp/ProtectHome/ProtectSystem) surface here too.
-          if [ ! -r "$apply_file" ]; then
-            echo "stalwart016: apply input not readable inside the service sandbox: $apply_file" >&2
-            echo "stalwart016: the unit runs with PrivateTmp + ProtectHome + ProtectSystem=strict, so host /tmp, /var/tmp and /home are NOT visible. Stage migration inputs under a sandbox-visible directory (e.g. /var/lib/stalwart016-migration); the module binds applyFiles' parent dirs read-only, but the dir must exist at activation." >&2
-            exit 1
-          fi
-          STALWART_URL=${lib.escapeShellArg cfg.provision.recoveryUrl} \
-          STALWART_USER=${lib.escapeShellArg cfg.recoveryAdmin.username} \
-          STALWART_PASSWORD="$recovery_password" \
-          ${lib.getExe cfg.cliPackage} apply --no-color ${lib.optionalString cfg.provision.continueOnError "--continue-on-error"} --file "$apply_file"
+      apply_document() {
+        apply_file="$1"
+        # Fail with the offending PATH (stalwart-cli's own "No such file or
+        # directory (os error 2)" names no file). Runtime inputs hidden by the
+        # sandbox (PrivateTmp/ProtectHome/ProtectSystem) surface here too.
+        if [ ! -r "$apply_file" ]; then
+          echo "stalwart016: apply input not readable inside the service sandbox: $apply_file" >&2
+          echo "stalwart016: the unit runs with PrivateTmp + ProtectHome + ProtectSystem=strict, so host /tmp, /var/tmp and /home are NOT visible. Stage migration inputs under a sandbox-visible directory (e.g. /var/lib/stalwart016-migration); the module binds migration/apply file parent dirs read-only, but the dir must exist at activation." >&2
+          exit 1
+        fi
+        STALWART_URL=${lib.escapeShellArg cfg.provision.recoveryUrl} \
+        STALWART_USER=${lib.escapeShellArg cfg.recoveryAdmin.username} \
+        STALWART_PASSWORD="$recovery_password" \
+        ${lib.getExe cfg.cliPackage} apply --no-color ${lib.optionalString cfg.provision.continueOnError "--continue-on-error"} --file "$apply_file"
+      }
+
+      if [ "$migration_pending" = 1 ]; then
+        ${lib.concatMapStringsSep "\n" (file: ''
+          apply_document ${lib.escapeShellArg (toString file)}
         '')
-        applyFiles}
+        migrationApplyFiles}
+        {
+          printf 'completed_at=%s\n' "$(date -Is)"
+          printf 'migration_files=%s\n' ${lib.escapeShellArg (lib.concatStringsSep " " (map toString migrationApplyFiles))}
+        } > "$migration_marker_file"
+      else
+        echo "stalwart016: migration apply already completed ($migration_marker_file exists); skipping migration inputs"
+      fi
+
+      if [ "$registry_pending" = 1 ]; then
+        ${lib.concatMapStringsSep "\n" (file: ''
+          apply_document ${lib.escapeShellArg (toString file)}
+        '')
+        registryApplyFiles}
+        {
+          printf 'completed_at=%s\n' "$(date -Is)"
+          printf 'generated_plan=%s\n' "$generated_plan_file"
+        } > "$registry_marker_file"
+      else
+        echo "stalwart016: generated registry plan already current; skipping registry apply"
+      fi
 
       ${lib.concatMapStringsSep "\n" (object: ''
           STALWART_URL=${lib.escapeShellArg cfg.provision.recoveryUrl} \
@@ -170,11 +237,6 @@
           ${lib.getExe cfg.cliPackage} query ${lib.escapeShellArg object} --json > /var/lib/stalwart016/query-${object}.json
         '')
         cfg.provision.queryObjects}
-
-      {
-        printf 'completed_at=%s\n' "$(date -Is)"
-        printf 'generated_plan=%s\n' ${lib.escapeShellArg (toString generatedPlanFile)}
-      } > "$marker_file"
     '';
   };
 in {
@@ -402,11 +464,24 @@ in {
         type = types.listOf (types.either types.path types.str);
         default = [];
         description = ''
-          Additional pre-rendered stalwart-cli apply documents. These are applied
-          before the generated listener/registry plan so migration exports can
-          recreate accounts/domains before the host recreate-set is applied.
-          String values may name runtime paths that are created before service
-          activation, for example a live migrate_v016.py export on the target host.
+          Deprecated compatibility alias for migrationApplyFiles.
+
+          These files are treated as one-time, non-idempotent migration inputs
+          and are skipped after migrationMarkerFile exists. Prefer
+          migrationApplyFiles in new configurations.
+        '';
+      };
+
+      migrationApplyFiles = mkOption {
+        type = types.listOf (types.either types.path types.str);
+        default = [];
+        description = ''
+          One-time pre-rendered stalwart-cli apply documents, such as a
+          migrate_v016.py export. These are applied before the generated
+          listener/registry plan, then skipped on later starts once
+          migrationMarkerFile exists. String values may name runtime paths that
+          are created before service activation, for example a live migration
+          export on the target host.
         '';
       };
 
@@ -424,6 +499,16 @@ in {
         type = types.str;
         default = "http://127.0.0.1:8080";
         description = "Recovery listener URL used by stalwart-cli.";
+      };
+
+      recoveryProbeObject = mkOption {
+        type = types.str;
+        default = "NetworkListener";
+        description = ''
+          Registry object queried with authenticated stalwart-cli while waiting
+          for recovery mode. This prevents treating an unrelated listener on the
+          recovery port as a ready Stalwart recovery endpoint.
+        '';
       };
 
       continueOnError = mkOption {
@@ -448,8 +533,30 @@ in {
         type = types.str;
         default = "/var/lib/stalwart016/provisioned";
         description = ''
-          Runtime marker written after recovery-mode provisioning succeeds. When
-          present, subsequent service starts skip recovery provisioning.
+          Legacy runtime marker used by earlier module revisions. If present, it
+          is treated as proof that migration inputs already ran, but registry
+          provisioning still uses registryMarkerFile and the generated plan path
+          to decide whether the registry plan is current.
+        '';
+      };
+
+      migrationMarkerFile = mkOption {
+        type = types.str;
+        default = "/var/lib/stalwart016/migration-applied";
+        description = ''
+          Runtime marker written after migrationApplyFiles and compatibility
+          applyFiles succeed. When present, migration inputs are never re-applied.
+        '';
+      };
+
+      registryMarkerFile = mkOption {
+        type = types.str;
+        default = "/var/lib/stalwart016/registry-applied";
+        description = ''
+          Runtime marker written after the generated listener/registry plan
+          succeeds. The marker records the generated plan store path, so changed
+          registry content re-enters recovery mode without re-applying migration
+          inputs.
         '';
       };
     };
