@@ -45,9 +45,9 @@ in {
     # Default matches the schema default; set to ["class"] to mirror kanidm.
     attrClass ? ["objectClass"],
     filterLogin ? "(&(${classAttr}=person)(|(name=?)(spn=?)(mail=?)))",
-    filterMailbox ? "(&(${classAttr}=person)(|(mail=?)(mailAlternateAddress=?)))",
+    filterMailbox ? "(&(${classAttr}=person)(mail=?))",
     attrEmail ? ["mail"],
-    attrEmailAlias ? ["mailAlternateAddress"],
+    attrEmailAlias ? [],
     attrDescription ? ["displayName"],
     useTls ? false,
     allowInvalidCerts ? false,

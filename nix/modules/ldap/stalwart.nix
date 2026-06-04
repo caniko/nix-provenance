@@ -65,7 +65,7 @@
     then ldapLib.mkBindSecretEnv cfg.bindSecret.variableName
     else ldapLib.mkBindSecretValue cfg.bindSecret.secret;
   defaultFilterLogin = "(&(${cfg.classAttr}=person)(|(name=?)(spn=?)(mail=?)))";
-  defaultFilterMailbox = "(&(${cfg.classAttr}=person)(|(mail=?)(mailAlternateAddress=?)))";
+  defaultFilterMailbox = "(&(${cfg.classAttr}=person)(mail=?))";
 in {
   options.services.stalwart.kanidmLdap = {
     enable = mkEnableOption "kanidm LDAP directory backend for Stalwart";
@@ -139,7 +139,7 @@ in {
       description = ''
         LDAP mailbox lookup filter for the rendered 0.16 directory object. When
         unset, it defaults to
-        `(&(${cfg.classAttr}=person)(|(mail=?)(mailAlternateAddress=?)))`.
+        `(&(${cfg.classAttr}=person)(mail=?))`.
       '';
     };
 
