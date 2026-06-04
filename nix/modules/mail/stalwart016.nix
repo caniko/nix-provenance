@@ -63,6 +63,19 @@
     (lib.concatMapStrings (op: builtins.toJSON op + "\n") generatedPlan);
   applyFiles = cfg.provision.applyFiles ++ lib.optional (generatedPlan != []) generatedPlanFile;
 
+  # Runtime (non-store) apply inputs — e.g. a live migrate_v016.py export — must be
+  # readable from inside the service sandbox. The unit runs with PrivateTmp +
+  # ProtectHome + ProtectSystem=strict, which hide the host /tmp, /var/tmp and /home,
+  # so their parent directories are bind-mounted read-only into the namespace. The `-`
+  # prefix makes a missing source non-fatal (the provision script's pathful guard then
+  # reports exactly which input is missing). Store-path inputs are already visible.
+  applyInputDirs = lib.pipe cfg.provision.applyFiles [
+    (map toString)
+    (lib.filter (p: lib.hasPrefix "/" p && !(lib.hasPrefix builtins.storeDir p)))
+    (map builtins.dirOf)
+    lib.unique
+  ];
+
   loadCredentials =
     lib.optional (postgres.passwordFile != null) "${postgres.passwordCredential}:${postgres.passwordFile}"
     ++ lib.optional cfg.provision.enable "${cfg.recoveryAdmin.passwordCredential}:${cfg.recoveryAdmin.passwordFile}"
@@ -134,10 +147,19 @@
       fi
 
       ${lib.concatMapStringsSep "\n" (file: ''
+          apply_file=${lib.escapeShellArg (toString file)}
+          # Fail with the offending PATH (stalwart-cli's own "No such file or
+          # directory (os error 2)" names no file). Runtime inputs hidden by the
+          # sandbox (PrivateTmp/ProtectHome/ProtectSystem) surface here too.
+          if [ ! -r "$apply_file" ]; then
+            echo "stalwart016: apply input not readable inside the service sandbox: $apply_file" >&2
+            echo "stalwart016: the unit runs with PrivateTmp + ProtectHome + ProtectSystem=strict, so host /tmp, /var/tmp and /home are NOT visible. Stage migration inputs under a sandbox-visible directory (e.g. /var/lib/stalwart016-migration); the module binds applyFiles' parent dirs read-only, but the dir must exist at activation." >&2
+            exit 1
+          fi
           STALWART_URL=${lib.escapeShellArg cfg.provision.recoveryUrl} \
           STALWART_USER=${lib.escapeShellArg cfg.recoveryAdmin.username} \
           STALWART_PASSWORD="$recovery_password" \
-          ${lib.getExe cfg.cliPackage} apply --no-color ${lib.optionalString cfg.provision.continueOnError "--continue-on-error"} --file ${lib.escapeShellArg (toString file)}
+          ${lib.getExe cfg.cliPackage} apply --no-color ${lib.optionalString cfg.provision.continueOnError "--continue-on-error"} --file "$apply_file"
         '')
         applyFiles}
 
@@ -505,6 +527,11 @@ in {
         ProtectHome = true;
         ProtectSystem = "strict";
         ReadWritePaths = ["/var/lib/stalwart016"];
+        # Make runtime apply inputs (e.g. the migrate_v016.py export) visible inside
+        # the sandbox despite PrivateTmp/ProtectHome/ProtectSystem=strict. Without
+        # this, a host path like /var/tmp/.../export.json is hidden and the recovery
+        # apply dies with an unpathful "No such file or directory". `-` = optional.
+        BindReadOnlyPaths = map (d: "-${d}") applyInputDirs;
       };
     };
   };

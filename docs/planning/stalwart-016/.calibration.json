@@ -207,5 +207,18 @@
     "risk": "high",
     "scope": "cross-org"
   },
-  "verify": null
+  "verify": {
+    "outcome": "partial",
+    "surprises": "no-integrated-verification trigger fired at plan time and the strengthened stalwart-module-eval check caught a real phase-05 emit bug (@type Ldap/File casing + attr* as attrsets not arrays) — verification worked as intended, not a missed signal. Execution gaps: phase 04 canix wiring not done (orphan stalwart-016.nix, host still on 0.15); phase 06 backup-verify + dry-run acceptance is script-only (no execution evidence); phase 07 not started; global nixfmt red (4 files).",
+    "verified_at": 1780506983,
+    "phase_outcomes": {
+      "01-package-overlay": "passed",
+      "02-map-016-run-model": "passed",
+      "03-nixos-016-module": "passed",
+      "04-registry-provisioning": "partial",
+      "05-kanidmldap-016-schema": "failed",
+      "06-thething-migration-runbook": "partial",
+      "07-thething-deploy": "not-started"
+    }
+  }
 }
