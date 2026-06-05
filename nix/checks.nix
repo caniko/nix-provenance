@@ -102,9 +102,33 @@ in {
 
   rauthy-module-eval = let
     serviceConfig = builtins.toJSON rauthyEval.config.systemd.services.rauthy-provision.serviceConfig;
+    clients = builtins.toJSON rauthyEval.config.services.rauthy.provision.clients;
+    users = builtins.toJSON rauthyEval.config.services.rauthy.provision.users;
+    scopes = builtins.toJSON rauthyEval.config.services.rauthy.provision.scopes;
+    userAttrs = builtins.toJSON rauthyEval.config.services.rauthy.provision.userAttributes;
   in
     runCommand "rauthy-module-eval" {} ''
       test -n ${lib.escapeShellArg serviceConfig}
+      clients=${lib.escapeShellArg clients}
+      users=${lib.escapeShellArg users}
+      scopes=${lib.escapeShellArg scopes}
+      attrs=${lib.escapeShellArg userAttrs}
+      printf '%s' "$clients" | grep -q '/run/rauthy-clients/demo.secret' \
+        || { echo "rauthy: generatedSecretFile path missing from rendered client state" >&2; exit 1; }
+      printf '%s' "$clients" | grep -q 'vikunja_groups' \
+        || { echo "rauthy: custom Vikunja scope missing from client state" >&2; exit 1; }
+      printf '%s' "$users" | grep -q 'preferredUsername' \
+        || { echo "rauthy: preferredUsername missing from rendered user state" >&2; exit 1; }
+      printf '%s' "$users" | grep -q 'vikunja_groups' \
+        || { echo "rauthy: custom Vikunja user attribute value missing" >&2; exit 1; }
+      printf '%s' "$scopes" | grep -q 'attrIncludeId' \
+        || { echo "rauthy: custom scope attrIncludeId missing" >&2; exit 1; }
+      printf '%s' "$attrs" | grep -q 'vikunja_groups' \
+        || { echo "rauthy: userAttributes missing vikunja_groups" >&2; exit 1; }
+      if printf '%s' "$clients" | grep -q 'clientsecret'; then
+        echo "rauthy: rendered state must contain only secret paths, never client secret values" >&2
+        exit 1
+      fi
       touch $out
     '';
 

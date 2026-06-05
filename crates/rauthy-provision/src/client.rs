@@ -4,8 +4,9 @@
 //! `Authorization: API-Key <name>$<secret>` (verified against rauthy 0.35.1
 //! `src/middlewares/src/principal.rs`). The key must carry these access
 //! groups/rights: Users(read,create,update,delete), Groups(…), Roles(…),
-//! Clients(…). Secrets(read,update) is only needed if you later manage client
-//! secrets (this tool currently does not).
+//! Clients(…). Scopes and UserAttributes are needed for custom OIDC claim
+//! provisioning. Secrets(update) is needed for generated confidential client
+//! secrets.
 
 use std::fmt;
 use std::thread::sleep;
@@ -16,6 +17,7 @@ use provenance_core::http::ensure_success as ok;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub struct RauthyClient {
     http: Client,
@@ -51,6 +53,51 @@ pub struct RoleResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ScopeResponse {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub attr_include_access: Option<Vec<String>>,
+    #[serde(default)]
+    pub attr_include_id: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserAttributeConfigResponse {
+    pub name: String,
+    #[serde(default)]
+    pub desc: Option<String>,
+    #[serde(default)]
+    pub default_value: Option<Value>,
+    #[serde(default)]
+    pub user_editable: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserAttributeConfigsResponse {
+    #[serde(default)]
+    pub values: Vec<UserAttributeConfigResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserAttributeValueResponse {
+    pub key: String,
+    pub value: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserAttributeValuesResponse {
+    #[serde(default)]
+    pub values: Vec<UserAttributeValueResponse>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct UserValuesResponse {
+    #[serde(default)]
+    pub preferred_username: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct UserResponse {
     pub id: String,
     pub email: String,
@@ -68,6 +115,8 @@ pub struct UserResponse {
     pub enabled: bool,
     #[serde(default)]
     pub email_verified: bool,
+    #[serde(default)]
+    pub user_values: UserValuesResponse,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +139,42 @@ struct GroupRequest<'a> {
 #[derive(Debug, Serialize)]
 struct RoleRequest<'a> {
     role: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ScopeRequest {
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attr_include_access: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attr_include_id: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserAttributeConfigRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<Value>,
+    pub user_editable: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserAttributeValueRequest {
+    pub key: String,
+    pub value: Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserAttributeValuesUpdateRequest {
+    pub values: Vec<UserAttributeValueRequest>,
+}
+
+#[derive(Debug, Serialize)]
+struct PreferredUsernameRequest<'a> {
+    preferred_username: Option<&'a str>,
+    force_overwrite: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -156,6 +241,33 @@ pub struct UpdateClientRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub challenges: Option<Vec<String>>,
     pub force_mfa: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ClientSecretResponse {
+    String(String),
+    Object {
+        #[serde(default)]
+        secret: Option<String>,
+        #[serde(default)]
+        client_secret: Option<String>,
+        #[serde(default)]
+        value: Option<String>,
+    },
+}
+
+impl ClientSecretResponse {
+    fn into_secret(self) -> Option<String> {
+        match self {
+            Self::String(s) => Some(s),
+            Self::Object {
+                secret,
+                client_secret,
+                value,
+            } => secret.or(client_secret).or(value),
+        }
+    }
 }
 
 impl RauthyClient {
@@ -233,10 +345,33 @@ impl RauthyClient {
             ),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => bail!(
                 "API key rejected ({status}) — check the key value and its access rights \
-                 (needs Users/Groups/Roles/Clients read+write): {body}"
+                 (needs Users/Groups/Roles/Clients read+write, plus Scopes/UserAttributes \
+                 read+write when custom OIDC claims are declared): {body}"
             ),
             _ => bail!("unexpected status {status} validating API key: {body}"),
         }
+    }
+
+    fn send_ok_or_permission_hint(
+        &self,
+        req: RequestBuilder,
+        context: impl Into<String>,
+        missing_rights: &str,
+    ) -> Result<Response> {
+        let context = context.into();
+        let resp = req.send().with_context(|| context.clone())?;
+        if matches!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            bail!(
+                "{context} failed ({status}). Grant {missing_rights} to the Rauthy \
+                 provisioning API key, then rerun: {body}"
+            );
+        }
+        ok(resp).with_context(|| context)
     }
 
     // ----- groups -----
@@ -287,6 +422,89 @@ impl RauthyClient {
         Ok(())
     }
 
+    // ----- scopes -----
+
+    pub fn list_scopes(&self) -> Result<Vec<ScopeResponse>> {
+        let resp = self.send_ok_or_permission_hint(
+            self.req(Method::GET, "/scopes"),
+            "requesting Rauthy scopes",
+            "Scopes read/create/update/delete rights",
+        )?;
+        resp.json().context("decoding scopes list")
+    }
+
+    pub fn create_scope(&self, body: &ScopeRequest) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::POST, "/scopes").json(body),
+            format!("creating Rauthy scope {}", body.scope),
+            "Scopes read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
+    pub fn update_scope(&self, id: &str, body: &ScopeRequest) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::PUT, &format!("/scopes/{id}")).json(body),
+            format!("updating Rauthy scope {}", body.scope),
+            "Scopes read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_scope(&self, id: &str) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::DELETE, &format!("/scopes/{id}")),
+            format!("deleting Rauthy scope {id}"),
+            "Scopes read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
+    // ----- custom user attributes -----
+
+    pub fn list_user_attributes(&self) -> Result<Vec<UserAttributeConfigResponse>> {
+        let resp = self.send_ok_or_permission_hint(
+            self.req(Method::GET, "/users/attr"),
+            "requesting Rauthy user attribute configs",
+            "UserAttributes read/create/update/delete rights",
+        )?;
+        let decoded: UserAttributeConfigsResponse =
+            resp.json().context("decoding user attribute config list")?;
+        Ok(decoded.values)
+    }
+
+    pub fn create_user_attribute(&self, body: &UserAttributeConfigRequest) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::POST, "/users/attr").json(body),
+            format!("creating Rauthy user attribute {}", body.name),
+            "UserAttributes read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
+    pub fn update_user_attribute(
+        &self,
+        name: &str,
+        body: &UserAttributeConfigRequest,
+    ) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::PUT, &format!("/users/attr/{name}"))
+                .json(body),
+            format!("updating Rauthy user attribute {}", body.name),
+            "UserAttributes read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_user_attribute(&self, name: &str) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::DELETE, &format!("/users/attr/{name}")),
+            format!("deleting Rauthy user attribute {name}"),
+            "UserAttributes read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
     // ----- users -----
 
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserResponse>> {
@@ -321,6 +539,44 @@ impl RauthyClient {
         self.send_ok(
             self.req(Method::DELETE, &format!("/users/{id}")),
             format!("deleting Rauthy user {id}"),
+        )?;
+        Ok(())
+    }
+
+    pub fn get_user_attributes(&self, id: &str) -> Result<Vec<UserAttributeValueResponse>> {
+        let resp = self.send_ok_or_permission_hint(
+            self.req(Method::GET, &format!("/users/{id}/attr")),
+            format!("requesting Rauthy user attributes for {id}"),
+            "UserAttributes read/create/update/delete rights",
+        )?;
+        let decoded: UserAttributeValuesResponse =
+            resp.json().context("decoding user attribute values")?;
+        Ok(decoded.values)
+    }
+
+    pub fn update_user_attributes(
+        &self,
+        id: &str,
+        values: Vec<UserAttributeValueRequest>,
+    ) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::PUT, &format!("/users/{id}/attr"))
+                .json(&UserAttributeValuesUpdateRequest { values }),
+            format!("updating Rauthy user attributes for {id}"),
+            "UserAttributes read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
+    pub fn update_preferred_username(&self, id: &str, username: Option<&str>) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::PUT, &format!("/users/{id}/self/preferred_username"))
+                .json(&PreferredUsernameRequest {
+                    preferred_username: username,
+                    force_overwrite: Some(true),
+                }),
+            format!("updating Rauthy preferred_username for {id}"),
+            "Users update rights",
         )?;
         Ok(())
     }
@@ -361,6 +617,31 @@ impl RauthyClient {
             format!("deleting Rauthy client {id}"),
         )?;
         Ok(())
+    }
+
+    pub fn rotate_client_secret(&self, id: &str) -> Result<String> {
+        let resp = self
+            .req(Method::PUT, &format!("/clients/{id}/secret"))
+            .send()
+            .with_context(|| format!("rotating Rauthy client secret for {id}"))?;
+        let status = resp.status();
+        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            let body = resp.text().unwrap_or_default();
+            bail!(
+                "Rauthy API key lacks permission to rotate secret for client {id} ({status}). \
+                 Grant Secrets update/read rights to the provisioning key, then rerun: {body}"
+            );
+        }
+        let resp = ok(resp).with_context(|| format!("rotating Rauthy client secret for {id}"))?;
+        let secret = resp
+            .json::<ClientSecretResponse>()
+            .context("decoding Rauthy client-secret response")?
+            .into_secret()
+            .ok_or_else(|| anyhow!("Rauthy client-secret response did not contain a secret"))?;
+        if secret.trim().is_empty() {
+            bail!("Rauthy returned an empty client secret for {id}");
+        }
+        Ok(secret)
     }
 
     // ----- password-reset email (set-password link for new users) -----

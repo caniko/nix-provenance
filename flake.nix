@@ -45,6 +45,13 @@
           // {
             docs = docsPackage;
             site = docsPackage;
+            rauthy-vikunja-groups = pkgs.rauthy.overrideAttrs (old: {
+              patches =
+                (old.patches or [])
+                ++ [
+                  ./nix/patches/rauthy/0001-emit-vikunja-groups-top-level-claim.patch
+                ];
+            });
             inherit (pkgs) stalwart stalwart-cli;
           };
 
@@ -109,6 +116,7 @@
           identity-cli = self.packages.${final.stdenv.hostPlatform.system}.identity-cli;
           immich-provision = self.packages.${final.stdenv.hostPlatform.system}.immich-provision;
           rauthy-provision = self.packages.${final.stdenv.hostPlatform.system}.rauthy-provision;
+          rauthy-vikunja-groups = self.packages.${final.stdenv.hostPlatform.system}.rauthy-vikunja-groups;
           vikunja-provision = self.packages.${final.stdenv.hostPlatform.system}.vikunja-provision;
         }
         // (import ./nix/overlays/stalwart-016.nix final _prev);

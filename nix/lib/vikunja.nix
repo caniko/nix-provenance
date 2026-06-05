@@ -20,4 +20,39 @@
     originLanding = "https://${frontendHostname}/";
     scopeMaps.${group} = scopes;
   };
+
+  # Build a services.rauthy.provision.users overlay for Vikunja's OIDC team
+  # sync. `users` is keyed by short Rauthy/Vikunja username and must provide
+  # each user's primary `email`; `teams` is keyed by the Vikunja team slug and
+  # contains `members = [ "shortname" ... ]`.
+  rauthyTeamClaimUsers = {
+    users,
+    teams,
+  }: let
+    teamClaimsFor = username:
+      lib.mapAttrsToList (
+        teamName: team:
+          if builtins.elem username (team.members or [])
+          then {
+            name = team.name or teamName;
+            oidcID = team.oidcID or teamName;
+          }
+          else null
+      )
+      teams;
+  in
+    lib.mapAttrs' (
+      username: user: let
+        email =
+          if (user.email or null) == null
+          then throw "vikunja.rauthyTeamClaimUsers: user '${username}' must set `email`."
+          else user.email;
+        claims = lib.filter (claim: claim != null) (teamClaimsFor username);
+      in
+        lib.nameValuePair email {
+          preferredUsername = username;
+          attributes.vikunja_groups = claims;
+        }
+    )
+    users;
 }

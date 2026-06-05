@@ -12,9 +12,12 @@
 mod client;
 mod state;
 
+use std::collections::BTreeMap;
 use std::fmt::Arguments;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -22,9 +25,10 @@ use clap::Parser;
 use provenance_core::setops::{is_subset, opt_vec, same_set, union};
 
 use client::{
-    NewClientRequest, NewUserRequest, RauthyClient, UpdateClientRequest, UpdateUserRequest,
+    NewClientRequest, NewUserRequest, RauthyClient, ScopeRequest, UpdateClientRequest,
+    UpdateUserRequest, UserAttributeConfigRequest, UserAttributeValueRequest,
 };
-use state::{ClientSpec, State, UserSpec};
+use state::{ClientSpec, ScopeSpec, State, UserAttributeSpec, UserSpec};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -84,6 +88,8 @@ fn main() -> Result<()> {
     // Groups and roles first — users reference them by name.
     reconcile_groups(&client, &state, cli.no_auto_remove)?;
     reconcile_roles(&client, &state, cli.no_auto_remove)?;
+    reconcile_user_attributes(&client, &state, cli.no_auto_remove)?;
+    reconcile_scopes(&client, &state, cli.no_auto_remove)?;
     reconcile_users(&client, &state, cli.no_auto_remove)?;
     reconcile_clients(&client, &state, cli.no_auto_remove)?;
 
@@ -133,6 +139,66 @@ fn reconcile_roles(client: &RauthyClient, state: &State, no_auto_remove: bool) -
     Ok(())
 }
 
+fn reconcile_user_attributes(
+    client: &RauthyClient,
+    state: &State,
+    no_auto_remove: bool,
+) -> Result<()> {
+    if state.user_attributes.is_empty() {
+        return Ok(());
+    }
+    let existing = client.list_user_attributes()?;
+    for (name, spec) in &state.user_attributes {
+        let found = existing.iter().find(|attr| &attr.name == name);
+        match (spec.present, found) {
+            (true, None) => {
+                log(format_args!("create user attribute {name}"));
+                client.create_user_attribute(&user_attribute_request(name, spec))?;
+            }
+            (true, Some(attr)) => {
+                if user_attribute_drifted(attr, spec) {
+                    log(format_args!("update user attribute {name}"));
+                    client.update_user_attribute(name, &user_attribute_request(name, spec))?;
+                }
+            }
+            (false, Some(_)) if !no_auto_remove => {
+                log(format_args!("delete user attribute {name}"));
+                client.delete_user_attribute(name)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_scopes(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
+    if state.scopes.is_empty() {
+        return Ok(());
+    }
+    let existing = client.list_scopes()?;
+    for (name, spec) in &state.scopes {
+        let found = existing.iter().find(|scope| &scope.name == name);
+        match (spec.present, found) {
+            (true, None) => {
+                log(format_args!("create scope {name}"));
+                client.create_scope(&scope_request(name, spec))?;
+            }
+            (true, Some(scope)) => {
+                if scope_drifted(scope, spec) {
+                    log(format_args!("update scope {name}"));
+                    client.update_scope(&scope.id, &scope_request(name, spec))?;
+                }
+            }
+            (false, Some(scope)) if !no_auto_remove => {
+                log(format_args!("delete scope {name}"));
+                client.delete_scope(&scope.id)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
     for (email, spec) in &state.users {
         let current = client.get_user_by_email(email)?;
@@ -140,6 +206,13 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
             (true, None) => {
                 log(format_args!("create user {email}"));
                 client.create_user(&new_user(email, spec))?;
+                if spec.preferred_username.is_some() || !spec.attributes.is_empty() {
+                    let user = client.get_user_by_email(email)?.ok_or_else(|| {
+                        anyhow!("Rauthy user {email} was created but could not be read back")
+                    })?;
+                    reconcile_user_preferred_username(client, &user, spec)?;
+                    reconcile_user_attributes_values(client, &user, spec)?;
+                }
                 // Email a set-password link only on first create (never on
                 // update), so at most one email is ever sent per user.
                 if spec.send_password_email {
@@ -159,6 +232,8 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
                     log(format_args!("update user {email} (roles/groups)"));
                     client.update_user(&user.id, &update_user(&user, spec))?;
                 }
+                reconcile_user_preferred_username(client, &user, spec)?;
+                reconcile_user_attributes_values(client, &user, spec)?;
             }
             (false, Some(user)) if !no_auto_remove => {
                 log(format_args!("delete user {email}"));
@@ -215,8 +290,93 @@ fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserReques
     }
 }
 
+fn reconcile_user_preferred_username(
+    client: &RauthyClient,
+    user: &client::UserResponse,
+    spec: &UserSpec,
+) -> Result<()> {
+    let Some(desired) = spec.preferred_username.as_deref() else {
+        return Ok(());
+    };
+    if user.user_values.preferred_username.as_deref() != Some(desired) {
+        log(format_args!(
+            "update user {} preferred_username",
+            user.email
+        ));
+        client.update_preferred_username(&user.id, Some(desired))?;
+    }
+    Ok(())
+}
+
+fn reconcile_user_attributes_values(
+    client: &RauthyClient,
+    user: &client::UserResponse,
+    spec: &UserSpec,
+) -> Result<()> {
+    if spec.attributes.is_empty() {
+        return Ok(());
+    }
+    let current = client.get_user_attributes(&user.id)?;
+    let current: BTreeMap<_, _> = current
+        .into_iter()
+        .map(|attr| (attr.key, attr.value))
+        .collect();
+    let mut updates = Vec::new();
+    for (key, desired) in &spec.attributes {
+        if current.get(key) != Some(desired) {
+            updates.push(UserAttributeValueRequest {
+                key: key.clone(),
+                value: desired.clone(),
+            });
+        }
+    }
+    if !updates.is_empty() {
+        log(format_args!("update user {} custom attributes", user.email));
+        client.update_user_attributes(&user.id, updates)?;
+    }
+    Ok(())
+}
+
+fn scope_request(name: &str, spec: &ScopeSpec) -> ScopeRequest {
+    ScopeRequest {
+        scope: name.to_string(),
+        attr_include_access: opt_vec(&spec.attr_include_access),
+        attr_include_id: opt_vec(&spec.attr_include_id),
+    }
+}
+
+fn scope_drifted(cur: &client::ScopeResponse, spec: &ScopeSpec) -> bool {
+    let cur_access = cur.attr_include_access.as_deref().unwrap_or_default();
+    let cur_id = cur.attr_include_id.as_deref().unwrap_or_default();
+    !same_set(cur_access, &spec.attr_include_access) || !same_set(cur_id, &spec.attr_include_id)
+}
+
+fn user_attribute_request(name: &str, spec: &UserAttributeSpec) -> UserAttributeConfigRequest {
+    UserAttributeConfigRequest {
+        name: name.to_string(),
+        desc: spec.desc.clone(),
+        default_value: spec.default_value.clone(),
+        user_editable: Some(spec.user_editable),
+    }
+}
+
+fn user_attribute_drifted(
+    cur: &client::UserAttributeConfigResponse,
+    spec: &UserAttributeSpec,
+) -> bool {
+    cur.desc != spec.desc
+        || cur.default_value != spec.default_value
+        || cur.user_editable != spec.user_editable
+}
+
 fn reconcile_clients(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
     for (id, spec) in &state.clients {
+        if spec.generated_secret_file.is_some() && !spec.confidential {
+            anyhow::bail!(
+                "client {id} sets generated_secret_file but is not confidential; \
+                 Rauthy only has client secrets for confidential clients"
+            );
+        }
         let current = client.get_client(id)?;
         match (spec.present, current) {
             (true, None) => {
@@ -238,7 +398,72 @@ fn reconcile_clients(client: &RauthyClient, state: &State, no_auto_remove: bool)
             }
             (false, _) => {}
         }
+        if spec.present {
+            ensure_client_secret_file(client, id, spec)?;
+        }
     }
+    Ok(())
+}
+
+fn ensure_client_secret_file(client: &RauthyClient, id: &str, spec: &ClientSpec) -> Result<()> {
+    let Some(path) = spec.generated_secret_file.as_deref() else {
+        return Ok(());
+    };
+    let path = Path::new(path);
+    match fs::metadata(path) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                anyhow::bail!(
+                    "generated secret path {} exists but is not a regular file",
+                    path.display()
+                );
+            }
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("checking generated secret file {}", path.display()));
+        }
+    }
+
+    let parent = path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "generated secret path {} has no parent directory",
+            path.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating generated secret directory {}", parent.display()))?;
+
+    log(format_args!(
+        "generate client secret for {id} into {}",
+        path.display()
+    ));
+    let secret = client.rotate_client_secret(id)?;
+    let file_name = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
+        anyhow::anyhow!("generated secret path {} has no file name", path.display())
+    })?;
+    let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    {
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .with_context(|| format!("creating temporary secret file {}", tmp.display()))?;
+        f.write_all(secret.as_bytes())
+            .with_context(|| format!("writing temporary secret file {}", tmp.display()))?;
+        f.sync_all()
+            .with_context(|| format!("syncing temporary secret file {}", tmp.display()))?;
+    }
+    fs::rename(&tmp, path).with_context(|| {
+        format!(
+            "installing generated secret file {} from {}",
+            path.display(),
+            tmp.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -299,6 +524,7 @@ mod tests {
             groups: groups.map(|g| g.iter().map(ToString::to_string).collect()),
             enabled: true,
             email_verified: false,
+            user_values: client::UserValuesResponse::default(),
         }
     }
 

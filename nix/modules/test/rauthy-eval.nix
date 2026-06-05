@@ -14,15 +14,30 @@
     apiKeyFile = "/run/secrets/rauthy-provision-api-key";
     groups.internal = {};
     roles.admin = {};
+    userAttributes.vikunja_groups = {
+      desc = "Vikunja team sync groups";
+      userEditable = false;
+    };
+    scopes.vikunja_groups.attrIncludeId = ["vikunja_groups"];
     users."alice@example.com" = {
       givenName = "Alice";
       familyName = "Smith";
       roles = ["admin"];
       groups = ["internal"];
+      preferredUsername = "alice";
+      attributes.vikunja_groups = [
+        {
+          name = "Operations";
+          oidcID = "ops";
+        }
+      ];
     };
     clients.demo = {
       name = "Demo";
       redirectUris = ["https://demo.example.com/callback"];
+      scopes = ["openid" "profile" "email" "vikunja_groups"];
+      defaultScopes = ["openid" "profile" "email" "vikunja_groups"];
+      generatedSecretFile = "/run/rauthy-clients/demo.secret";
     };
   };
 

@@ -26,6 +26,41 @@
 
   groupSubmodule = types.submodule {options.present = presentOption;};
   roleSubmodule = types.submodule {options.present = presentOption;};
+  scopeSubmodule = types.submodule {
+    options = {
+      present = presentOption;
+      attrIncludeAccess = mkOption {
+        type = types.listOf types.str;
+        default = [];
+        description = "Custom user attributes to include in access tokens when this custom scope is granted.";
+      };
+      attrIncludeId = mkOption {
+        type = types.listOf types.str;
+        default = [];
+        description = "Custom user attributes to include in ID tokens when this custom scope is granted.";
+      };
+    };
+  };
+  userAttributeSubmodule = types.submodule {
+    options = {
+      present = presentOption;
+      desc = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional custom user attribute description.";
+      };
+      defaultValue = mkOption {
+        type = types.nullOr types.anything;
+        default = null;
+        description = "Optional JSON default value for the custom user attribute.";
+      };
+      userEditable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Whether users may edit this custom attribute themselves.";
+      };
+    };
+  };
 
   userSubmodule = types.submodule {
     options = {
@@ -54,6 +89,16 @@
         type = types.listOf types.str;
         default = [];
         description = "Rauthy group names assigned to the user (reconciled on update).";
+      };
+      preferredUsername = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Rauthy preferred_username to set through the admin API.";
+      };
+      attributes = mkOption {
+        type = types.attrsOf types.anything;
+        default = {};
+        description = "Custom Rauthy user attribute values, rendered as JSON.";
       };
       sendPasswordEmail = mkOption {
         type = types.bool;
@@ -126,17 +171,43 @@
         default = true;
         description = "Enable PKCE (S256). Required for public clients.";
       };
+      generatedSecretFile = mkOption {
+        type = types.nullOr (types.oneOf [types.path types.str]);
+        default = null;
+        description = ''
+          Runtime path where rauthy-provision writes this confidential client's
+          generated secret if the file is missing. The path is rendered into the
+          state file, but the secret value is generated at activation time and
+          never enters the Nix store.
+        '';
+      };
     };
   };
 
   manifest = {
     groups = lib.mapAttrs (_: g: {inherit (g) present;}) cfg.groups;
     roles = lib.mapAttrs (_: r: {inherit (r) present;}) cfg.roles;
+    scopes =
+      lib.mapAttrs (_: s: {
+        inherit (s) present;
+        attr_include_access = s.attrIncludeAccess;
+        attr_include_id = s.attrIncludeId;
+      })
+      cfg.scopes;
+    user_attributes =
+      lib.mapAttrs (_: a: {
+        inherit (a) present;
+        desc = a.desc;
+        default_value = a.defaultValue;
+        user_editable = a.userEditable;
+      })
+      cfg.userAttributes;
     users =
       lib.mapAttrs (_: u: {
-        inherit (u) present language roles groups;
+        inherit (u) present language roles groups attributes;
         given_name = u.givenName;
         family_name = u.familyName;
+        preferred_username = u.preferredUsername;
         send_password_email = u.sendPasswordEmail;
         password_email_redirect_uri = u.passwordEmailRedirectUri;
       })
@@ -151,6 +222,10 @@
         default_scopes = c.defaultScopes;
         flows_enabled = c.flowsEnabled;
         enable_pkce = c.enablePkce;
+        generated_secret_file =
+          if c.generatedSecretFile == null
+          then null
+          else toString c.generatedSecretFile;
       })
       cfg.clients;
   };
@@ -267,6 +342,18 @@ in {
       description = "Rauthy roles to provision, keyed by role name.";
     };
 
+    scopes = mkOption {
+      type = types.attrsOf scopeSubmodule;
+      default = {};
+      description = "Rauthy custom scopes to provision, keyed by scope name.";
+    };
+
+    userAttributes = mkOption {
+      type = types.attrsOf userAttributeSubmodule;
+      default = {};
+      description = "Rauthy custom user attributes to provision, keyed by attribute name.";
+    };
+
     users = mkOption {
       type = types.attrsOf userSubmodule;
       default = {};
@@ -285,20 +372,26 @@ in {
   };
 
   config = mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = cfg.apiKeyFile != null || cfg.apiKeyEnvironmentFile != null;
-        message = "services.rauthy.provision must set apiKeyFile or apiKeyEnvironmentFile when provisioning is enabled.";
-      }
-      {
-        assertion = !(cfg.apiKeyFile != null && cfg.apiKeyEnvironmentFile != null);
-        message = "services.rauthy.provision must set only one of apiKeyFile or apiKeyEnvironmentFile.";
-      }
-      {
-        assertion = cfg.apiKeyName != "" && !(lib.hasInfix "$" cfg.apiKeyName);
-        message = "services.rauthy.provision.apiKeyName must be non-empty and must not contain '$'.";
-      }
-    ];
+    assertions =
+      [
+        {
+          assertion = cfg.apiKeyFile != null || cfg.apiKeyEnvironmentFile != null;
+          message = "services.rauthy.provision must set apiKeyFile or apiKeyEnvironmentFile when provisioning is enabled.";
+        }
+        {
+          assertion = !(cfg.apiKeyFile != null && cfg.apiKeyEnvironmentFile != null);
+          message = "services.rauthy.provision must set only one of apiKeyFile or apiKeyEnvironmentFile.";
+        }
+        {
+          assertion = cfg.apiKeyName != "" && !(lib.hasInfix "$" cfg.apiKeyName);
+          message = "services.rauthy.provision.apiKeyName must be non-empty and must not contain '$'.";
+        }
+      ]
+      ++ lib.mapAttrsToList (n: c: {
+        assertion = c.generatedSecretFile == null || c.confidential;
+        message = "services.rauthy.provision.clients.${n}.generatedSecretFile requires confidential = true.";
+      })
+      cfg.clients;
 
     systemd.services.rauthy-provision = {
       description = "Declaratively provision Rauthy (users, groups, roles, clients)";
