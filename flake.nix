@@ -9,6 +9,10 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     crane.url = "github:ipetkov/crane";
+    rauthy-src = {
+      url = "path:/data/nvme0/can/Projects/rauthy-pr2-clean";
+      flake = false;
+    };
   };
 
   outputs = {
@@ -17,6 +21,7 @@
     flake-utils,
     rust-overlay,
     crane,
+    rauthy-src,
     ...
   }:
     flake-utils.lib.eachDefaultSystem (
@@ -46,6 +51,29 @@
             docs = docsPackage;
             site = docsPackage;
             rauthy-vikunja-groups = pkgs.rauthy.overrideAttrs (old: {
+              src = rauthy-src;
+              cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+                src = rauthy-src;
+                hash = "sha256-wNLKdfFVfXUc5BhX9McitliEnc1WKytgo53LiAQHlqA=";
+              };
+              npmDeps = pkgs.fetchNpmDeps {
+                src = "${rauthy-src}/frontend";
+                hash = "sha256-w3x+dUfmJ4H82wX87C3UHEJ5Ls4v6lsn7kKOxvRJY8g=";
+              };
+              nativeBuildInputs =
+                (builtins.filter
+                  (input: !(lib.hasPrefix "wasm-bindgen-cli-" (input.name or "")))
+                  (old.nativeBuildInputs or []))
+                ++ [pkgs.wasm-bindgen-cli];
+              preBuild = ''
+                pushd src/wasm-modules
+                wasm-pack build -d ../../frontend/src/wasm/spow --no-pack --mode no-install --out-name spow --features spow
+                wasm-pack build -d ../../frontend/src/wasm/md --no-pack --mode no-install --out-name md --features md
+                popd
+                pushd "$npmRoot"
+                npm run build
+                popd
+              '';
               patches =
                 (old.patches or [])
                 ++ [
@@ -111,13 +139,59 @@
         default = {imports = [self.nixosModules.rauthy];};
       };
 
-      overlays.default = final: _prev:
+      overlays.default = final: _prev: let
+        craneLib = crane.mkLib final;
+        src = craneLib.cleanCargoSource ./.;
+        crates = import ./nix/packages.nix {
+          inherit (final) lib;
+          inherit craneLib src;
+        };
+        nativeWasmToolPath = final.lib.makeBinPath [
+          final.pkgsBuildBuild.cargo
+          final.pkgsBuildBuild.rustc
+          final.pkgsBuildBuild.wasm-bindgen-cli
+          final.pkgsBuildBuild.wasm-pack
+        ];
+        rauthyVikunjaGroups = final.rauthy.overrideAttrs (old: {
+          src = rauthy-src;
+          cargoDeps = final.rustPlatform.fetchCargoVendor {
+            src = rauthy-src;
+            hash = "sha256-wNLKdfFVfXUc5BhX9McitliEnc1WKytgo53LiAQHlqA=";
+          };
+          npmDeps = final.fetchNpmDeps {
+            src = "${rauthy-src}/frontend";
+            hash = "sha256-w3x+dUfmJ4H82wX87C3UHEJ5Ls4v6lsn7kKOxvRJY8g=";
+          };
+          nativeBuildInputs =
+            (builtins.filter
+              (input: !(final.lib.hasPrefix "wasm-bindgen-cli-" (input.name or "")))
+              (old.nativeBuildInputs or []))
+            ++ [final.wasm-bindgen-cli];
+          preBuild = ''
+            pushd src/wasm-modules
+            (
+              export PATH=${nativeWasmToolPath}:$PATH
+              export CARGO=${final.pkgsBuildBuild.cargo}/bin/cargo
+              export RUSTC=${final.pkgsBuildBuild.rustc}/bin/rustc
+              unset CARGO_BUILD_TARGET
+              wasm-pack build -d ../../frontend/src/wasm/spow --no-pack --mode no-install --out-name spow --features spow
+              wasm-pack build -d ../../frontend/src/wasm/md --no-pack --mode no-install --out-name md --features md
+            )
+            popd
+            pushd "$npmRoot"
+            npm run build
+            popd
+          '';
+          patches =
+            (old.patches or [])
+            ++ [
+              ./nix/patches/rauthy/0001-emit-vikunja-groups-top-level-claim.patch
+            ];
+        });
+      in
         {
-          identity-cli = self.packages.${final.stdenv.hostPlatform.system}.identity-cli;
-          immich-provision = self.packages.${final.stdenv.hostPlatform.system}.immich-provision;
-          rauthy-provision = self.packages.${final.stdenv.hostPlatform.system}.rauthy-provision;
-          rauthy-vikunja-groups = self.packages.${final.stdenv.hostPlatform.system}.rauthy-vikunja-groups;
-          vikunja-provision = self.packages.${final.stdenv.hostPlatform.system}.vikunja-provision;
+          inherit (crates.packages) identity-cli immich-provision rauthy-provision vikunja-provision;
+          rauthy-vikunja-groups = rauthyVikunjaGroups;
         }
         // (import ./nix/overlays/stalwart-016.nix final _prev);
 

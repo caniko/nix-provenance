@@ -1,8 +1,7 @@
 //! Declarative state schema.
 //!
-//! The state file is a JSON document with four top-level maps — `groups`,
-//! `roles`, `users`, and `clients` — mirroring the entity types Rauthy's admin
-//! API exposes to an API key. Each entity carries a `present` flag (default
+//! The state file is a JSON document with top-level maps mirroring the entity
+//! types Rauthy's admin API exposes to an API key. Each entity carries a `present` flag (default
 //! `true`); setting it `false` deletes the entity if it exists.
 //!
 //! This is the analogue of kanidm-provision's `state.json`, adapted to
@@ -54,6 +53,9 @@ pub struct State {
     /// Keyed by the OIDC client id.
     #[serde(default)]
     pub clients: BTreeMap<String, ClientSpec>,
+    /// Keyed by the upstream auth provider id.
+    #[serde(default)]
+    pub providers: BTreeMap<String, ProviderSpec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,10 +101,9 @@ pub struct UserAttributeSpec {
 /// "Auto-Link User" enabled, a passwordless local user whose email matches the
 /// upstream identity is auto-linked on first federated login.
 ///
-/// `given_name`, `family_name`, and `language` are applied only at creation —
-/// they are *not* re-enforced on update, so federated profile-claim sync from
-/// the upstream IdP is never fought. Updates reconcile `roles` and `groups`
-/// only (the authorization-relevant attributes).
+/// Profile fields are reconciled only when explicitly set. Unset fields remain
+/// unmanaged, so federated profile-claim sync from an upstream IdP can keep
+/// owning them.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserSpec {
@@ -112,6 +113,20 @@ pub struct UserSpec {
     pub given_name: Option<String>,
     #[serde(default)]
     pub family_name: Option<String>,
+    #[serde(default)]
+    pub birthdate: Option<String>,
+    #[serde(default)]
+    pub timezone: Option<String>,
+    #[serde(default)]
+    pub street: Option<String>,
+    #[serde(default)]
+    pub zip: Option<String>,
+    #[serde(default)]
+    pub city: Option<String>,
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(default)]
@@ -168,6 +183,56 @@ pub struct ClientSpec {
     pub generated_secret_file: Option<String>,
 }
 
+fn default_provider_type() -> String {
+    "oidc".to_string()
+}
+
+fn default_provider_scope() -> String {
+    "openid email profile".to_string()
+}
+
+/// An upstream auth provider, for example kanidm as Rauthy's source IdP.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderSpec {
+    #[serde(default = "default_true")]
+    pub present: bool,
+    pub name: String,
+    #[serde(default = "default_provider_type")]
+    pub typ: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub userinfo_endpoint: String,
+    #[serde(default)]
+    pub jwks_endpoint: Option<String>,
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret_file: Option<String>,
+    #[serde(default = "default_provider_scope")]
+    pub scope: String,
+    #[serde(default = "default_true")]
+    pub use_pkce: bool,
+    #[serde(default = "default_true")]
+    pub client_secret_basic: bool,
+    #[serde(default)]
+    pub client_secret_post: bool,
+    #[serde(default)]
+    pub auto_onboarding: bool,
+    #[serde(default)]
+    pub auto_link: bool,
+    #[serde(default)]
+    pub admin_claim_path: Option<String>,
+    #[serde(default)]
+    pub admin_claim_value: Option<String>,
+    #[serde(default)]
+    pub mfa_claim_path: Option<String>,
+    #[serde(default)]
+    pub mfa_claim_value: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +244,7 @@ mod tests {
         assert!(s.groups.is_empty());
         assert!(s.scopes.is_empty());
         assert!(s.user_attributes.is_empty());
+        assert!(s.providers.is_empty());
     }
 
     #[test]
@@ -202,6 +268,15 @@ mod tests {
               "user_attributes": { "vikunja_groups": { "user_editable": false } },
               "users": { "a@example.com": {
                 "preferred_username": "alice",
+                "given_name": "Alice",
+                "family_name": "Smith",
+                "birthdate": "1984-01-02",
+                "timezone": "Europe/Oslo",
+                "street": "Example Street 1",
+                "zip": "12345",
+                "city": "Oslo",
+                "country": "Norway",
+                "phone": "+4712345678",
                 "attributes": {
                   "vikunja_groups": [{"name": "ops", "oidcID": "ops"}]
                 }
@@ -217,6 +292,16 @@ mod tests {
             s.users["a@example.com"].preferred_username.as_deref(),
             Some("alice")
         );
+        let user = &s.users["a@example.com"];
+        assert_eq!(user.given_name.as_deref(), Some("Alice"));
+        assert_eq!(user.family_name.as_deref(), Some("Smith"));
+        assert_eq!(user.birthdate.as_deref(), Some("1984-01-02"));
+        assert_eq!(user.timezone.as_deref(), Some("Europe/Oslo"));
+        assert_eq!(user.street.as_deref(), Some("Example Street 1"));
+        assert_eq!(user.zip.as_deref(), Some("12345"));
+        assert_eq!(user.city.as_deref(), Some("Oslo"));
+        assert_eq!(user.country.as_deref(), Some("Norway"));
+        assert_eq!(user.phone.as_deref(), Some("+4712345678"));
         assert!(s.users["a@example.com"]
             .attributes
             .contains_key("vikunja_groups"));
@@ -250,6 +335,34 @@ mod tests {
         assert_eq!(
             c.generated_secret_file.as_deref(),
             Some("/run/rauthy-clients/app.secret")
+        );
+    }
+
+    #[test]
+    fn provider_defaults_and_secret_file_parse() {
+        let s: State = serde_json::from_str(
+            r#"{ "providers": { "kanidm": {
+              "name": "Kanidm",
+              "issuer": "https://auth.example.com/oauth2/openid/rauthy",
+              "authorization_endpoint": "https://auth.example.com/oauth2/openid/rauthy/auth",
+              "token_endpoint": "https://auth.example.com/oauth2/openid/rauthy/token",
+              "userinfo_endpoint": "https://auth.example.com/oauth2/openid/rauthy/userinfo",
+              "client_id": "rauthy",
+              "client_secret_file": "/run/secrets/rauthy-kanidm",
+              "auto_link": true
+            } } }"#,
+        )
+        .unwrap();
+        let p = &s.providers["kanidm"];
+        assert!(p.present);
+        assert_eq!(p.typ, "oidc");
+        assert_eq!(p.scope, "openid email profile");
+        assert!(p.use_pkce);
+        assert!(p.client_secret_basic);
+        assert!(!p.client_secret_post);
+        assert_eq!(
+            p.client_secret_file.as_deref(),
+            Some("/run/secrets/rauthy-kanidm")
         );
     }
 }

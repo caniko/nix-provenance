@@ -49,11 +49,25 @@
         "type": "github"
       }
     },
+    "rauthy-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1780810643,
+        "narHash": "sha256-S6lOO76IcZH0/bsZUpPxHFewjm9TmHsNlYJjvP+yj2k=",
+        "path": "/data/nvme0/can/Projects/rauthy-pr2-clean",
+        "type": "path"
+      },
+      "original": {
+        "path": "/data/nvme0/can/Projects/rauthy-pr2-clean",
+        "type": "path"
+      }
+    },
     "root": {
       "inputs": {
         "crane": "crane",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
+        "rauthy-src": "rauthy-src",
         "rust-overlay": "rust-overlay"
       }
     },

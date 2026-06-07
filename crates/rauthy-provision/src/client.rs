@@ -6,7 +6,9 @@
 //! groups/rights: Users(read,create,update,delete), Groups(…), Roles(…),
 //! Clients(…). Scopes and UserAttributes are needed for custom OIDC claim
 //! provisioning. Secrets(update) is needed for generated confidential client
-//! secrets.
+//! secrets. Providers(read,create,update,delete) is needed when upstream auth
+//! providers are declared. ApiKeys(read,create,update,delete) is needed only
+//! for transient provisioning-key management.
 
 use std::fmt;
 use std::thread::sleep;
@@ -95,6 +97,20 @@ pub struct UserAttributeValuesResponse {
 pub struct UserValuesResponse {
     #[serde(default)]
     pub preferred_username: Option<String>,
+    #[serde(default)]
+    pub birthdate: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
+    #[serde(default)]
+    pub street: Option<String>,
+    #[serde(default)]
+    pub zip: Option<String>,
+    #[serde(default)]
+    pub city: Option<String>,
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub tz: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,7 +144,47 @@ pub struct ClientResponse {
     #[serde(default)]
     pub flows_enabled: Vec<String>,
     #[serde(default)]
+    pub challenges: Option<Vec<String>>,
+    #[serde(default)]
     pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProviderResponse {
+    pub id: String,
+    pub name: String,
+    pub typ: String,
+    pub enabled: bool,
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub userinfo_endpoint: String,
+    #[serde(default)]
+    pub jwks_endpoint: Option<String>,
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    pub scope: String,
+    #[serde(default)]
+    pub admin_claim_path: Option<String>,
+    #[serde(default)]
+    pub admin_claim_value: Option<String>,
+    #[serde(default)]
+    pub mfa_claim_path: Option<String>,
+    #[serde(default)]
+    pub mfa_claim_value: Option<String>,
+    pub use_pkce: bool,
+    pub client_secret_basic: bool,
+    pub client_secret_post: bool,
+    pub auto_onboarding: bool,
+    pub auto_link: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct ProviderLinkedUserResponse {
+    pub id: String,
+    pub email: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -207,6 +263,18 @@ pub struct UpdateUserRequest {
 }
 
 #[derive(Debug, Serialize)]
+pub struct UserPatchValue {
+    pub key: &'static str,
+    pub value: Value,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct UserPatchRequest {
+    pub put: Vec<UserPatchValue>,
+    pub del: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct NewClientRequest {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -238,9 +306,51 @@ pub struct UpdateClientRequest {
     pub access_token_lifetime: i32,
     pub scopes: Vec<String>,
     pub default_scopes: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub challenges: Option<Vec<String>>,
     pub force_mfa: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderRequest {
+    pub name: String,
+    pub typ: String,
+    pub enabled: bool,
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub userinfo_endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jwks_endpoint: Option<String>,
+    pub use_pkce: bool,
+    pub client_secret_basic: bool,
+    pub client_secret_post: bool,
+    pub auto_onboarding: bool,
+    pub auto_link: bool,
+    pub client_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_claim_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_claim_value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mfa_claim_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mfa_claim_value: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiKeyRequest {
+    pub name: String,
+    pub exp: Option<i64>,
+    pub access: Vec<ApiKeyAccessRequest>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiKeyAccessRequest {
+    pub group: &'static str,
+    pub access_rights: Vec<&'static str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -309,10 +419,16 @@ impl RauthyClient {
     /// bad key's 400 as "still starting" and burns the entire timeout before
     /// failing with a misleading "did not become ready in time".
     pub fn wait_ready(&self, attempts: u32, delay: Duration) -> Result<()> {
+        self.wait_healthy(attempts, delay)?;
+        self.check_api_key()
+    }
+
+    /// Poll the unauthenticated health endpoint until the server is up.
+    pub fn wait_healthy(&self, attempts: u32, delay: Duration) -> Result<()> {
         let mut last_err = None;
         for attempt in 1..=attempts {
             match self.http.get(format!("{}/health", self.api)).send() {
-                Ok(resp) if resp.status().is_success() => return self.check_api_key(),
+                Ok(resp) if resp.status().is_success() => return Ok(()),
                 Ok(resp) => last_err = Some(anyhow!("readiness probe returned {}", resp.status())),
                 Err(e) => last_err = Some(anyhow!("readiness probe failed: {e}")),
             }
@@ -346,7 +462,9 @@ impl RauthyClient {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => bail!(
                 "API key rejected ({status}) — check the key value and its access rights \
                  (needs Users/Groups/Roles/Clients read+write, plus Scopes/UserAttributes \
-                 read+write when custom OIDC claims are declared): {body}"
+                 read+write when custom OIDC claims are declared, Secrets update/read for \
+                 generated client secrets, and Providers read/write when upstream auth providers \
+                 are declared): {body}"
             ),
             _ => bail!("unexpected status {status} validating API key: {body}"),
         }
@@ -372,6 +490,99 @@ impl RauthyClient {
             );
         }
         ok(resp).with_context(|| context)
+    }
+
+    // ----- API keys -----
+
+    pub fn create_or_update_api_key(&self, body: &ApiKeyRequest) -> Result<()> {
+        let resp = self
+            .req(Method::POST, "/api_keys")
+            .json(body)
+            .send()
+            .with_context(|| format!("creating transient Rauthy API key {}", body.name))?;
+        match resp.status() {
+            status if status.is_success() => Ok(()),
+            StatusCode::BAD_REQUEST => {
+                let resp = self
+                    .req(Method::PUT, &format!("/api_keys/{}", body.name))
+                    .json(body)
+                    .send()
+                    .with_context(|| format!("updating transient Rauthy API key {}", body.name))?;
+                if matches!(
+                    resp.status(),
+                    StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+                ) {
+                    let status = resp.status();
+                    let body = resp.text().unwrap_or_default();
+                    bail!(
+                        "Rauthy API key manager lacks permission to update API keys ({status}). \
+                         Grant ApiKeys update rights to the manager key, then rerun: {body}"
+                    );
+                }
+                ok(resp)
+                    .with_context(|| format!("updating transient Rauthy API key {}", body.name))?;
+                Ok(())
+            }
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_default();
+                bail!(
+                    "Rauthy API key manager lacks permission to create API keys ({status}). \
+                     Grant ApiKeys create/update/delete rights to the manager key, then rerun: {body}"
+                );
+            }
+            _ => {
+                ok(resp)
+                    .with_context(|| format!("creating transient Rauthy API key {}", body.name))?;
+                Ok(())
+            }
+        }
+    }
+
+    pub fn rotate_api_key_secret(&self, name: &str) -> Result<String> {
+        let resp = self
+            .req(Method::PUT, &format!("/api_keys/{name}/secret"))
+            .send()
+            .with_context(|| format!("rotating transient Rauthy API key {name}"))?;
+        if matches!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            bail!(
+                "Rauthy API key manager lacks permission to rotate API-key secrets ({status}). \
+                 Grant ApiKeys update rights to the manager key, then rerun: {body}"
+            );
+        }
+        let resp = ok(resp).with_context(|| format!("rotating transient Rauthy API key {name}"))?;
+        let secret = resp
+            .text()
+            .context("decoding transient Rauthy API-key secret response")?;
+        if secret.trim().is_empty() {
+            bail!("Rauthy returned an empty secret for transient API key {name}");
+        }
+        Ok(secret)
+    }
+
+    pub fn delete_api_key(&self, name: &str) -> Result<()> {
+        let resp = self
+            .req(Method::DELETE, &format!("/api_keys/{name}"))
+            .send()
+            .with_context(|| format!("deleting transient Rauthy API key {name}"))?;
+        if matches!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            bail!(
+                "Rauthy API key manager lacks permission to delete API keys ({status}). \
+                 Grant ApiKeys delete rights to the manager key, then rerun: {body}"
+            );
+        }
+        ok(resp).with_context(|| format!("deleting transient Rauthy API key {name}"))?;
+        Ok(())
     }
 
     // ----- groups -----
@@ -535,6 +746,15 @@ impl RauthyClient {
         Ok(())
     }
 
+    pub fn patch_user(&self, id: &str, body: &UserPatchRequest) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::PATCH, &format!("/users/{id}")).json(body),
+            format!("patching Rauthy user {id}"),
+            "Users update rights",
+        )?;
+        Ok(())
+    }
+
     pub fn delete_user(&self, id: &str) -> Result<()> {
         self.send_ok(
             self.req(Method::DELETE, &format!("/users/{id}")),
@@ -642,6 +862,70 @@ impl RauthyClient {
             bail!("Rauthy returned an empty client secret for {id}");
         }
         Ok(secret)
+    }
+
+    // ----- upstream auth providers -----
+
+    pub fn list_providers(&self) -> Result<Vec<ProviderResponse>> {
+        let resp = self.send_ok_or_permission_hint(
+            self.req(Method::POST, "/providers"),
+            "requesting Rauthy upstream auth providers",
+            "Providers read/create/update/delete rights",
+        )?;
+        resp.json().context("decoding provider list")
+    }
+
+    pub fn create_provider(&self, body: &ProviderRequest) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::POST, "/providers/create").json(body),
+            format!("creating Rauthy upstream auth provider {}", body.name),
+            "Providers read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
+    pub fn update_provider(&self, id: &str, body: &ProviderRequest) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::PUT, &format!("/providers/{id}"))
+                .json(body),
+            format!("updating Rauthy upstream auth provider {id}"),
+            "Providers read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_provider(&self, id: &str) -> Result<()> {
+        self.send_ok_or_permission_hint(
+            self.req(Method::DELETE, &format!("/providers/{id}")),
+            format!("deleting Rauthy upstream auth provider {id}"),
+            "Providers read/create/update/delete rights",
+        )?;
+        Ok(())
+    }
+
+    pub fn provider_linked_users(&self, id: &str) -> Result<Vec<ProviderLinkedUserResponse>> {
+        let context = format!("checking linked users for Rauthy upstream auth provider {id}");
+        let resp = self
+            .req(Method::GET, &format!("/providers/{id}/delete_safe"))
+            .send()
+            .with_context(|| context.clone())?;
+        if matches!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            bail!(
+                "{context} failed ({status}). Grant Providers read/create/update/delete rights \
+                 to the Rauthy provisioning API key, then rerun: {body}"
+            );
+        }
+        let status = resp.status();
+        if status != StatusCode::NOT_ACCEPTABLE {
+            let resp = ok(resp).with_context(|| context.clone())?;
+            return resp.json().context("decoding provider linked-user list");
+        }
+        resp.json().context("decoding provider linked-user list")
     }
 
     // ----- password-reset email (set-password link for new users) -----

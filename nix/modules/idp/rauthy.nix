@@ -12,11 +12,13 @@
 {self}: {
   config,
   lib,
+  options,
   pkgs,
   ...
 }: let
   inherit (lib) mkEnableOption mkIf mkOption optionalString types;
   cfg = config.services.rauthy.provision;
+  generatedApiKeyUnit = "rauthy-bootstrap-api-key";
 
   presentOption = mkOption {
     type = types.bool;
@@ -68,12 +70,47 @@
       givenName = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Given name. Applied at creation only (not re-enforced on update, so upstream federation profile-claim sync is not fought).";
+        description = "Given name. Reconciled only when set; null leaves the field unmanaged.";
       };
       familyName = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Family name. Applied at creation only.";
+        description = "Family name. Reconciled only when set; null leaves the field unmanaged.";
+      };
+      birthdate = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Birthdate in YYYY-MM-DD form. Reconciled only when set.";
+      };
+      timezone = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Rauthy user timezone, for example Europe/Oslo. Reconciled only when set.";
+      };
+      street = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Street address. Reconciled only when set.";
+      };
+      zip = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "ZIP/postal code. Reconciled only when set.";
+      };
+      city = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "City. Reconciled only when set.";
+      };
+      country = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Country. Reconciled only when set.";
+      };
+      phone = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Phone number. Reconciled only when set.";
       };
       language = mkOption {
         type = types.enum ["de" "en" "fr" "ko" "nb" "ru" "uk" "zhhans"];
@@ -184,6 +221,196 @@
     };
   };
 
+  providerSubmodule = types.submodule {
+    options = {
+      present = presentOption;
+      name = mkOption {
+        type = types.str;
+        description = "Display name for the upstream auth provider.";
+      };
+      typ = mkOption {
+        type = types.enum ["oidc" "github" "google" "custom"];
+        default = "oidc";
+        description = "Rauthy upstream auth provider type.";
+      };
+      enabled = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Whether this upstream provider is enabled.";
+      };
+      issuer = mkOption {
+        type = types.str;
+        description = "Provider issuer URL.";
+      };
+      authorizationEndpoint = mkOption {
+        type = types.str;
+        description = "Provider authorization endpoint.";
+      };
+      tokenEndpoint = mkOption {
+        type = types.str;
+        description = "Provider token endpoint.";
+      };
+      userinfoEndpoint = mkOption {
+        type = types.str;
+        description = "Provider userinfo endpoint.";
+      };
+      jwksEndpoint = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional provider JWKS endpoint.";
+      };
+      clientId = mkOption {
+        type = types.str;
+        description = "Client id Rauthy uses with the upstream provider.";
+      };
+      clientSecretFile = mkOption {
+        type = types.nullOr (types.oneOf [types.path types.str]);
+        default = null;
+        description = "Runtime file containing the upstream provider client secret.";
+      };
+      scope = mkOption {
+        type = types.str;
+        default = "openid email profile";
+        description = "Scope string requested from the upstream provider.";
+      };
+      usePkce = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Use PKCE for upstream provider login.";
+      };
+      clientSecretBasic = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Authenticate to the upstream token endpoint with client_secret_basic.";
+      };
+      clientSecretPost = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Authenticate to the upstream token endpoint with client_secret_post.";
+      };
+      autoOnboarding = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Allow this provider to create new Rauthy users automatically.";
+      };
+      autoLink = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Link matching-email local users to this provider on first login.";
+      };
+      adminClaimPath = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional admin-claim path.";
+      };
+      adminClaimValue = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional admin-claim value.";
+      };
+      mfaClaimPath = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional MFA-claim path.";
+      };
+      mfaClaimValue = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional MFA-claim value.";
+      };
+    };
+  };
+
+  generatedApiKeySubmodule = types.submodule {
+    options = {
+      enable = mkEnableOption "extract a generated first-boot Rauthy API key for rauthy-provision";
+      file = mkOption {
+        type = types.str;
+        default = "/var/lib/rauthy-provision/api-key";
+        description = "Runtime path where the full generated `<name>$<secret>` API key is stored.";
+      };
+      generatedSecretsFile = mkOption {
+        type = types.str;
+        default = "/var/lib/rauthy/bootstrap.secrets.enc";
+        description = "Runtime path to Rauthy's encrypted generated bootstrap secret container.";
+      };
+      generatedSecretsTtl = mkOption {
+        type = types.int;
+        default = 0;
+        description = "TTL in seconds for the generated bootstrap secret container. 0 disables automatic expiry.";
+      };
+      environmentFile = mkOption {
+        type = types.nullOr (types.oneOf [types.path types.str]);
+        default = null;
+        description = "Environment file containing ENC_KEY_ACTIVE and ENC_KEYS for offline container decryption.";
+      };
+    };
+  };
+
+  transientApiKeySubmodule = types.submodule {
+    options = {
+      enable = mkEnableOption "mint a short-lived Rauthy API key for each provisioning run";
+      name = mkOption {
+        type = types.str;
+        default = "rauthy-prov-transient";
+        description = ''
+          Name of the transient API key. Rauthy API-key names are limited to
+          24 characters, so this intentionally does not default to
+          `${cfg.apiKeyName}-transient` when apiKeyName is the module default.
+        '';
+      };
+      ttl = mkOption {
+        type = types.ints.positive;
+        default = 600;
+        description = "Transient API-key lifetime in seconds.";
+      };
+    };
+  };
+
+  bootstrapApiKeyAccess =
+    map
+    (group: {
+      inherit group;
+      access_rights = ["read" "create" "update" "delete"];
+    })
+    ["Users" "Groups" "Roles" "Clients" "Scopes" "UserAttributes" "Providers"]
+    ++ [
+      {
+        group = "Secrets";
+        access_rights = ["read" "update"];
+      }
+    ]
+    ++ lib.optional cfg.transientApiKey.enable {
+      group = "ApiKeys";
+      access_rights = ["read" "create" "update" "delete"];
+    };
+
+  bootstrapApiKeyRequest = {
+    name = cfg.apiKeyName;
+    exp = null;
+    access = bootstrapApiKeyAccess;
+  };
+
+  bootstrapApiKeyEnvFile =
+    pkgs.runCommand "rauthy-bootstrap-api-key.env" {
+      nativeBuildInputs = [pkgs.coreutils];
+      apiKeyJson = builtins.toJSON bootstrapApiKeyRequest;
+      passAsFile = ["apiKeyJson"];
+    } ''
+      printf 'BOOTSTRAP_API_KEY=' > "$out"
+      base64 -w0 "$apiKeyJsonPath" >> "$out"
+      printf '\n' >> "$out"
+    '';
+
+  bootstrapApiKeysDir = pkgs.writeTextDir "api_keys.json" (builtins.toJSON [
+    {
+      name = cfg.apiKeyName;
+      exp = null;
+      access = bootstrapApiKeyAccess;
+      secret = "generate";
+    }
+  ]);
+
   manifest = {
     groups = lib.mapAttrs (_: g: {inherit (g) present;}) cfg.groups;
     roles = lib.mapAttrs (_: r: {inherit (r) present;}) cfg.roles;
@@ -204,7 +431,21 @@
       cfg.userAttributes;
     users =
       lib.mapAttrs (_: u: {
-        inherit (u) present language roles groups attributes;
+        inherit
+          (u)
+          present
+          language
+          roles
+          groups
+          attributes
+          birthdate
+          timezone
+          street
+          zip
+          city
+          country
+          phone
+          ;
         given_name = u.givenName;
         family_name = u.familyName;
         preferred_username = u.preferredUsername;
@@ -228,6 +469,31 @@
           else toString c.generatedSecretFile;
       })
       cfg.clients;
+    providers =
+      lib.mapAttrs (_: p: {
+        inherit (p) present enabled issuer scope;
+        name = p.name;
+        typ = p.typ;
+        authorization_endpoint = p.authorizationEndpoint;
+        token_endpoint = p.tokenEndpoint;
+        userinfo_endpoint = p.userinfoEndpoint;
+        jwks_endpoint = p.jwksEndpoint;
+        client_id = p.clientId;
+        client_secret_file =
+          if p.clientSecretFile == null
+          then null
+          else toString p.clientSecretFile;
+        use_pkce = p.usePkce;
+        client_secret_basic = p.clientSecretBasic;
+        client_secret_post = p.clientSecretPost;
+        auto_onboarding = p.autoOnboarding;
+        auto_link = p.autoLink;
+        admin_claim_path = p.adminClaimPath;
+        admin_claim_value = p.adminClaimValue;
+        mfa_claim_path = p.mfaClaimPath;
+        mfa_claim_value = p.mfaClaimValue;
+      })
+      cfg.providers;
   };
 
   stateFile = pkgs.writeText "rauthy-provision-state.json" (builtins.toJSON manifest);
@@ -240,9 +506,20 @@
         "--state"
         (toString stateFile)
       ]
+      ++ lib.optionals cfg.transientApiKey.enable [
+        "--transient-api-key"
+        "--transient-api-key-name"
+        cfg.transientApiKey.name
+        "--transient-api-key-ttl"
+        (toString cfg.transientApiKey.ttl)
+      ]
       ++ lib.optionals (cfg.apiKeyFile != null) [
         "--api-key-file"
         (toString cfg.apiKeyFile)
+      ]
+      ++ lib.optionals cfg.generatedApiKey.enable [
+        "--api-key-file"
+        cfg.generatedApiKey.file
       ]
       ++ lib.optional (!cfg.autoRemove) "--no-auto-remove"
       ++ lib.optional cfg.acceptInvalidCerts "--accept-invalid-certs");
@@ -260,10 +537,47 @@
       fi
       api_key_secret="''${BOOTSTRAP_API_KEY_SECRET}"
       unset ENC_KEYS ENC_KEY_ACTIVE HQL_SECRET_RAFT HQL_SECRET_API BOOTSTRAP_ADMIN_PASSWORD_ARGON2ID BOOTSTRAP_API_KEY_SECRET
-      export RAUTHY_PROVISION_API_KEY=${lib.escapeShellArg "${cfg.apiKeyName}$"}"''${api_key_secret}"
+      ${optionalString (!cfg.transientApiKey.enable) ''
+        export RAUTHY_PROVISION_API_KEY=${lib.escapeShellArg "${cfg.apiKeyName}$"}"''${api_key_secret}"
+      ''}
+      ${optionalString cfg.transientApiKey.enable ''
+        export RAUTHY_PROVISION_KEY_MANAGER_API_KEY=${lib.escapeShellArg "${cfg.apiKeyName}$"}"''${api_key_secret}"
+      ''}
       unset api_key_secret
     ''}
     exec ${lib.escapeShellArg (lib.getExe cfg.package)} ${cliArgs}
+  '';
+  extractGeneratedApiKeyScript = pkgs.writeShellScript "rauthy-bootstrap-api-key" ''
+    set -eu
+
+    if [ -z "''${ENC_KEY_ACTIVE:-}" ]; then
+      echo "ENC_KEY_ACTIVE is missing from services.rauthy.provision.generatedApiKey.environmentFile" >&2
+      exit 1
+    fi
+    if [ -z "''${ENC_KEYS:-}" ]; then
+      echo "ENC_KEYS is missing from services.rauthy.provision.generatedApiKey.environmentFile" >&2
+      exit 1
+    fi
+
+    out=${lib.escapeShellArg cfg.generatedApiKey.file}
+    if [ -s "$out" ]; then
+      exit 0
+    fi
+    parent="$(dirname "$out")"
+    mkdir -p "$parent"
+    chmod 0700 "$parent"
+
+    tmp="$parent/.api-key.$$.tmp"
+    rm -f "$tmp"
+    umask 077
+    ${lib.escapeShellArg (lib.getExe config.services.rauthy.package)} bootstrap get \
+      --file ${lib.escapeShellArg cfg.generatedApiKey.generatedSecretsFile} \
+      --kind api-key \
+      --id ${lib.escapeShellArg cfg.apiKeyName} \
+      --field token \
+      --format raw > "$tmp"
+    test -s "$tmp"
+    mv "$tmp" "$out"
   '';
 in {
   options.services.rauthy.provision = {
@@ -284,7 +598,7 @@ in {
     };
 
     apiKeyFile = mkOption {
-      type = types.nullOr types.path;
+      type = types.nullOr (types.oneOf [types.path types.str]);
       default = null;
       description = ''
         Path to a file containing the Rauthy API key (`<name>$<secret>`),
@@ -303,6 +617,22 @@ in {
         `RAUTHY_PROVISION_API_KEY=<apiKeyName>$<BOOTSTRAP_API_KEY_SECRET>`
         before running the reconciler, keeping the secret out of argv and the
         Nix store.
+      '';
+    };
+
+    generatedApiKey = mkOption {
+      type = generatedApiKeySubmodule;
+      default = {};
+      description = "First-boot generated API-key extraction for rauthy-provision.";
+    };
+
+    transientApiKey = mkOption {
+      type = transientApiKeySubmodule;
+      default = {};
+      description = ''
+        Runtime transient API-key mode. The long-lived `apiKeyEnvironmentFile`
+        key mints a short-lived reconciliation key only when the provisioner
+        unit runs, and the provisioner deletes the transient key before exit.
       '';
     };
 
@@ -369,50 +699,101 @@ in {
       default = {};
       description = "OIDC clients (relying parties) to provision, keyed by client id.";
     };
-  };
 
-  config = mkIf cfg.enable {
-    assertions =
-      [
-        {
-          assertion = cfg.apiKeyFile != null || cfg.apiKeyEnvironmentFile != null;
-          message = "services.rauthy.provision must set apiKeyFile or apiKeyEnvironmentFile when provisioning is enabled.";
-        }
-        {
-          assertion = !(cfg.apiKeyFile != null && cfg.apiKeyEnvironmentFile != null);
-          message = "services.rauthy.provision must set only one of apiKeyFile or apiKeyEnvironmentFile.";
-        }
-        {
-          assertion = cfg.apiKeyName != "" && !(lib.hasInfix "$" cfg.apiKeyName);
-          message = "services.rauthy.provision.apiKeyName must be non-empty and must not contain '$'.";
-        }
-      ]
-      ++ lib.mapAttrsToList (n: c: {
-        assertion = c.generatedSecretFile == null || c.confidential;
-        message = "services.rauthy.provision.clients.${n}.generatedSecretFile requires confidential = true.";
-      })
-      cfg.clients;
-
-    systemd.services.rauthy-provision = {
-      description = "Declaratively provision Rauthy (users, groups, roles, clients)";
-      after = cfg.serviceAfter;
-      requires = cfg.serviceAfter;
-      wantedBy = ["multi-user.target"];
-
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = provisionScript;
-        EnvironmentFile = lib.mkIf (cfg.apiKeyEnvironmentFile != null) [(toString cfg.apiKeyEnvironmentFile)];
-        # Rauthy may still be warming up when the unit first fires.
-        Restart = "on-failure";
-        RestartSec = "10s";
-      };
-
-      unitConfig = {
-        StartLimitBurst = 6;
-        StartLimitIntervalSec = 300;
-      };
+    providers = mkOption {
+      type = types.attrsOf providerSubmodule;
+      default = {};
+      description = "Upstream auth providers to provision, keyed by provider id.";
     };
   };
+
+  config = mkIf cfg.enable ({
+      assertions =
+        [
+          {
+            assertion = cfg.apiKeyFile != null || cfg.apiKeyEnvironmentFile != null || cfg.generatedApiKey.enable;
+            message = "services.rauthy.provision must set apiKeyFile, apiKeyEnvironmentFile, or generatedApiKey.enable when provisioning is enabled.";
+          }
+          {
+            assertion =
+              lib.length (lib.filter (x: x) [
+                (cfg.apiKeyFile != null)
+                (cfg.apiKeyEnvironmentFile != null)
+                cfg.generatedApiKey.enable
+              ])
+              == 1;
+            message = "services.rauthy.provision must set only one of apiKeyFile, apiKeyEnvironmentFile, or generatedApiKey.enable.";
+          }
+          {
+            assertion = cfg.apiKeyName != "" && !(lib.hasInfix "$" cfg.apiKeyName);
+            message = "services.rauthy.provision.apiKeyName must be non-empty and must not contain '$'.";
+          }
+        ]
+        ++ lib.mapAttrsToList (n: c: {
+          assertion = c.generatedSecretFile == null || c.confidential;
+          message = "services.rauthy.provision.clients.${n}.generatedSecretFile requires confidential = true.";
+        })
+        cfg.clients
+        ++ lib.mapAttrsToList (n: p: {
+          assertion = !(p.clientSecretBasic || p.clientSecretPost) || p.clientSecretFile != null;
+          message = "services.rauthy.provision.providers.${n} enables client-secret auth but has no clientSecretFile.";
+        })
+        cfg.providers
+        ++ [
+          {
+            assertion = !cfg.generatedApiKey.enable || cfg.generatedApiKey.environmentFile != null;
+            message = "services.rauthy.provision.generatedApiKey.environmentFile is required when generatedApiKey.enable = true.";
+          }
+          {
+            assertion = !cfg.transientApiKey.enable || cfg.apiKeyEnvironmentFile != null;
+            message = "services.rauthy.provision.transientApiKey.enable requires apiKeyEnvironmentFile as the key-manager source.";
+          }
+        ];
+
+      systemd.services.${generatedApiKeyUnit} = mkIf cfg.generatedApiKey.enable {
+        description = "Extract generated Rauthy bootstrap API key";
+        after = ["rauthy.service"];
+        requires = ["rauthy.service"];
+        path = [pkgs.coreutils];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = extractGeneratedApiKeyScript;
+          EnvironmentFile = [cfg.generatedApiKey.environmentFile];
+        };
+      };
+
+      systemd.services.rauthy-provision = {
+        description = "Declaratively provision Rauthy (users, groups, roles, clients, providers)";
+        after = cfg.serviceAfter ++ lib.optional cfg.generatedApiKey.enable "${generatedApiKeyUnit}.service";
+        requires = cfg.serviceAfter ++ lib.optional cfg.generatedApiKey.enable "${generatedApiKeyUnit}.service";
+        wantedBy = ["multi-user.target"];
+        restartTriggers = [stateFile];
+
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = provisionScript;
+          EnvironmentFile = lib.mkIf (cfg.apiKeyEnvironmentFile != null) [(toString cfg.apiKeyEnvironmentFile)];
+          # Rauthy may still be warming up when the unit first fires.
+          Restart = "on-failure";
+          RestartSec = "10s";
+        };
+
+        unitConfig = {
+          StartLimitBurst = 6;
+          StartLimitIntervalSec = 300;
+        };
+      };
+    }
+    // lib.optionalAttrs (lib.hasAttrByPath ["services" "rauthy" "settings"] options) {
+      services.rauthy.settings.bootstrap = mkIf cfg.generatedApiKey.enable {
+        bootstrap_dir = toString bootstrapApiKeysDir;
+        generated_secrets_file = cfg.generatedApiKey.generatedSecretsFile;
+        generated_secrets_ttl = cfg.generatedApiKey.generatedSecretsTtl;
+      };
+    }
+    // lib.optionalAttrs (lib.hasAttrByPath ["services" "rauthy" "environmentFiles"] options) {
+      services.rauthy.environmentFiles = mkIf (cfg.apiKeyEnvironmentFile != null) [bootstrapApiKeyEnvFile];
+    });
 }

@@ -18,17 +18,19 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use provenance_core::setops::{is_subset, opt_vec, same_set, union};
+use serde_json::Value;
 
 use client::{
-    NewClientRequest, NewUserRequest, RauthyClient, ScopeRequest, UpdateClientRequest,
-    UpdateUserRequest, UserAttributeConfigRequest, UserAttributeValueRequest,
+    ApiKeyAccessRequest, ApiKeyRequest, NewClientRequest, NewUserRequest, ProviderRequest,
+    RauthyClient, ScopeRequest, UpdateClientRequest, UpdateUserRequest, UserAttributeConfigRequest,
+    UserAttributeValueRequest, UserPatchRequest, UserPatchValue,
 };
-use state::{ClientSpec, ScopeSpec, State, UserAttributeSpec, UserSpec};
+use state::{ClientSpec, ProviderSpec, ScopeSpec, State, UserAttributeSpec, UserSpec};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -55,6 +57,32 @@ struct Cli {
     #[arg(long, env = "RAUTHY_PROVISION_API_KEY", hide_env_values = true)]
     api_key: Option<String>,
 
+    /// File containing a manager API key used to mint a transient
+    /// reconciliation key. Takes precedence over
+    /// `RAUTHY_PROVISION_KEY_MANAGER_API_KEY`.
+    #[arg(long)]
+    key_manager_api_key_file: Option<PathBuf>,
+
+    /// Manager API key used to mint a transient reconciliation key.
+    #[arg(
+        long,
+        env = "RAUTHY_PROVISION_KEY_MANAGER_API_KEY",
+        hide_env_values = true
+    )]
+    key_manager_api_key: Option<String>,
+
+    /// Mint a short-lived API key for this run, reconcile with it, then delete it.
+    #[arg(long)]
+    transient_api_key: bool,
+
+    /// Name of the transient reconciliation API key.
+    #[arg(long)]
+    transient_api_key_name: Option<String>,
+
+    /// Transient API-key lifetime in seconds.
+    #[arg(long, default_value_t = 600)]
+    transient_api_key_ttl: u64,
+
     /// Accept invalid TLS certificates (e.g. talking to an internal endpoint
     /// with a name mismatch). Avoid in production.
     #[arg(long)]
@@ -68,30 +96,121 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let api_key = provenance_core::secret::resolve(
-        cli.api_key_file.as_deref(),
-        cli.api_key.as_deref(),
-        "API key",
-        "--api-key-file",
-        "RAUTHY_PROVISION_API_KEY",
-    )?;
     let raw = fs::read_to_string(&cli.state)
         .with_context(|| format!("reading state file {}", cli.state.display()))?;
     let state: State = serde_json::from_str(&raw)
         .with_context(|| format!("parsing state file {}", cli.state.display()))?;
 
-    let client = RauthyClient::new(&cli.url, &api_key, cli.accept_invalid_certs)?;
+    if cli.transient_api_key {
+        run_with_transient_api_key(&cli, &state)
+    } else {
+        let api_key = provenance_core::secret::resolve(
+            cli.api_key_file.as_deref(),
+            cli.api_key.as_deref(),
+            "API key",
+            "--api-key-file",
+            "RAUTHY_PROVISION_API_KEY",
+        )?;
+        run_with_api_key(&cli, &state, &api_key)
+    }
+}
+
+fn run_with_api_key(cli: &Cli, state: &State, api_key: &str) -> Result<()> {
+    let client = RauthyClient::new(&cli.url, api_key, cli.accept_invalid_certs)?;
     client
         .wait_ready(30, Duration::from_secs(2))
         .context("waiting for rauthy to be ready")?;
 
+    reconcile(&client, state, cli.no_auto_remove)
+}
+
+fn run_with_transient_api_key(cli: &Cli, state: &State) -> Result<()> {
+    if cli.transient_api_key_ttl == 0 {
+        bail!("--transient-api-key-ttl must be greater than zero");
+    }
+
+    let manager_api_key = provenance_core::secret::resolve(
+        cli.key_manager_api_key_file.as_deref(),
+        cli.key_manager_api_key.as_deref(),
+        "API key manager",
+        "--key-manager-api-key-file",
+        "RAUTHY_PROVISION_KEY_MANAGER_API_KEY",
+    )?;
+    let manager = RauthyClient::new(&cli.url, &manager_api_key, cli.accept_invalid_certs)?;
+    manager
+        .wait_healthy(30, Duration::from_secs(2))
+        .context("waiting for rauthy to be ready")?;
+
+    let name = cli
+        .transient_api_key_name
+        .clone()
+        .unwrap_or_else(|| "rauthy-prov-transient".to_string());
+    let exp = transient_expiry(cli.transient_api_key_ttl)?;
+    log(format_args!(
+        "mint transient API key {name} with ttl {}s",
+        cli.transient_api_key_ttl
+    ));
+    manager.create_or_update_api_key(&transient_api_key_request(&name, exp))?;
+    let transient_api_key = manager.rotate_api_key_secret(&name)?;
+
+    let provision_result = run_with_api_key(cli, state, &transient_api_key);
+    log(format_args!("delete transient API key {name}"));
+    let cleanup_result = manager.delete_api_key(&name);
+
+    match (provision_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(provision), Ok(())) => Err(provision),
+        (Ok(()), Err(cleanup)) => Err(cleanup.context("cleaning up transient Rauthy API key")),
+        (Err(provision), Err(cleanup)) => Err(provision.context(format!(
+            "also failed to clean up transient Rauthy API key {name}: {cleanup:#}"
+        ))),
+    }
+}
+
+fn transient_expiry(ttl_secs: u64) -> Result<i64> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before Unix epoch")?
+        .as_secs();
+    let exp = now
+        .checked_add(ttl_secs)
+        .ok_or_else(|| anyhow!("transient API-key expiry overflow"))?;
+    i64::try_from(exp).context("transient API-key expiry does not fit in i64")
+}
+
+fn transient_api_key_request(name: &str, exp: i64) -> ApiKeyRequest {
+    ApiKeyRequest {
+        name: name.to_string(),
+        exp: Some(exp),
+        access: vec![
+            access("Users", &["read", "create", "update", "delete"]),
+            access("Groups", &["read", "create", "update", "delete"]),
+            access("Roles", &["read", "create", "update", "delete"]),
+            access("Clients", &["read", "create", "update", "delete"]),
+            access("Scopes", &["read", "create", "update", "delete"]),
+            access("UserAttributes", &["read", "create", "update", "delete"]),
+            access("Providers", &["read", "create", "update", "delete"]),
+            access("Secrets", &["read", "update"]),
+        ],
+    }
+}
+
+fn access(group: &'static str, access_rights: &[&'static str]) -> ApiKeyAccessRequest {
+    ApiKeyAccessRequest {
+        group,
+        access_rights: access_rights.to_vec(),
+    }
+}
+
+fn reconcile(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
     // Groups and roles first — users reference them by name.
-    reconcile_groups(&client, &state, cli.no_auto_remove)?;
-    reconcile_roles(&client, &state, cli.no_auto_remove)?;
-    reconcile_user_attributes(&client, &state, cli.no_auto_remove)?;
-    reconcile_scopes(&client, &state, cli.no_auto_remove)?;
-    reconcile_users(&client, &state, cli.no_auto_remove)?;
-    reconcile_clients(&client, &state, cli.no_auto_remove)?;
+    reconcile_groups(client, state, no_auto_remove)?;
+    reconcile_roles(client, state, no_auto_remove)?;
+    reconcile_user_attributes(client, state, no_auto_remove)?;
+    reconcile_scopes(client, state, no_auto_remove)?;
+    reconcile_providers(client, state, no_auto_remove)?;
+    reconcile_users(client, state, no_auto_remove)?;
+    reconcile_clients(client, state, no_auto_remove)?;
 
     log(format_args!("done"));
     Ok(())
@@ -206,10 +325,14 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
             (true, None) => {
                 log(format_args!("create user {email}"));
                 client.create_user(&new_user(email, spec))?;
-                if spec.preferred_username.is_some() || !spec.attributes.is_empty() {
+                if spec.preferred_username.is_some()
+                    || has_declared_profile_fields(spec)
+                    || !spec.attributes.is_empty()
+                {
                     let user = client.get_user_by_email(email)?.ok_or_else(|| {
                         anyhow!("Rauthy user {email} was created but could not be read back")
                     })?;
+                    reconcile_user_profile_fields(client, &user, spec)?;
                     reconcile_user_preferred_username(client, &user, spec)?;
                     reconcile_user_attributes_values(client, &user, spec)?;
                 }
@@ -232,6 +355,7 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
                     log(format_args!("update user {email} (roles/groups)"));
                     client.update_user(&user.id, &update_user(&user, spec))?;
                 }
+                reconcile_user_profile_fields(client, &user, spec)?;
                 reconcile_user_preferred_username(client, &user, spec)?;
                 reconcile_user_attributes_values(client, &user, spec)?;
             }
@@ -260,8 +384,8 @@ fn new_user(email: &str, spec: &UserSpec) -> NewUserRequest {
 /// role/group is present but never removes ones it does not manage. This is
 /// deliberate — a Rauthy user may carry roles/groups assigned out-of-band (the
 /// bootstrap `rauthy_admin` role, or a manual Admin-UI assignment), and a full
-/// replace would silently strip them. Names and language are applied at
-/// creation only, so upstream federation profile-claim sync is never fought.
+/// replace would silently strip them. Profile fields are reconciled separately
+/// through PATCH, and only for fields explicitly declared in state.
 fn user_drifted(user: &client::UserResponse, spec: &UserSpec) -> bool {
     let cur_groups = user.groups.as_deref().unwrap_or_default();
     !is_subset(&spec.roles, &user.roles) || !is_subset(&spec.groups, cur_groups)
@@ -288,6 +412,114 @@ fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserReques
         enabled: user.enabled,
         email_verified: user.email_verified,
     }
+}
+
+fn has_declared_profile_fields(spec: &UserSpec) -> bool {
+    spec.given_name.is_some()
+        || spec.family_name.is_some()
+        || spec.birthdate.is_some()
+        || spec.timezone.is_some()
+        || spec.street.is_some()
+        || spec.zip.is_some()
+        || spec.city.is_some()
+        || spec.country.is_some()
+        || spec.phone.is_some()
+}
+
+fn push_profile_field(
+    put: &mut Vec<UserPatchValue>,
+    key: &'static str,
+    desired: Option<&String>,
+    current: Option<&String>,
+) {
+    if let Some(desired) = desired {
+        if current != Some(desired) {
+            put.push(UserPatchValue {
+                key,
+                value: Value::String(desired.clone()),
+            });
+        }
+    }
+}
+
+fn profile_patch(user: &client::UserResponse, spec: &UserSpec) -> UserPatchRequest {
+    let mut put = Vec::new();
+    push_profile_field(
+        &mut put,
+        "given_name",
+        spec.given_name.as_ref(),
+        user.given_name.as_ref(),
+    );
+    push_profile_field(
+        &mut put,
+        "family_name",
+        spec.family_name.as_ref(),
+        user.family_name.as_ref(),
+    );
+    push_profile_field(
+        &mut put,
+        "user_values.birthdate",
+        spec.birthdate.as_ref(),
+        user.user_values.birthdate.as_ref(),
+    );
+    push_profile_field(
+        &mut put,
+        "user_values.tz",
+        spec.timezone.as_ref(),
+        user.user_values.tz.as_ref(),
+    );
+    push_profile_field(
+        &mut put,
+        "user_values.street",
+        spec.street.as_ref(),
+        user.user_values.street.as_ref(),
+    );
+    push_profile_field(
+        &mut put,
+        "user_values.zip",
+        spec.zip.as_ref(),
+        user.user_values.zip.as_ref(),
+    );
+    push_profile_field(
+        &mut put,
+        "user_values.city",
+        spec.city.as_ref(),
+        user.user_values.city.as_ref(),
+    );
+    push_profile_field(
+        &mut put,
+        "user_values.country",
+        spec.country.as_ref(),
+        user.user_values.country.as_ref(),
+    );
+    push_profile_field(
+        &mut put,
+        "user_values.phone",
+        spec.phone.as_ref(),
+        user.user_values.phone.as_ref(),
+    );
+
+    UserPatchRequest {
+        put,
+        del: Vec::new(),
+    }
+}
+
+fn profile_fields_drifted(user: &client::UserResponse, spec: &UserSpec) -> bool {
+    !profile_patch(user, spec).put.is_empty()
+}
+
+fn reconcile_user_profile_fields(
+    client: &RauthyClient,
+    user: &client::UserResponse,
+    spec: &UserSpec,
+) -> Result<()> {
+    let patch = profile_patch(user, spec);
+    if !patch.put.is_empty() {
+        log(format_args!("patch user {} profile fields", user.email));
+        client.patch_user(&user.id, &patch)?;
+    }
+    Ok(())
 }
 
 fn reconcile_user_preferred_username(
@@ -367,6 +599,209 @@ fn user_attribute_drifted(
     cur.desc != spec.desc
         || cur.default_value != spec.default_value
         || cur.user_editable != spec.user_editable
+}
+
+fn reconcile_providers(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
+    if state.providers.is_empty() {
+        return Ok(());
+    }
+    let existing = client.list_providers()?;
+    for (id, spec) in &state.providers {
+        let matches = matching_providers(&existing, id, spec);
+        match (spec.present, matches.is_empty()) {
+            (true, true) => {
+                log(format_args!("create upstream provider {id}"));
+                client.create_provider(&provider_request(spec)?)?;
+            }
+            (true, false) => {
+                let linked = provider_link_counts(client, &matches)?;
+                let canonical = select_canonical_provider(&matches, &linked)
+                    .with_context(|| format!("selecting canonical upstream provider {id}"))?;
+                if provider_drifted(canonical, spec)? {
+                    log(format_args!(
+                        "update upstream provider {id} using Rauthy id {}",
+                        canonical.id
+                    ));
+                    client.update_provider(&canonical.id, &provider_request(spec)?)?;
+                }
+                let duplicates = duplicate_provider_ids(&matches, &canonical.id);
+                if !duplicates.is_empty() {
+                    if no_auto_remove {
+                        log(format_args!(
+                            "skip deleting duplicate upstream providers for {id}: {}",
+                            duplicates.join(", ")
+                        ));
+                    } else {
+                        for duplicate in duplicates {
+                            log(format_args!(
+                                "delete duplicate upstream provider {duplicate}"
+                            ));
+                            client.delete_provider(&duplicate)?;
+                        }
+                    }
+                }
+            }
+            (false, false) if !no_auto_remove => {
+                for provider in matches {
+                    log(format_args!("delete upstream provider {}", provider.id));
+                    client.delete_provider(&provider.id)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn matching_providers<'a>(
+    existing: &'a [client::ProviderResponse],
+    desired_id: &str,
+    spec: &ProviderSpec,
+) -> Vec<&'a client::ProviderResponse> {
+    existing
+        .iter()
+        .filter(|provider| {
+            provider.id == desired_id
+                || (provider.issuer == spec.issuer && provider.client_id == spec.client_id)
+        })
+        .collect()
+}
+
+fn provider_link_counts(
+    client: &RauthyClient,
+    providers: &[&client::ProviderResponse],
+) -> Result<BTreeMap<String, usize>> {
+    let mut linked = BTreeMap::new();
+    for provider in providers {
+        let users = client.provider_linked_users(&provider.id)?;
+        linked.insert(provider.id.clone(), users.len());
+    }
+    Ok(linked)
+}
+
+fn select_canonical_provider<'a>(
+    providers: &[&'a client::ProviderResponse],
+    linked: &BTreeMap<String, usize>,
+) -> Result<&'a client::ProviderResponse> {
+    let linked_providers = providers
+        .iter()
+        .copied()
+        .filter(|provider| linked.get(&provider.id).copied().unwrap_or_default() > 0)
+        .collect::<Vec<_>>();
+
+    match linked_providers.as_slice() {
+        [provider] => return Ok(*provider),
+        [] => {}
+        _ => {
+            let ids = linked_providers
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("multiple duplicate upstream providers have linked users: {ids}");
+        }
+    }
+
+    providers
+        .iter()
+        .copied()
+        .min_by(|a, b| a.id.cmp(&b.id))
+        .ok_or_else(|| anyhow!("no matching upstream provider candidates"))
+}
+
+fn duplicate_provider_ids(
+    providers: &[&client::ProviderResponse],
+    canonical_id: &str,
+) -> Vec<String> {
+    providers
+        .iter()
+        .filter_map(|provider| {
+            if provider.id == canonical_id {
+                None
+            } else {
+                Some(provider.id.clone())
+            }
+        })
+        .collect()
+}
+
+fn provider_request(spec: &ProviderSpec) -> Result<ProviderRequest> {
+    let client_secret = read_optional_secret(
+        spec.client_secret_file.as_deref(),
+        format_args!("provider {}", spec.name),
+    )?;
+    if client_secret.is_none() && (spec.client_secret_basic || spec.client_secret_post) {
+        anyhow::bail!(
+            "provider {} enables client-secret auth but has no client_secret_file",
+            spec.name
+        );
+    }
+    Ok(ProviderRequest {
+        name: spec.name.clone(),
+        typ: spec.typ.clone(),
+        enabled: spec.enabled,
+        issuer: spec.issuer.clone(),
+        authorization_endpoint: spec.authorization_endpoint.clone(),
+        token_endpoint: spec.token_endpoint.clone(),
+        userinfo_endpoint: spec.userinfo_endpoint.clone(),
+        jwks_endpoint: spec.jwks_endpoint.clone(),
+        use_pkce: spec.use_pkce,
+        client_secret_basic: spec.client_secret_basic,
+        client_secret_post: spec.client_secret_post,
+        auto_onboarding: spec.auto_onboarding,
+        auto_link: spec.auto_link,
+        client_id: spec.client_id.clone(),
+        client_secret,
+        scope: spec.scope.clone(),
+        admin_claim_path: spec.admin_claim_path.clone(),
+        admin_claim_value: spec.admin_claim_value.clone(),
+        mfa_claim_path: spec.mfa_claim_path.clone(),
+        mfa_claim_value: spec.mfa_claim_value.clone(),
+    })
+}
+
+fn read_optional_secret(path: Option<&str>, label: Arguments<'_>) -> Result<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let value = fs::read_to_string(path).with_context(|| {
+        format!(
+            "reading secret file {} for {label}; this must be a runtime path, not a Nix store path",
+            path
+        )
+    })?;
+    let value = value.trim_end_matches(['\r', '\n']).to_string();
+    if value.is_empty() {
+        anyhow::bail!("secret file {path} for {label} is empty");
+    }
+    Ok(Some(value))
+}
+
+fn provider_drifted(cur: &client::ProviderResponse, spec: &ProviderSpec) -> Result<bool> {
+    let desired_secret = read_optional_secret(
+        spec.client_secret_file.as_deref(),
+        format_args!("provider {}", spec.name),
+    )?;
+    Ok(cur.name != spec.name
+        || cur.typ != spec.typ
+        || cur.enabled != spec.enabled
+        || cur.issuer != spec.issuer
+        || cur.authorization_endpoint != spec.authorization_endpoint
+        || cur.token_endpoint != spec.token_endpoint
+        || cur.userinfo_endpoint != spec.userinfo_endpoint
+        || cur.jwks_endpoint != spec.jwks_endpoint
+        || cur.client_id != spec.client_id
+        || cur.client_secret != desired_secret
+        || cur.scope.split('+').collect::<Vec<_>>().join(" ") != spec.scope
+        || cur.admin_claim_path != spec.admin_claim_path
+        || cur.admin_claim_value != spec.admin_claim_value
+        || cur.mfa_claim_path != spec.mfa_claim_path
+        || cur.mfa_claim_value != spec.mfa_claim_value
+        || cur.use_pkce != spec.use_pkce
+        || cur.client_secret_basic != spec.client_secret_basic
+        || cur.client_secret_post != spec.client_secret_post
+        || cur.auto_onboarding != spec.auto_onboarding
+        || cur.auto_link != spec.auto_link)
 }
 
 fn reconcile_clients(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
@@ -494,7 +929,7 @@ fn update_client(id: &str, spec: &ClientSpec) -> UpdateClientRequest {
         scopes: spec.scopes.clone(),
         default_scopes: spec.default_scopes.clone(),
         challenges: if spec.enable_pkce {
-            Some(vec!["S256".to_string()])
+            Some(desired_client_challenges(spec))
         } else {
             None
         },
@@ -502,16 +937,32 @@ fn update_client(id: &str, spec: &ClientSpec) -> UpdateClientRequest {
     }
 }
 
+fn desired_client_challenges(spec: &ClientSpec) -> Vec<String> {
+    if spec.enable_pkce {
+        vec!["S256".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 fn client_drifted(cur: &client::ClientResponse, spec: &ClientSpec) -> bool {
+    let cur_challenges = cur.challenges.as_deref().unwrap_or(&[]);
+    let desired_challenges = desired_client_challenges(spec);
+
     !cur.enabled
         || !same_set(&cur.redirect_uris, &spec.redirect_uris)
         || !same_set(&cur.scopes, &spec.scopes)
         || !same_set(&cur.flows_enabled, &spec.flows_enabled)
+        || !same_set(cur_challenges, &desired_challenges)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     fn user(roles: &[&str], groups: Option<&[&str]>) -> client::UserResponse {
         client::UserResponse {
@@ -528,12 +979,260 @@ mod tests {
         }
     }
 
+    fn provider(id: &str, issuer: &str, client_id: &str) -> client::ProviderResponse {
+        client::ProviderResponse {
+            id: id.into(),
+            name: "Kanidm".into(),
+            typ: "oidc".into(),
+            enabled: true,
+            issuer: issuer.into(),
+            authorization_endpoint: format!("{issuer}/ui/oauth2"),
+            token_endpoint: format!("{issuer}/oauth2/token"),
+            userinfo_endpoint: format!("{issuer}/userinfo"),
+            jwks_endpoint: Some(format!("{issuer}/public_key.jwk")),
+            client_id: client_id.into(),
+            client_secret: Some("secret".into()),
+            scope: "openid+email+profile".into(),
+            admin_claim_path: None,
+            admin_claim_value: None,
+            mfa_claim_path: None,
+            mfa_claim_value: None,
+            use_pkce: true,
+            client_secret_basic: true,
+            client_secret_post: false,
+            auto_onboarding: false,
+            auto_link: true,
+        }
+    }
+
+    fn provider_spec(issuer: &str, client_id: &str) -> ProviderSpec {
+        serde_json::from_value(serde_json::json!({
+            "name": "Kanidm",
+            "issuer": issuer,
+            "authorization_endpoint": format!("{issuer}/ui/oauth2"),
+            "token_endpoint": format!("{issuer}/oauth2/token"),
+            "userinfo_endpoint": format!("{issuer}/userinfo"),
+            "jwks_endpoint": format!("{issuer}/public_key.jwk"),
+            "client_id": client_id,
+            "scope": "openid email profile",
+            "client_secret_file": null,
+            "client_secret_basic": false,
+            "auto_link": true
+        }))
+        .unwrap()
+    }
+
     fn spec(roles: &[&str], groups: &[&str]) -> UserSpec {
         serde_json::from_value(serde_json::json!({
             "roles": roles,
             "groups": groups,
         }))
         .unwrap()
+    }
+
+    fn empty_state_file(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "rauthy-provision-{name}-{}.json",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            r#"{"groups":{},"roles":{},"scopes":{},"user_attributes":{},"users":{},"clients":{},"providers":{}}"#,
+        )
+        .unwrap();
+        path
+    }
+
+    fn handle_mock_request(mut stream: TcpStream, requests: Arc<Mutex<Vec<String>>>) {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut first = String::new();
+        reader.read_line(&mut first).unwrap();
+        let first = first.trim().to_string();
+        requests.lock().unwrap().push(first.clone());
+
+        let mut status = "200 OK";
+        let mut body = "";
+        if first.starts_with("PUT /auth/v1/api_keys/rauthy-prov-transient/secret ") {
+            body = "rauthy-prov-transient$secret";
+        } else if first.starts_with("GET /auth/v1/groups ") {
+            body = "[]";
+        } else if first.starts_with("GET /auth/v1/roles ") {
+            status = "500 Internal Server Error";
+            body = "role failure";
+        }
+
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    }
+
+    fn start_mock_rauthy(requests: Arc<Mutex<Vec<String>>>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for stream in listener.incoming().take(8) {
+                handle_mock_request(stream.unwrap(), requests.clone());
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn provider_matching_keeps_exact_id_and_identity_duplicates_together() {
+        let spec = provider_spec("https://auth.example/oauth2/openid/rauthy", "rauthy");
+        let providers = vec![
+            provider("kanidm", "https://different.example", "other"),
+            provider(
+                "random",
+                "https://auth.example/oauth2/openid/rauthy",
+                "rauthy",
+            ),
+        ];
+
+        let matches = matching_providers(&providers, "kanidm", &spec);
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().any(|p| p.id == "kanidm"));
+        assert!(matches.iter().any(|p| p.id == "random"));
+    }
+
+    #[test]
+    fn provider_matching_falls_back_to_issuer_and_client_id() {
+        let spec = provider_spec("https://auth.example/oauth2/openid/rauthy", "rauthy");
+        let providers = vec![
+            provider(
+                "random-a",
+                "https://auth.example/oauth2/openid/rauthy",
+                "rauthy",
+            ),
+            provider("random-b", "https://other.example", "rauthy"),
+        ];
+
+        let matches = matching_providers(&providers, "kanidm", &spec);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, "random-a");
+    }
+
+    #[test]
+    fn provider_canonical_uses_lexicographic_id_when_unlinked() {
+        let providers = vec![
+            provider(
+                "z-random",
+                "https://auth.example/oauth2/openid/rauthy",
+                "rauthy",
+            ),
+            provider(
+                "a-random",
+                "https://auth.example/oauth2/openid/rauthy",
+                "rauthy",
+            ),
+        ];
+        let matches = providers.iter().collect::<Vec<_>>();
+        let linked = BTreeMap::from([("z-random".to_string(), 0), ("a-random".to_string(), 0)]);
+
+        let canonical = select_canonical_provider(&matches, &linked).unwrap();
+        assert_eq!(canonical.id, "a-random");
+        assert_eq!(
+            duplicate_provider_ids(&matches, &canonical.id),
+            vec!["z-random"]
+        );
+    }
+
+    #[test]
+    fn provider_canonical_preserves_single_linked_duplicate() {
+        let providers = vec![
+            provider(
+                "a-random",
+                "https://auth.example/oauth2/openid/rauthy",
+                "rauthy",
+            ),
+            provider(
+                "z-linked",
+                "https://auth.example/oauth2/openid/rauthy",
+                "rauthy",
+            ),
+        ];
+        let matches = providers.iter().collect::<Vec<_>>();
+        let linked = BTreeMap::from([("a-random".to_string(), 0), ("z-linked".to_string(), 2)]);
+
+        let canonical = select_canonical_provider(&matches, &linked).unwrap();
+        assert_eq!(canonical.id, "z-linked");
+        assert_eq!(
+            duplicate_provider_ids(&matches, &canonical.id),
+            vec!["a-random"]
+        );
+    }
+
+    #[test]
+    fn provider_canonical_fails_when_multiple_duplicates_are_linked() {
+        let providers = vec![
+            provider(
+                "a-linked",
+                "https://auth.example/oauth2/openid/rauthy",
+                "rauthy",
+            ),
+            provider(
+                "z-linked",
+                "https://auth.example/oauth2/openid/rauthy",
+                "rauthy",
+            ),
+        ];
+        let matches = providers.iter().collect::<Vec<_>>();
+        let linked = BTreeMap::from([("a-linked".to_string(), 1), ("z-linked".to_string(), 2)]);
+
+        let err = select_canonical_provider(&matches, &linked).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("multiple duplicate upstream providers have linked users"));
+    }
+
+    #[test]
+    fn transient_api_key_request_uses_reconciliation_rights_only() {
+        let req = transient_api_key_request("rauthy-prov-transient", 123);
+        assert_eq!(req.name, "rauthy-prov-transient");
+        assert_eq!(req.exp, Some(123));
+        assert!(req.access.iter().any(|a| a.group == "Users"));
+        assert!(req.access.iter().any(|a| a.group == "Secrets"));
+        assert!(!req.access.iter().any(|a| a.group == "ApiKeys"));
+    }
+
+    #[test]
+    fn transient_api_key_is_deleted_when_reconcile_fails() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let url = start_mock_rauthy(requests.clone());
+        let state = empty_state_file("transient-cleanup");
+        let cli = Cli {
+            url,
+            state: state.clone(),
+            api_key_file: None,
+            api_key: None,
+            key_manager_api_key_file: None,
+            key_manager_api_key: Some("manager$key".to_string()),
+            transient_api_key: true,
+            transient_api_key_name: Some("rauthy-prov-transient".to_string()),
+            transient_api_key_ttl: 600,
+            accept_invalid_certs: false,
+            no_auto_remove: false,
+        };
+
+        let err = run_with_transient_api_key(&cli, &State::default()).unwrap_err();
+        assert!(err.to_string().contains("requesting Rauthy roles"));
+        let requests = requests.lock().unwrap();
+        assert!(requests
+            .iter()
+            .any(|r| r.starts_with("POST /auth/v1/api_keys ")));
+        assert!(requests
+            .iter()
+            .any(|r| r.starts_with("PUT /auth/v1/api_keys/rauthy-prov-transient/secret ")));
+        assert!(requests
+            .iter()
+            .any(|r| r.starts_with("DELETE /auth/v1/api_keys/rauthy-prov-transient ")));
+        fs::remove_file(state).unwrap();
     }
 
     #[test]
@@ -567,6 +1266,72 @@ mod tests {
     }
 
     #[test]
+    fn user_drift_profile_fields_only_when_declared_fields_differ() {
+        let mut u = user(&["a"], Some(&["g1"]));
+        u.given_name = Some("Live".to_string());
+        u.user_values.birthdate = Some("2000-01-01".to_string());
+        u.user_values.phone = Some("+4711111111".to_string());
+
+        let unmanaged = spec(&["a"], &["g1"]);
+        assert!(!profile_fields_drifted(&u, &unmanaged));
+
+        let same_declared: UserSpec = serde_json::from_value(serde_json::json!({
+            "roles": ["a"],
+            "groups": ["g1"],
+            "birthdate": "2000-01-01"
+        }))
+        .unwrap();
+        assert!(!profile_fields_drifted(&u, &same_declared));
+
+        let changed_declared: UserSpec = serde_json::from_value(serde_json::json!({
+            "roles": ["a"],
+            "groups": ["g1"],
+            "birthdate": "2001-02-03"
+        }))
+        .unwrap();
+        assert!(profile_fields_drifted(&u, &changed_declared));
+    }
+
+    #[test]
+    fn profile_patch_uses_rauthy_user_values_keys() {
+        let mut u = user(&["a"], Some(&["g1"]));
+        u.given_name = Some("Old".to_string());
+        u.user_values.zip = Some("00000".to_string());
+
+        let s: UserSpec = serde_json::from_value(serde_json::json!({
+            "roles": ["a"],
+            "groups": ["g1"],
+            "given_name": "Alice",
+            "family_name": "Smith",
+            "birthdate": "1984-01-02",
+            "timezone": "Europe/Oslo",
+            "street": "Example Street 1",
+            "zip": "12345",
+            "city": "Oslo",
+            "country": "Norway",
+            "phone": "+4712345678"
+        }))
+        .unwrap();
+
+        let patch = serde_json::to_value(profile_patch(&u, &s)).unwrap();
+        assert_eq!(patch["del"], serde_json::json!([]));
+        assert_eq!(
+            patch["put"],
+            serde_json::json!([
+                {"key": "given_name", "value": "Alice"},
+                {"key": "family_name", "value": "Smith"},
+                {"key": "user_values.birthdate", "value": "1984-01-02"},
+                {"key": "user_values.tz", "value": "Europe/Oslo"},
+                {"key": "user_values.street", "value": "Example Street 1"},
+                {"key": "user_values.zip", "value": "12345"},
+                {"key": "user_values.city", "value": "Oslo"},
+                {"key": "user_values.country", "value": "Norway"},
+                {"key": "user_values.phone", "value": "+4712345678"}
+            ])
+        );
+    }
+
+    #[test]
     fn update_preserves_unmanaged_roles_and_groups() {
         let u = user(&["rauthy_admin"], Some(&["other"]));
         let s = spec(&["internal", "bekiper"], &["internal"]);
@@ -592,6 +1357,7 @@ mod tests {
                 "refresh_token".to_string(),
                 "authorization_code".to_string(),
             ],
+            challenges: Some(vec!["S256".to_string()]),
             enabled: true,
         };
         let spec: ClientSpec = serde_json::from_value(serde_json::json!({
@@ -619,6 +1385,7 @@ mod tests {
                 "authorization_code".to_string(),
                 "refresh_token".to_string(),
             ],
+            challenges: Some(vec!["S256".to_string()]),
             enabled: false,
         };
         assert!(client_drifted(&disabled, &spec));
@@ -629,5 +1396,49 @@ mod tests {
             ..disabled
         };
         assert!(client_drifted(&missing_redirect, &spec));
+    }
+
+    #[test]
+    fn client_drift_detects_pkce_challenge_change() {
+        let current = client::ClientResponse {
+            enabled: true,
+            redirect_uris: vec!["https://app/cb".to_string()],
+            scopes: vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string(),
+            ],
+            flows_enabled: vec![
+                "authorization_code".to_string(),
+                "refresh_token".to_string(),
+            ],
+            challenges: Some(vec!["S256".to_string()]),
+        };
+        let spec: ClientSpec = serde_json::from_value(serde_json::json!({
+            "redirect_uris": ["https://app/cb"],
+            "enable_pkce": false
+        }))
+        .unwrap();
+
+        assert!(client_drifted(&current, &spec));
+
+        let current = client::ClientResponse {
+            challenges: None,
+            ..current
+        };
+        assert!(!client_drifted(&current, &spec));
+    }
+
+    #[test]
+    fn disabled_pkce_serializes_null_challenges_for_update() {
+        let spec: ClientSpec = serde_json::from_value(serde_json::json!({
+            "redirect_uris": ["https://app/cb"],
+            "enable_pkce": false
+        }))
+        .unwrap();
+        let value = serde_json::to_value(update_client("app", &spec)).unwrap();
+
+        assert!(value.get("challenges").is_some());
+        assert!(value["challenges"].is_null());
     }
 }

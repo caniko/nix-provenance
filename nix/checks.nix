@@ -101,7 +101,9 @@ in {
     '';
 
   rauthy-module-eval = let
+    svc = rauthyEval.config.systemd.services.rauthy-provision;
     serviceConfig = builtins.toJSON rauthyEval.config.systemd.services.rauthy-provision.serviceConfig;
+    restartTriggers = builtins.toJSON svc.restartTriggers;
     clients = builtins.toJSON rauthyEval.config.services.rauthy.provision.clients;
     users = builtins.toJSON rauthyEval.config.services.rauthy.provision.users;
     scopes = builtins.toJSON rauthyEval.config.services.rauthy.provision.scopes;
@@ -113,12 +115,23 @@ in {
       users=${lib.escapeShellArg users}
       scopes=${lib.escapeShellArg scopes}
       attrs=${lib.escapeShellArg userAttrs}
+      triggers=${lib.escapeShellArg restartTriggers}
+      grep -q -- '--transient-api-key' ${svc.serviceConfig.ExecStart} \
+        || { echo "rauthy: transient API-key CLI flag missing from provisioner script" >&2; exit 1; }
+      printf '%s' "$triggers" | grep -q 'rauthy-provision-state.json' \
+        || { echo "rauthy: provisioner restartTriggers must include rendered state" >&2; exit 1; }
       printf '%s' "$clients" | grep -q '/run/rauthy-clients/demo.secret' \
         || { echo "rauthy: generatedSecretFile path missing from rendered client state" >&2; exit 1; }
       printf '%s' "$clients" | grep -q 'vikunja_groups' \
         || { echo "rauthy: custom Vikunja scope missing from client state" >&2; exit 1; }
       printf '%s' "$users" | grep -q 'preferredUsername' \
         || { echo "rauthy: preferredUsername missing from rendered user state" >&2; exit 1; }
+      printf '%s' "$users" | grep -q 'Europe/Oslo' \
+        || { echo "rauthy: timezone missing from rendered user state" >&2; exit 1; }
+      printf '%s' "$users" | grep -q '12345' \
+        || { echo "rauthy: ZIP/postal code missing from rendered user state" >&2; exit 1; }
+      printf '%s' "$users" | grep -q '+4712345678' \
+        || { echo "rauthy: phone missing from rendered user state" >&2; exit 1; }
       printf '%s' "$users" | grep -q 'vikunja_groups' \
         || { echo "rauthy: custom Vikunja user attribute value missing" >&2; exit 1; }
       printf '%s' "$scopes" | grep -q 'attrIncludeId' \

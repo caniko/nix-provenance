@@ -11,7 +11,8 @@
   services.rauthy.provision = {
     enable = true;
     endpoint = "http://127.0.0.1:8080";
-    apiKeyFile = "/run/secrets/rauthy-provision-api-key";
+    apiKeyEnvironmentFile = "/run/secrets/rauthy-env";
+    transientApiKey.enable = true;
     groups.internal = {};
     roles.admin = {};
     userAttributes.vikunja_groups = {
@@ -22,6 +23,13 @@
     users."alice@example.com" = {
       givenName = "Alice";
       familyName = "Smith";
+      birthdate = "1984-01-02";
+      timezone = "Europe/Oslo";
+      street = "Example Street 1";
+      zip = "12345";
+      city = "Oslo";
+      country = "Norway";
+      phone = "+4712345678";
       roles = ["admin"];
       groups = ["internal"];
       preferredUsername = "alice";
