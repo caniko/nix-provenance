@@ -12,7 +12,7 @@ Rust crate — the directory taxonomy makes that explicit:
 | **IdP** (`nix/modules/idp/`) | an identity provider | `rauthy-provision` |
 | **service-side OIDC** (`nix/modules/service-oidc/`) | a downstream service's users + OIDC wiring | `immich-provision`, `vikunja-provision`, Forgejo |
 | **config-only** (`nix/modules/config-only/`) | service OIDC via shared Nix only, no crate | Vikunja SSO |
-| **LDAP** (`nix/modules/ldap/`) | LDAP-backed services | Stalwart |
+| **LDAP** (`nix/modules/ldap/`) | LDAP-backed services | Stalwart, Stalwart 0.16 transport |
 | **adapter** (`nix/modules/adapter/`) | a non-tenant third-party app's users + OIDC client, into kanidm or rauthy | pink-raven (consumer) |
 
 ## Crates
@@ -29,8 +29,8 @@ tenant taxonomy and the add-a-tenant checklist.
 
 ## Flake outputs
 
-- `packages.<system>.{immich-provision,rauthy-provision,vikunja-provision}`
-- `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,externalApp}` (plus
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart,stalwart-cli,docs,site}`
+- `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter}` — `usersFromKanidmPersons`
   for Immich/Rauthy, service-specific `kanidmOAuth2System` helpers for Immich,

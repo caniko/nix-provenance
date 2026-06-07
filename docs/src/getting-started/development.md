@@ -31,6 +31,21 @@ nix flake check
 `nix build .#docs` and `nix build .#site` produce the same deployable mdBook
 output.
 
+For Stalwart 0.16 module work, use the narrow Nix gates before running the full
+flake:
+
+```sh
+nix build .#checks.x86_64-linux.stalwart-module-eval
+nix build .#checks.x86_64-linux.stalwart016-vmtest
+nix build .#packages.x86_64-linux.stalwart .#packages.x86_64-linux.stalwart-cli
+```
+
+`stalwart-module-eval` validates the Kanidm LDAP registry object shape and
+rejects legacy 0.15 TOML-era keys. `stalwart016-vmtest` boots the 0.16 JSON
+bootstrap service, applies migration and listener registry documents through
+`stalwart-cli`, verifies ports 25/587/993, and checks that registry provisioning
+can rerun without replaying one-time migration inputs.
+
 ## Local docs preview
 
 ```sh

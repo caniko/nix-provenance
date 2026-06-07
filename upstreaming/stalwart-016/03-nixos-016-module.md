@@ -124,7 +124,7 @@ this module manages.
 
 ## Reference
 
-- Contract: `docs/planning/stalwart-016/notes/02-run-model.md` (phase 02).
+- Contract: `upstreaming/stalwart-016/notes/02-run-model.md` (phase 02).
 - gen-50 PG-password fix + listener firewall pattern: canix
   `root/hosts/thething/server/stalwart.nix` (the current 0.15.5 module usage) — reuse
   the *patterns*, not the TOML.

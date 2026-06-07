@@ -75,7 +75,7 @@ need. Guessing here is the single biggest risk to phases 03/04/06.
    run inside registry objects (so secrets can be referenced), or must secrets use the
    native `@type` `file`/`environmentVariable` secret variants? This decides how
    phase 04 feeds the kanidm token + Brevo key + PG password.
-7. Write `docs/planning/stalwart-016/notes/02-run-model.md` capturing all of the above
+7. Write `upstreaming/stalwart-016/notes/02-run-model.md` capturing all of the above
    with commands/output/citations. This is the contract phases 03/04/06 consume.
 
 ## Acceptance criteria
@@ -99,7 +99,7 @@ need. Guessing here is the single biggest risk to phases 03/04/06.
 
 ## Files likely touched
 
-- `docs/planning/stalwart-016/notes/02-run-model.md` *(new)* — the findings contract.
+- `upstreaming/stalwart-016/notes/02-run-model.md` *(new)* — the findings contract.
 - Scratch only otherwise (throwaway instance dirs); no repo code changes.
 
 ## Pitfalls

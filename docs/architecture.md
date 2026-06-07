@@ -31,6 +31,25 @@ A **tenant is not always a crate.** The `nix/modules/` directory encodes the kin
 | `ldap/` | **LDAP**-backed services | none (not the HTTP spine) | Stalwart |
 | `adapter/` | a **non-tenant** third-party app's users + OIDC client, into kanidm or rauthy | none (writes the IdP's own provisioner) | pink-raven (consumer) |
 
+Stalwart has two module surfaces because 0.16 changed the configuration model
+from the nixpkgs 0.15 TOML service to a JSON datastore bootstrap plus registry
+objects applied over JMAP. `nixosModules.stalwart016` owns the 0.16 mail
+transport: it renders `/etc/stalwart016/config.json`, runs the server as
+`stalwart.service`, and uses `stalwart-cli apply` in recovery mode for
+NetworkListener and migration/registry documents. `nixosModules.stalwart`
+remains the Kanidm LDAP directory helper that emits the 0.16 `Ldap` registry
+object consumed by the transport module or by a host-specific registry plan.
+
+The Kanidm LDAP helper deliberately keeps `bindDn = "dn=token"` and
+`bindAuthentication = true`: Stalwart must search with a Kanidm service-account
+token, then bind as the user. Setting `bindAuthentication = false` makes
+Stalwart attempt a local password-hash comparison that Kanidm cannot satisfy.
+The directory swap must change only `storage.directory` and the directory
+registry object; `storage.data`, `storage.blob`, `storage.fts`, and
+`storage.lookup` stay on the mailbox datastore so mailbox contents survive.
+Kanidm's LDAP gateway exposes only POSIX-enabled persons, so mailbox users need
+POSIX attributes and a `mail` value before cutover.
+
 The `adapter/` kind is the inverse of the others: instead of giving a system a
 tenant, it lets an **out-of-scope app reuse existing tenants** (rauthy and/or
 kanidm) from a uniform, backend-agnostic user schema — so a closed-source app
@@ -65,5 +84,9 @@ requiring SMTP such as Stalwart) lives here. See
    - add `packages.<name>` (isolated `cargoArtifacts`) and the crate's checks.
    - tag releases as `<name>-vX`.
 3. **Config-only / LDAP tenants:** add only the `nix/modules/<kind>/<name>.nix`
-   wiring; no crate, no package, no `cargoArtifacts`.
+   wiring unless the upstream service also needs a packaged binary or overlay.
+   Stalwart 0.16 is the exception: it exposes `packages.<system>.stalwart`,
+   `packages.<system>.stalwart-cli`, `overlays.stalwart016`, and
+   `nixosModules.stalwart016` because nixpkgs' 0.15 TOML module is not
+   compatible with the 0.16 registry model.
 4. Update `REUSE.toml` with the new paths' SPDX and `README.md`'s tables.

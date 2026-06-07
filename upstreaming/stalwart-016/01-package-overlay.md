@@ -75,7 +75,7 @@ phase 06 uses `stalwart-cli apply`, so it must be packaged too.
    and what file it expects (the JSON `DataStore` bootstrap — confirm against the
    source `crates/store/src/registry/local.rs` and `crates/common/src/manager/boot.rs`),
    and `stalwart-cli --help` / `stalwart-cli apply --help`. Write findings to a short
-   note for phase 02 (e.g. `docs/planning/stalwart-016/notes/01-binary-introspection.md`).
+   note for phase 02 (e.g. `upstreaming/stalwart-016/notes/01-binary-introspection.md`).
 
 ## Acceptance criteria
 
@@ -88,7 +88,7 @@ phase 06 uses `stalwart-cli apply`, so it must be packaged too.
       replacement patch is committed with a one-line rationale).
 - [ ] The overlay is exposed from nix-provenance's flake (an overlay attr) and a
       `nix flake check`-level eval of it passes.
-- [ ] `docs/planning/stalwart-016/notes/01-binary-introspection.md` exists and records:
+- [ ] `upstreaming/stalwart-016/notes/01-binary-introspection.md` exists and records:
       the `--config` flag + expected bootstrap-file shape, the recovery-mode env vars,
       and the `stalwart-cli` subcommands (incl. `apply`), each with the command output
       or source citation it came from.
@@ -97,7 +97,7 @@ phase 06 uses `stalwart-cli apply`, so it must be packaged too.
 
 - `flake.nix` (nix-provenance) — add the stalwart-0.16.7 overlay attr (and stalwart-cli).
 - `nix/overlays/stalwart-016.nix` *(new)* or `nix/packages.nix` — the override/package expr.
-- `docs/planning/stalwart-016/notes/01-binary-introspection.md` *(new)* — introspection note.
+- `upstreaming/stalwart-016/notes/01-binary-introspection.md` *(new)* — introspection note.
 
 ## Pitfalls
 

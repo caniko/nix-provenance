@@ -2,7 +2,7 @@
 
 Holistic register of every gap nix-provenance bridges until an upstream change
 lands, plus the alternatives for the one genuinely-open bridge (Vikunja
-team-sync). Reconciled with the in-flight [Stalwart 0.16 plan](../docs/planning/stalwart-016/).
+team-sync). Reconciled with the in-flight [Stalwart 0.16 plan](./stalwart-016/).
 
 ## Executive summary
 
@@ -90,7 +90,7 @@ than A but zero added trust surface — judged lower total risk than Option B.
 | **Vikunja team-sync** (needs array-of-object claim; kanidm emits flat strings) | SSO via `nix/lib/vikunja.nix` + `config-only/vikunja.nix`; inert no-op claim to **delete**; teams manual | running (SSO works; team-sync un-bridged) | kanidm#2641 — **or** adopt Option A (moots #2641 for us) |
 | **Immich** (no auto-expiring admin credential) | local patch on Immich **v2.7.5** (`provision-token` + optional password); guarded by `checks.nix immich-patch-applies` (dry-run) | running (applies on v2.7.5) | immich#26597 (Zod) merged to main 2026-04-14 → DTO hunk needs Zod rewrite on first nixpkgs bump to a **release tag** with it. Don't pre-write. True exit: Immich ships native short-lived admin creds |
 | **kanidm-provision** (no POSIX password / unix-bind toggle / SA token) | `identity-cli` + `nix/modules/kanidm/credentials.nix` (readiness-gated oneshot; self-healing token) | running | a **released** kanidm-provision tag with a POSIX-**password** field. #31 (merged) is unix-**attrs** only; v1.3.0 lacks the field. App-passwords are self-service, not a drop-in |
-| **Stalwart 0.16.7** (no TOML/REST; JMAP + `stalwart-cli apply`; LDAP dir = registry object; nixpkgs module incompatible) | `docs/planning/stalwart-016/` (local overlay + JSON-bootstrap module + local `kanidmLdap` lib + `apply` provisioning + migration runbook) | planned/in-flight (deploy capstone gated; gen 50 / 0.15.5 rollback floor) | NixOS/nixpkgs#511880 (module rewrite, open) + #512341 (0.16.0 packaging, blocked). Exit: released nixpkgs `services.stalwart` rendering 0.16 |
+| **Stalwart 0.16.7** (no TOML/REST; JMAP + `stalwart-cli apply`; LDAP dir = registry object; nixpkgs module incompatible) | `upstreaming/stalwart-016/` (local overlay + JSON-bootstrap module + local `kanidmLdap` lib + `apply` provisioning + migration runbook) | planned/in-flight (deploy capstone gated; gen 50 / 0.15.5 rollback floor) | NixOS/nixpkgs#511880 (module rewrite, open) + #512341 (0.16.0 packaging, blocked). Exit: released nixpkgs `services.stalwart` rendering 0.16 |
 | **Rauthy** (no declarative API-key bootstrap; bootstrap is empty-DB INSERT-only) | `rauthy-provision` continuous reconciler over `/auth/v1`; API key assembled at runtime | running (reconcile permanent; bootstrap half pending release) | sebadob/rauthy#1585 **merged 2026-06-03** but post-dates v0.35.2 → not in any release. Exit for the bootstrap half: a release **> v0.35.2**. Continuous reconcile is **never** retired |
 
 ## Doesn't affect us
