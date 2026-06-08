@@ -3,6 +3,20 @@
 Declarative identity & OIDC provisioning for NixOS, Kanidm, and Rauthy — a DRY
 monorepo of reconcilers and NixOS modules.
 
+## Identity model
+
+nix-provenance is intentionally opinionated about credentials. Internal human
+credentials live in Kanidm, and internal users reach downstream services through
+OIDC either directly from Kanidm or through Rauthy when Rauthy fronts external
+apps. External users without Kanidm identities are initialized through Rauthy's
+email-based set-password flow.
+
+Downstream service provisioners therefore manage app-side users, profile
+metadata, roles, groups, OIDC claims, and service configuration. They do **not**
+manage app-local passwords, PINs, password-reset flows, or notification emails;
+credential-bearing fields such as Immich `password` and `pinCode` are
+intentionally unsupported.
+
 Each **tenant** reconciles one system from a Nix-rendered JSON state file via a
 `Type=oneshot` systemd unit ordered after that system. A tenant is not always a
 Rust crate — the directory taxonomy makes that explicit:

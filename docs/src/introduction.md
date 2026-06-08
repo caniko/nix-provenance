@@ -3,6 +3,14 @@
 `nix-provenance` is a DRY monorepo of declarative identity and OIDC
 provisioners plus their NixOS modules.
 
+Credentials are intentionally centralized. Internal users authenticate through
+Kanidm, while external users can be initialized through Rauthy's emailed
+set-password flow. Service-side provisioners do not manage app-local passwords,
+PINs, reset links, or notification emails; they manage user/profile metadata,
+authorization data, and OIDC wiring. See
+[Per-user Fields](./reference/per-user-fields.md) for the supported
+per-platform surface.
+
 Each tenant reconciles one system from a Nix-rendered JSON state file via a
 `Type=oneshot` systemd unit ordered after the system it provisions. A tenant is
 not always a Rust crate:

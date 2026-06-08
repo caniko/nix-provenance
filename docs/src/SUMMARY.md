@@ -17,6 +17,7 @@
 
 # Reference
 
+- [Per-user Fields](./reference/per-user-fields.md)
 - [Licensing](./reference/licensing.md)
 
 # RFCs

@@ -8,6 +8,13 @@ their NixOS modules. Every tenant shares one **spine**:
 > ordered `after` the system it provisions, with the credential resolved from a
 > runtime file/env, never a Nix store path.
 
+The spine does not imply that every upstream field is in scope. Credentials are
+owned by the identity plane: Kanidm for internal humans and Rauthy's
+set-password email flow for external users. Service-side modules manage
+downstream users, profile metadata, roles, groups, claims, and OIDC settings,
+but not app-local password or PIN fields. The field-level contract is documented
+in [Per-user Fields](../reference/per-user-fields.md).
+
 Reconcilers share the same control shape:
 
 ```
