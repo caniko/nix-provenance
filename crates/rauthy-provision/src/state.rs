@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use provenance_core::serde_ext::default_true;
+use provenance_core::serde_ext::{default_true, double_option};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -109,32 +109,34 @@ pub struct UserAttributeSpec {
 pub struct UserSpec {
     #[serde(default = "default_true")]
     pub present: bool,
-    #[serde(default)]
-    pub given_name: Option<String>,
-    #[serde(default)]
-    pub family_name: Option<String>,
-    #[serde(default)]
-    pub birthdate: Option<String>,
-    #[serde(default)]
-    pub timezone: Option<String>,
-    #[serde(default)]
-    pub street: Option<String>,
-    #[serde(default)]
-    pub zip: Option<String>,
-    #[serde(default)]
-    pub city: Option<String>,
-    #[serde(default)]
-    pub country: Option<String>,
-    #[serde(default)]
-    pub phone: Option<String>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub given_name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub family_name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub birthdate: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub timezone: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub street: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub zip: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub city: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub country: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub phone: Option<Option<String>>,
     #[serde(default = "default_language")]
     pub language: String,
+    #[serde(default)]
+    pub user_expires: Option<i64>,
     #[serde(default)]
     pub roles: Vec<String>,
     #[serde(default)]
     pub groups: Vec<String>,
-    #[serde(default)]
-    pub preferred_username: Option<String>,
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    pub preferred_username: Option<Option<String>>,
     #[serde(default)]
     pub attributes: BTreeMap<String, Value>,
     /// On user CREATION only, ask Rauthy to email the user a set-password link
@@ -259,6 +261,7 @@ mod tests {
         assert!(u.groups.is_empty());
         assert!(u.attributes.is_empty());
         assert!(u.preferred_username.is_none());
+        assert!(u.user_expires.is_none());
     }
 
     #[test]
@@ -277,6 +280,7 @@ mod tests {
                 "city": "Oslo",
                 "country": "Norway",
                 "phone": "+4712345678",
+                "user_expires": 1893456000,
                 "attributes": {
                   "vikunja_groups": [{"name": "ops", "oidcID": "ops"}]
                 }
@@ -289,22 +293,46 @@ mod tests {
         );
         assert!(!s.user_attributes["vikunja_groups"].user_editable);
         assert_eq!(
-            s.users["a@example.com"].preferred_username.as_deref(),
-            Some("alice")
+            s.users["a@example.com"].preferred_username,
+            Some(Some("alice".to_string()))
         );
         let user = &s.users["a@example.com"];
-        assert_eq!(user.given_name.as_deref(), Some("Alice"));
-        assert_eq!(user.family_name.as_deref(), Some("Smith"));
-        assert_eq!(user.birthdate.as_deref(), Some("1984-01-02"));
-        assert_eq!(user.timezone.as_deref(), Some("Europe/Oslo"));
-        assert_eq!(user.street.as_deref(), Some("Example Street 1"));
-        assert_eq!(user.zip.as_deref(), Some("12345"));
-        assert_eq!(user.city.as_deref(), Some("Oslo"));
-        assert_eq!(user.country.as_deref(), Some("Norway"));
-        assert_eq!(user.phone.as_deref(), Some("+4712345678"));
+        assert_eq!(user.given_name, Some(Some("Alice".to_string())));
+        assert_eq!(user.family_name, Some(Some("Smith".to_string())));
+        assert_eq!(user.birthdate, Some(Some("1984-01-02".to_string())));
+        assert_eq!(user.timezone, Some(Some("Europe/Oslo".to_string())));
+        assert_eq!(user.street, Some(Some("Example Street 1".to_string())));
+        assert_eq!(user.zip, Some(Some("12345".to_string())));
+        assert_eq!(user.city, Some(Some("Oslo".to_string())));
+        assert_eq!(user.country, Some(Some("Norway".to_string())));
+        assert_eq!(user.phone, Some(Some("+4712345678".to_string())));
+        assert_eq!(user.user_expires, Some(1893456000));
         assert!(s.users["a@example.com"]
             .attributes
             .contains_key("vikunja_groups"));
+    }
+
+    #[test]
+    fn user_nullable_fields_distinguish_absent_set_and_clear() {
+        let s: State = serde_json::from_str(
+            r#"{
+              "users": {
+                "a@example.com": {
+                  "given_name": null,
+                  "family_name": "Smith",
+                  "timezone": "Europe/Oslo",
+                  "preferred_username": null
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let u = &s.users["a@example.com"];
+        assert_eq!(u.given_name, Some(None));
+        assert_eq!(u.family_name, Some(Some("Smith".to_string())));
+        assert_eq!(u.timezone, Some(Some("Europe/Oslo".to_string())));
+        assert_eq!(u.preferred_username, Some(None));
+        assert!(u.birthdate.is_none());
     }
 
     #[test]

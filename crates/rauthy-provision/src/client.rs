@@ -132,6 +132,8 @@ pub struct UserResponse {
     #[serde(default)]
     pub email_verified: bool,
     #[serde(default)]
+    pub user_expires: Option<i64>,
+    #[serde(default)]
     pub user_values: UserValuesResponse,
 }
 
@@ -244,6 +246,8 @@ pub struct NewUserRequest {
     pub roles: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_expires: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -260,6 +264,8 @@ pub struct UpdateUserRequest {
     pub groups: Option<Vec<String>>,
     pub enabled: bool,
     pub email_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_expires: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]

@@ -372,11 +372,12 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
 fn new_user(email: &str, spec: &UserSpec) -> NewUserRequest {
     NewUserRequest {
         email: email.to_string(),
-        given_name: spec.given_name.clone(),
-        family_name: spec.family_name.clone(),
+        given_name: spec.given_name.clone().flatten(),
+        family_name: spec.family_name.clone().flatten(),
         language: spec.language.clone(),
         roles: spec.roles.clone(),
         groups: opt_vec(&spec.groups),
+        user_expires: spec.user_expires,
     }
 }
 
@@ -388,7 +389,11 @@ fn new_user(email: &str, spec: &UserSpec) -> NewUserRequest {
 /// through PATCH, and only for fields explicitly declared in state.
 fn user_drifted(user: &client::UserResponse, spec: &UserSpec) -> bool {
     let cur_groups = user.groups.as_deref().unwrap_or_default();
-    !is_subset(&spec.roles, &user.roles) || !is_subset(&spec.groups, cur_groups)
+    !is_subset(&spec.roles, &user.roles)
+        || !is_subset(&spec.groups, cur_groups)
+        || spec
+            .user_expires
+            .is_some_and(|desired| user.user_expires != Some(desired))
 }
 
 fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserRequest {
@@ -411,6 +416,7 @@ fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserReques
         },
         enabled: user.enabled,
         email_verified: user.email_verified,
+        user_expires: spec.user_expires.or(user.user_expires),
     }
 }
 
@@ -428,85 +434,95 @@ fn has_declared_profile_fields(spec: &UserSpec) -> bool {
 
 fn push_profile_field(
     put: &mut Vec<UserPatchValue>,
+    del: &mut Vec<String>,
     key: &'static str,
-    desired: Option<&String>,
+    desired: &Option<Option<String>>,
     current: Option<&String>,
 ) {
-    if let Some(desired) = desired {
-        if current != Some(desired) {
-            put.push(UserPatchValue {
-                key,
-                value: Value::String(desired.clone()),
-            });
-        }
+    match desired {
+        Some(Some(desired)) if current != Some(desired) => put.push(UserPatchValue {
+            key,
+            value: Value::String(desired.clone()),
+        }),
+        Some(None) if current.is_some() => del.push(key.to_string()),
+        _ => {}
     }
 }
 
 fn profile_patch(user: &client::UserResponse, spec: &UserSpec) -> UserPatchRequest {
     let mut put = Vec::new();
+    let mut del = Vec::new();
     push_profile_field(
         &mut put,
+        &mut del,
         "given_name",
-        spec.given_name.as_ref(),
+        &spec.given_name,
         user.given_name.as_ref(),
     );
     push_profile_field(
         &mut put,
+        &mut del,
         "family_name",
-        spec.family_name.as_ref(),
+        &spec.family_name,
         user.family_name.as_ref(),
     );
     push_profile_field(
         &mut put,
+        &mut del,
         "user_values.birthdate",
-        spec.birthdate.as_ref(),
+        &spec.birthdate,
         user.user_values.birthdate.as_ref(),
     );
     push_profile_field(
         &mut put,
+        &mut del,
         "user_values.tz",
-        spec.timezone.as_ref(),
+        &spec.timezone,
         user.user_values.tz.as_ref(),
     );
     push_profile_field(
         &mut put,
+        &mut del,
         "user_values.street",
-        spec.street.as_ref(),
+        &spec.street,
         user.user_values.street.as_ref(),
     );
     push_profile_field(
         &mut put,
+        &mut del,
         "user_values.zip",
-        spec.zip.as_ref(),
+        &spec.zip,
         user.user_values.zip.as_ref(),
     );
     push_profile_field(
         &mut put,
+        &mut del,
         "user_values.city",
-        spec.city.as_ref(),
+        &spec.city,
         user.user_values.city.as_ref(),
     );
     push_profile_field(
         &mut put,
+        &mut del,
         "user_values.country",
-        spec.country.as_ref(),
+        &spec.country,
         user.user_values.country.as_ref(),
     );
     push_profile_field(
         &mut put,
+        &mut del,
         "user_values.phone",
-        spec.phone.as_ref(),
+        &spec.phone,
         user.user_values.phone.as_ref(),
     );
 
-    UserPatchRequest {
-        put,
-        del: Vec::new(),
-    }
+    UserPatchRequest { put, del }
 }
 
+#[cfg(test)]
 fn profile_fields_drifted(user: &client::UserResponse, spec: &UserSpec) -> bool {
-    !profile_patch(user, spec).put.is_empty()
+    let patch = profile_patch(user, spec);
+    !patch.put.is_empty() || !patch.del.is_empty()
 }
 
 fn reconcile_user_profile_fields(
@@ -515,7 +531,7 @@ fn reconcile_user_profile_fields(
     spec: &UserSpec,
 ) -> Result<()> {
     let patch = profile_patch(user, spec);
-    if !patch.put.is_empty() {
+    if !patch.put.is_empty() || !patch.del.is_empty() {
         log(format_args!("patch user {} profile fields", user.email));
         client.patch_user(&user.id, &patch)?;
     }
@@ -527,15 +543,16 @@ fn reconcile_user_preferred_username(
     user: &client::UserResponse,
     spec: &UserSpec,
 ) -> Result<()> {
-    let Some(desired) = spec.preferred_username.as_deref() else {
+    let Some(desired) = &spec.preferred_username else {
         return Ok(());
     };
-    if user.user_values.preferred_username.as_deref() != Some(desired) {
+    let desired = desired.as_deref();
+    if user.user_values.preferred_username.as_deref() != desired {
         log(format_args!(
             "update user {} preferred_username",
             user.email
         ));
-        client.update_preferred_username(&user.id, Some(desired))?;
+        client.update_preferred_username(&user.id, desired)?;
     }
     Ok(())
 }
@@ -975,6 +992,7 @@ mod tests {
             groups: groups.map(|g| g.iter().map(ToString::to_string).collect()),
             enabled: true,
             email_verified: false,
+            user_expires: None,
             user_values: client::UserValuesResponse::default(),
         }
     }
@@ -1086,7 +1104,7 @@ mod tests {
     #[test]
     fn provider_matching_keeps_exact_id_and_identity_duplicates_together() {
         let spec = provider_spec("https://auth.example/oauth2/openid/rauthy", "rauthy");
-        let providers = vec![
+        let providers = [
             provider("kanidm", "https://different.example", "other"),
             provider(
                 "random",
@@ -1104,7 +1122,7 @@ mod tests {
     #[test]
     fn provider_matching_falls_back_to_issuer_and_client_id() {
         let spec = provider_spec("https://auth.example/oauth2/openid/rauthy", "rauthy");
-        let providers = vec![
+        let providers = [
             provider(
                 "random-a",
                 "https://auth.example/oauth2/openid/rauthy",
@@ -1120,7 +1138,7 @@ mod tests {
 
     #[test]
     fn provider_canonical_uses_lexicographic_id_when_unlinked() {
-        let providers = vec![
+        let providers = [
             provider(
                 "z-random",
                 "https://auth.example/oauth2/openid/rauthy",
@@ -1145,7 +1163,7 @@ mod tests {
 
     #[test]
     fn provider_canonical_preserves_single_linked_duplicate() {
-        let providers = vec![
+        let providers = [
             provider(
                 "a-random",
                 "https://auth.example/oauth2/openid/rauthy",
@@ -1170,7 +1188,7 @@ mod tests {
 
     #[test]
     fn provider_canonical_fails_when_multiple_duplicates_are_linked() {
-        let providers = vec![
+        let providers = [
             provider(
                 "a-linked",
                 "https://auth.example/oauth2/openid/rauthy",
@@ -1290,6 +1308,14 @@ mod tests {
         }))
         .unwrap();
         assert!(profile_fields_drifted(&u, &changed_declared));
+
+        let clear_declared: UserSpec = serde_json::from_value(serde_json::json!({
+            "roles": ["a"],
+            "groups": ["g1"],
+            "birthdate": null
+        }))
+        .unwrap();
+        assert!(profile_fields_drifted(&u, &clear_declared));
     }
 
     #[test]
@@ -1329,6 +1355,55 @@ mod tests {
                 {"key": "user_values.phone", "value": "+4712345678"}
             ])
         );
+    }
+
+    #[test]
+    fn profile_patch_deletes_explicitly_cleared_fields_only_when_present() {
+        let mut u = user(&["a"], Some(&["g1"]));
+        u.given_name = Some("Old".to_string());
+        u.user_values.birthdate = Some("2000-01-01".to_string());
+
+        let s: UserSpec = serde_json::from_value(serde_json::json!({
+            "given_name": null,
+            "family_name": null,
+            "birthdate": null,
+            "timezone": null
+        }))
+        .unwrap();
+
+        let patch = serde_json::to_value(profile_patch(&u, &s)).unwrap();
+        assert_eq!(patch["put"], serde_json::json!([]));
+        assert_eq!(
+            patch["del"],
+            serde_json::json!(["given_name", "user_values.birthdate"])
+        );
+    }
+
+    #[test]
+    fn user_expires_is_declared_only_drift_and_update_preserves_when_unmanaged() {
+        let mut u = user(&["a"], Some(&["g1"]));
+        u.user_expires = Some(1893456000);
+
+        let unmanaged = spec(&["a"], &["g1"]);
+        assert!(!user_drifted(&u, &unmanaged));
+        assert_eq!(update_user(&u, &unmanaged).user_expires, Some(1893456000));
+
+        let same: UserSpec = serde_json::from_value(serde_json::json!({
+            "roles": ["a"],
+            "groups": ["g1"],
+            "user_expires": 1893456000
+        }))
+        .unwrap();
+        assert!(!user_drifted(&u, &same));
+
+        let changed: UserSpec = serde_json::from_value(serde_json::json!({
+            "roles": ["a"],
+            "groups": ["g1"],
+            "user_expires": 1893542400
+        }))
+        .unwrap();
+        assert!(user_drifted(&u, &changed));
+        assert_eq!(update_user(&u, &changed).user_expires, Some(1893542400));
     }
 
     #[test]
