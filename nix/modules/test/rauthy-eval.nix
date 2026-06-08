@@ -30,6 +30,7 @@
       city = "Oslo";
       country = "Norway";
       phone = "+4712345678";
+      userExpires = 1893456000;
       roles = ["admin"];
       groups = ["internal"];
       preferredUsername = "alice";
@@ -39,6 +40,12 @@
           oidcID = "ops";
         }
       ];
+    };
+    users."bob@example.com" = {
+      clearFamilyName = true;
+      clearBirthdate = true;
+      clearTimezone = true;
+      clearPreferredUsername = true;
     };
     clients.demo = {
       name = "Demo";

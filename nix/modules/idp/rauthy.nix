@@ -16,7 +16,7 @@
   pkgs,
   ...
 }: let
-  inherit (lib) mkEnableOption mkIf mkOption optionalString types;
+  inherit (lib) mkEnableOption mkIf mkOption optionalAttrs optionalString types;
   cfg = config.services.rauthy.provision;
   generatedApiKeyUnit = "rauthy-bootstrap-api-key";
 
@@ -72,50 +72,100 @@
         default = null;
         description = "Given name. Reconciled only when set; null leaves the field unmanaged.";
       };
+      clearGivenName = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy given_name. Use only when the Rauthy user-values policy permits it.";
+      };
       familyName = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = "Family name. Reconciled only when set; null leaves the field unmanaged.";
+      };
+      clearFamilyName = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy family_name.";
       };
       birthdate = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = "Birthdate in YYYY-MM-DD form. Reconciled only when set.";
       };
+      clearBirthdate = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy birthdate.";
+      };
       timezone = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = "Rauthy user timezone, for example Europe/Oslo. Reconciled only when set.";
+      };
+      clearTimezone = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy timezone.";
       };
       street = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = "Street address. Reconciled only when set.";
       };
+      clearStreet = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy street address.";
+      };
       zip = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = "ZIP/postal code. Reconciled only when set.";
+      };
+      clearZip = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy ZIP/postal code.";
       };
       city = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = "City. Reconciled only when set.";
       };
+      clearCity = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy city.";
+      };
       country = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = "Country. Reconciled only when set.";
+      };
+      clearCountry = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy country.";
       };
       phone = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = "Phone number. Reconciled only when set.";
       };
+      clearPhone = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy phone number.";
+      };
       language = mkOption {
         type = types.enum ["de" "en" "fr" "ko" "nb" "ru" "uk" "zhhans"];
         default = "en";
         description = "Rauthy UI language for the user.";
+      };
+      userExpires = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        description = "Optional Unix timestamp in seconds after which the Rauthy user expires.";
       };
       roles = mkOption {
         type = types.listOf types.str;
@@ -131,6 +181,11 @@
         type = types.nullOr types.str;
         default = null;
         description = "Rauthy preferred_username to set through the admin API.";
+      };
+      clearPreferredUsername = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Clear Rauthy preferred_username.";
       };
       attributes = mkOption {
         type = types.attrsOf types.anything;
@@ -429,8 +484,8 @@
         user_editable = a.userEditable;
       })
       cfg.userAttributes;
-    users =
-      lib.mapAttrs (_: u: {
+    users = lib.mapAttrs (_: u:
+      {
         inherit
           (u)
           present
@@ -438,21 +493,76 @@
           roles
           groups
           attributes
-          birthdate
-          timezone
-          street
-          zip
-          city
-          country
-          phone
           ;
-        given_name = u.givenName;
-        family_name = u.familyName;
-        preferred_username = u.preferredUsername;
         send_password_email = u.sendPasswordEmail;
+      }
+      // optionalAttrs (u.givenName != null || u.clearGivenName) {
+        given_name =
+          if u.clearGivenName
+          then null
+          else u.givenName;
+      }
+      // optionalAttrs (u.familyName != null || u.clearFamilyName) {
+        family_name =
+          if u.clearFamilyName
+          then null
+          else u.familyName;
+      }
+      // optionalAttrs (u.birthdate != null || u.clearBirthdate) {
+        birthdate =
+          if u.clearBirthdate
+          then null
+          else u.birthdate;
+      }
+      // optionalAttrs (u.timezone != null || u.clearTimezone) {
+        timezone =
+          if u.clearTimezone
+          then null
+          else u.timezone;
+      }
+      // optionalAttrs (u.street != null || u.clearStreet) {
+        street =
+          if u.clearStreet
+          then null
+          else u.street;
+      }
+      // optionalAttrs (u.zip != null || u.clearZip) {
+        zip =
+          if u.clearZip
+          then null
+          else u.zip;
+      }
+      // optionalAttrs (u.city != null || u.clearCity) {
+        city =
+          if u.clearCity
+          then null
+          else u.city;
+      }
+      // optionalAttrs (u.country != null || u.clearCountry) {
+        country =
+          if u.clearCountry
+          then null
+          else u.country;
+      }
+      // optionalAttrs (u.phone != null || u.clearPhone) {
+        phone =
+          if u.clearPhone
+          then null
+          else u.phone;
+      }
+      // optionalAttrs (u.userExpires != null) {
+        user_expires = u.userExpires;
+      }
+      // optionalAttrs (u.preferredUsername != null || u.clearPreferredUsername) {
+        preferred_username =
+          if u.clearPreferredUsername
+          then null
+          else u.preferredUsername;
+      }
+      // optionalAttrs (u.passwordEmailRedirectUri != null) {
         password_email_redirect_uri = u.passwordEmailRedirectUri;
       })
-      cfg.users;
+    cfg.users;
     clients =
       lib.mapAttrs (_: c: {
         inherit (c) present confidential scopes;
@@ -739,6 +849,53 @@ in {
           message = "services.rauthy.provision.providers.${n} enables client-secret auth but has no clientSecretFile.";
         })
         cfg.providers
+        ++ lib.flatten (lib.mapAttrsToList (name: user: [
+            {
+              assertion = !(user.givenName != null && user.clearGivenName);
+              message = "services.rauthy.provision.users.${name} cannot set both givenName and clearGivenName.";
+            }
+            {
+              assertion = !(user.familyName != null && user.clearFamilyName);
+              message = "services.rauthy.provision.users.${name} cannot set both familyName and clearFamilyName.";
+            }
+            {
+              assertion = !(user.birthdate != null && user.clearBirthdate);
+              message = "services.rauthy.provision.users.${name} cannot set both birthdate and clearBirthdate.";
+            }
+            {
+              assertion = !(user.timezone != null && user.clearTimezone);
+              message = "services.rauthy.provision.users.${name} cannot set both timezone and clearTimezone.";
+            }
+            {
+              assertion = !(user.street != null && user.clearStreet);
+              message = "services.rauthy.provision.users.${name} cannot set both street and clearStreet.";
+            }
+            {
+              assertion = !(user.zip != null && user.clearZip);
+              message = "services.rauthy.provision.users.${name} cannot set both zip and clearZip.";
+            }
+            {
+              assertion = !(user.city != null && user.clearCity);
+              message = "services.rauthy.provision.users.${name} cannot set both city and clearCity.";
+            }
+            {
+              assertion = !(user.country != null && user.clearCountry);
+              message = "services.rauthy.provision.users.${name} cannot set both country and clearCountry.";
+            }
+            {
+              assertion = !(user.phone != null && user.clearPhone);
+              message = "services.rauthy.provision.users.${name} cannot set both phone and clearPhone.";
+            }
+            {
+              assertion = !(user.preferredUsername != null && user.clearPreferredUsername);
+              message = "services.rauthy.provision.users.${name} cannot set both preferredUsername and clearPreferredUsername.";
+            }
+            {
+              assertion = !user.sendPasswordEmail || user.passwordEmailRedirectUri != null;
+              message = "services.rauthy.provision.users.${name}.passwordEmailRedirectUri is required when sendPasswordEmail = true.";
+            }
+          ])
+          cfg.users)
         ++ [
           {
             assertion = !cfg.generatedApiKey.enable || cfg.generatedApiKey.environmentFile != null;
