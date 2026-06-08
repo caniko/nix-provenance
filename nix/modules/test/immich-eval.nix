@@ -24,7 +24,13 @@
         name = "Can";
         isAdmin = true;
         storageLabel = "can";
+        avatarColor = "blue";
         shouldChangePassword = false;
+      };
+      users.eric = {
+        email = "eric@example.com";
+        name = "Eric";
+        clearAvatarColor = true;
       };
     };
   };

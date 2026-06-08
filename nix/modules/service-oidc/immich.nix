@@ -51,6 +51,16 @@
         default = false;
         description = "Set Immich quotaSizeInBytes to null.";
       };
+      avatarColor = mkOption {
+        type = types.nullOr (types.enum ["primary" "pink" "red" "yellow" "blue" "green" "purple" "orange" "gray" "amber"]);
+        default = null;
+        description = "Declared Immich avatar color. Set clearAvatarColor to clear an existing color.";
+      };
+      clearAvatarColor = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Set Immich avatarColor to null.";
+      };
       shouldChangePassword = mkOption {
         type = types.nullOr types.bool;
         default = null;
@@ -113,6 +123,12 @@
         if user.clearQuota
         then null
         else user.quotaSizeInBytes;
+    }
+    // optionalAttrs (user.avatarColor != null || user.clearAvatarColor) {
+      avatarColor =
+        if user.clearAvatarColor
+        then null
+        else user.avatarColor;
     }
     // optionalAttrs (user.shouldChangePassword != null) {inherit (user) shouldChangePassword;})
   cfg.users;
@@ -321,6 +337,10 @@ in {
           {
             assertion = !(user.quotaSizeInBytes != null && user.clearQuota);
             message = "services.immich.provision.users.${name} cannot set both quotaSizeInBytes and clearQuota.";
+          }
+          {
+            assertion = !(user.avatarColor != null && user.clearAvatarColor);
+            message = "services.immich.provision.users.${name} cannot set both avatarColor and clearAvatarColor.";
           }
         ])
         cfg.users);

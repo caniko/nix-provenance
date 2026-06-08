@@ -155,5 +155,7 @@ pub struct ImmichUser {
     #[serde(default)]
     pub quota_size_in_bytes: Option<u64>,
     #[serde(default)]
+    pub avatar_color: Option<String>,
+    #[serde(default)]
     pub should_change_password: bool,
 }

@@ -61,6 +61,7 @@ pub fn build_create_user_request(key: &str, spec: &UserSpec) -> Result<Map<Strin
     insert_if_some(&mut body, "isAdmin", spec.is_admin);
     insert_nullable_string(&mut body, "storageLabel", &spec.storage_label);
     insert_nullable_u64(&mut body, "quotaSizeInBytes", spec.quota_size_in_bytes);
+    insert_nullable_string(&mut body, "avatarColor", &spec.avatar_color);
     insert_if_some(
         &mut body,
         "shouldChangePassword",
@@ -90,6 +91,11 @@ pub fn build_update_user_request(existing: &ImmichUser, spec: &UserSpec) -> Map<
     if let Some(quota) = spec.quota_size_in_bytes {
         if existing.quota_size_in_bytes != quota {
             body.insert("quotaSizeInBytes".to_string(), json!(quota));
+        }
+    }
+    if let Some(avatar_color) = &spec.avatar_color {
+        if &existing.avatar_color != avatar_color {
+            body.insert("avatarColor".to_string(), json!(avatar_color));
         }
     }
     if let Some(should_change_password) = spec.should_change_password {
@@ -164,6 +170,7 @@ mod tests {
             is_admin: false,
             storage_label: Some("alice".to_string()),
             quota_size_in_bytes: Some(100),
+            avatar_color: Some("blue".to_string()),
             should_change_password: false,
         }
     }
@@ -179,6 +186,7 @@ mod tests {
                   "isAdmin": false,
                   "storageLabel": "alice",
                   "quotaSizeInBytes": 100,
+                  "avatarColor": "blue",
                   "shouldChangePassword": false
                 }
               }
@@ -188,7 +196,10 @@ mod tests {
         let body = build_create_user_request("alice", &state.users["alice"]).unwrap();
         assert_eq!(body["email"], json!("alice@example.com"));
         assert_eq!(body["name"], json!("Alice"));
+        assert_eq!(body["avatarColor"], json!("blue"));
         assert!(!body.contains_key("password"));
+        assert!(!body.contains_key("pinCode"));
+        assert!(!body.contains_key("notify"));
         assert!(!body.contains_key("oauthId"));
     }
 
@@ -210,6 +221,7 @@ mod tests {
                   "name": "Alice T",
                   "isAdmin": false,
                   "storageLabel": null,
+                  "avatarColor": null,
                   "quotaSizeInBytes": 100,
                   "shouldChangePassword": false
                 }
@@ -218,9 +230,10 @@ mod tests {
         )
         .unwrap();
         let body = build_update_user_request(&user(), &state.users["alice"]);
-        assert_eq!(body.len(), 2);
+        assert_eq!(body.len(), 3);
         assert_eq!(body["name"], json!("Alice T"));
         assert_eq!(body["storageLabel"], Value::Null);
+        assert_eq!(body["avatarColor"], Value::Null);
         assert!(!body.contains_key("email"));
         assert!(!body.contains_key("oauthId"));
     }
@@ -236,6 +249,7 @@ mod tests {
                   "isAdmin": false,
                   "storageLabel": "alice",
                   "quotaSizeInBytes": 100,
+                  "avatarColor": "blue",
                   "shouldChangePassword": false
                 }
               }

@@ -30,6 +30,12 @@ pub struct UserSpec {
         deserialize_with = "double_option::deserialize"
     )]
     pub quota_size_in_bytes: Option<Option<u64>>,
+    #[serde(
+        default,
+        rename = "avatarColor",
+        deserialize_with = "double_option::deserialize"
+    )]
+    pub avatar_color: Option<Option<String>>,
     #[serde(rename = "shouldChangePassword")]
     pub should_change_password: Option<bool>,
     pub delete: DeleteSpec,
@@ -44,6 +50,7 @@ impl Default for UserSpec {
             is_admin: None,
             storage_label: None,
             quota_size_in_bytes: None,
+            avatar_color: None,
             should_change_password: None,
             delete: DeleteSpec::default(),
         }
@@ -112,6 +119,7 @@ mod tests {
                   "isAdmin": true,
                   "storageLabel": null,
                   "quotaSizeInBytes": 100,
+                  "avatarColor": "blue",
                   "shouldChangePassword": false
                 }
               }
@@ -123,6 +131,7 @@ mod tests {
         assert_eq!(user.is_admin, Some(true));
         assert_eq!(user.storage_label, Some(None));
         assert_eq!(user.quota_size_in_bytes, Some(Some(100)));
+        assert_eq!(user.avatar_color, Some(Some("blue".to_string())));
         assert_eq!(user.should_change_password, Some(false));
     }
 
