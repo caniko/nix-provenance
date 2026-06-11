@@ -10,6 +10,16 @@ This plan turns the research dossier at `upstreaming/round-3/rauthy-bootstrap-ge
 
 Current evidence says upstream `origin/main` already has `api_keys.json` bootstrap support, but generated API-key secrets are not implemented. The local Rauthy branch `feat/bootstrap-api-keys-json` tracks a deleted remote branch and must not be used as the new base.
 
+As of June 11, 2026, the local execution layout is consolidated around one shared Git repository with role-based worktrees:
+
+| Path | Role | Branch rule |
+|---|---|---|
+| `/data/nvme0/can/Projects/rauthy` | shared repo + main integration worktree | owns local integration branches; do not leave this worktree detached |
+| `/data/nvme0/can/Projects/rauthy-pr1-submit` | upstream PR 1 submission worktree | owns `feat/bootstrap-generated-secrets-pr1-submit` |
+| `/data/nvme0/can/Projects/rauthy-pr2` | canonical local consumer worktree for stacked PR 2 validation | stays on `local/pr2-consumer`; do not leave it detached |
+
+`/data/nvme0/can/Projects/rauthy-pr1-check` is retired after its checkpoint role was absorbed into this canonical plan set and the named submit/consumer worktrees above.
+
 ## Phase Table
 
 | Phase | File | Depends on | Blocking status | Safe parallelism |
@@ -54,6 +64,20 @@ Wave 5: run Phase 08 only after PR 2 has a reviewed local branch. It proves the 
 - Do not convert bootstrap into day-2 reconciliation.
 - Do not use the stale `feat/bootstrap-api-keys-json` branch as implementation base.
 - Prefer small, reviewable commits inside each PR branch.
+
+## Historical Coverage
+
+The active execution plan is this directory only. Older Rauthy plan material remains as evidence, not as parallel instructions.
+
+| Source | Status | Notes |
+|---|---|---|
+| `upstreaming/round-1/rauthy-1585-comment.md` | historical-only | records the already-merged API-key bootstrap JSON upstreaming step |
+| `upstreaming/round-2/rauthy-1584-encrypted-container-rfc.md` | represented | design constraints carried into phases 02-07 |
+| `upstreaming/round-2/rauthy-1584-reply-2.md` | represented | maintainer-aligned decisions folded into current phase assumptions |
+| `upstreaming/round-3/rauthy-bootstrap-generate-research.md` | represented | current evidence base for the surviving implementation work |
+| `upstreaming/round-0-local-changes.md` | historical-only | broader repository cleanup notes, not an execution plan for this stack |
+
+Treat `upstreaming/round-*` as reference material only after checking whether the current phase files already represent the same intent.
 
 ## References
 

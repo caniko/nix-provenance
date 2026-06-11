@@ -189,7 +189,7 @@ fn transient_api_key_request(name: &str, exp: i64) -> ApiKeyRequest {
             access("Clients", &["read", "create", "update", "delete"]),
             access("Scopes", &["read", "create", "update", "delete"]),
             access("UserAttributes", &["read", "create", "update", "delete"]),
-            access("Providers", &["read", "create", "update", "delete"]),
+            access("AuthProviders", &["read", "create", "update", "delete"]),
             access("Secrets", &["read", "update"]),
         ],
     }

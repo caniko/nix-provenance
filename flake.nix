@@ -10,7 +10,9 @@
     };
     crane.url = "github:ipetkov/crane";
     rauthy-src = {
-      url = "path:/data/nvme0/can/Projects/rauthy-pr2-clean";
+      # Canonical local consumer worktree for stacked PR2 validation. Keep this
+      # path on the consumer-ready branch rather than a detached HEAD.
+      url = "path:/data/nvme0/can/Projects/rauthy-pr2";
       flake = false;
     };
   };

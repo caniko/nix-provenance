@@ -394,10 +394,24 @@
         default = 0;
         description = "TTL in seconds for the generated bootstrap secret container. 0 disables automatic expiry.";
       };
+      configFile = mkOption {
+        type = types.nullOr (types.oneOf [types.path types.str]);
+        default = null;
+        description = ''
+          Runtime Rauthy config file passed to `rauthy bootstrap get`. The
+          command reads `bootstrap.generated_secrets_file` from this config and
+          uses the normal Rauthy config parser, so any environment referenced by
+          the config must be available to the extraction unit.
+        '';
+      };
       environmentFile = mkOption {
         type = types.nullOr (types.oneOf [types.path types.str]);
         default = null;
-        description = "Environment file containing ENC_KEY_ACTIVE and ENC_KEYS for offline container decryption.";
+        description = ''
+          Optional environment file loaded before `rauthy bootstrap get`
+          parses the Rauthy config. Use this when the config references runtime
+          secrets such as ENC_KEY_ACTIVE or ENC_KEYS.
+        '';
       };
     };
   };
@@ -428,7 +442,7 @@
       inherit group;
       access_rights = ["read" "create" "update" "delete"];
     })
-    ["Users" "Groups" "Roles" "Clients" "Scopes" "UserAttributes" "Providers"]
+    ["Users" "Groups" "Roles" "Clients" "Scopes" "UserAttributes" "AuthProviders"]
     ++ [
       {
         group = "Secrets";
@@ -627,8 +641,12 @@
         "--api-key-file"
         (toString cfg.apiKeyFile)
       ]
-      ++ lib.optionals cfg.generatedApiKey.enable [
+      ++ lib.optionals (cfg.generatedApiKey.enable && !cfg.transientApiKey.enable) [
         "--api-key-file"
+        cfg.generatedApiKey.file
+      ]
+      ++ lib.optionals (cfg.generatedApiKey.enable && cfg.transientApiKey.enable) [
+        "--key-manager-api-key-file"
         cfg.generatedApiKey.file
       ]
       ++ lib.optional (!cfg.autoRemove) "--no-auto-remove"
@@ -660,15 +678,6 @@
   extractGeneratedApiKeyScript = pkgs.writeShellScript "rauthy-bootstrap-api-key" ''
     set -eu
 
-    if [ -z "''${ENC_KEY_ACTIVE:-}" ]; then
-      echo "ENC_KEY_ACTIVE is missing from services.rauthy.provision.generatedApiKey.environmentFile" >&2
-      exit 1
-    fi
-    if [ -z "''${ENC_KEYS:-}" ]; then
-      echo "ENC_KEYS is missing from services.rauthy.provision.generatedApiKey.environmentFile" >&2
-      exit 1
-    fi
-
     out=${lib.escapeShellArg cfg.generatedApiKey.file}
     if [ -s "$out" ]; then
       exit 0
@@ -681,7 +690,7 @@
     rm -f "$tmp"
     umask 077
     ${lib.escapeShellArg (lib.getExe config.services.rauthy.package)} bootstrap get \
-      --file ${lib.escapeShellArg cfg.generatedApiKey.generatedSecretsFile} \
+      --config-file ${lib.escapeShellArg (toString cfg.generatedApiKey.configFile)} \
       --kind api-key \
       --id ${lib.escapeShellArg cfg.apiKeyName} \
       --field token \
@@ -741,8 +750,9 @@ in {
       default = {};
       description = ''
         Runtime transient API-key mode. The long-lived `apiKeyEnvironmentFile`
-        key mints a short-lived reconciliation key only when the provisioner
-        unit runs, and the provisioner deletes the transient key before exit.
+        key or `generatedApiKey` key mints a short-lived reconciliation key
+        only when the provisioner unit runs, and the provisioner deletes the
+        transient key before exit.
       '';
     };
 
@@ -817,140 +827,144 @@ in {
     };
   };
 
-  config = mkIf cfg.enable ({
-      assertions =
-        [
-          {
-            assertion = cfg.apiKeyFile != null || cfg.apiKeyEnvironmentFile != null || cfg.generatedApiKey.enable;
-            message = "services.rauthy.provision must set apiKeyFile, apiKeyEnvironmentFile, or generatedApiKey.enable when provisioning is enabled.";
-          }
-          {
-            assertion =
-              lib.length (lib.filter (x: x) [
-                (cfg.apiKeyFile != null)
-                (cfg.apiKeyEnvironmentFile != null)
-                cfg.generatedApiKey.enable
-              ])
-              == 1;
-            message = "services.rauthy.provision must set only one of apiKeyFile, apiKeyEnvironmentFile, or generatedApiKey.enable.";
-          }
-          {
-            assertion = cfg.apiKeyName != "" && !(lib.hasInfix "$" cfg.apiKeyName);
-            message = "services.rauthy.provision.apiKeyName must be non-empty and must not contain '$'.";
-          }
-        ]
-        ++ lib.mapAttrsToList (n: c: {
-          assertion = c.generatedSecretFile == null || c.confidential;
-          message = "services.rauthy.provision.clients.${n}.generatedSecretFile requires confidential = true.";
-        })
-        cfg.clients
-        ++ lib.mapAttrsToList (n: p: {
-          assertion = !(p.clientSecretBasic || p.clientSecretPost) || p.clientSecretFile != null;
-          message = "services.rauthy.provision.providers.${n} enables client-secret auth but has no clientSecretFile.";
-        })
-        cfg.providers
-        ++ lib.flatten (lib.mapAttrsToList (name: user: [
+  config = mkIf cfg.enable (lib.mkMerge (
+    [
+      {
+        assertions =
+          [
             {
-              assertion = !(user.givenName != null && user.clearGivenName);
-              message = "services.rauthy.provision.users.${name} cannot set both givenName and clearGivenName.";
+              assertion = cfg.apiKeyFile != null || cfg.apiKeyEnvironmentFile != null || cfg.generatedApiKey.enable;
+              message = "services.rauthy.provision must set apiKeyFile, apiKeyEnvironmentFile, or generatedApiKey.enable when provisioning is enabled.";
             }
             {
-              assertion = !(user.familyName != null && user.clearFamilyName);
-              message = "services.rauthy.provision.users.${name} cannot set both familyName and clearFamilyName.";
+              assertion =
+                lib.length (lib.filter (x: x) [
+                  (cfg.apiKeyFile != null)
+                  (cfg.apiKeyEnvironmentFile != null)
+                  cfg.generatedApiKey.enable
+                ])
+                == 1;
+              message = "services.rauthy.provision must set only one of apiKeyFile, apiKeyEnvironmentFile, or generatedApiKey.enable.";
             }
             {
-              assertion = !(user.birthdate != null && user.clearBirthdate);
-              message = "services.rauthy.provision.users.${name} cannot set both birthdate and clearBirthdate.";
+              assertion = cfg.apiKeyName != "" && !(lib.hasInfix "$" cfg.apiKeyName);
+              message = "services.rauthy.provision.apiKeyName must be non-empty and must not contain '$'.";
+            }
+          ]
+          ++ lib.mapAttrsToList (n: c: {
+            assertion = c.generatedSecretFile == null || c.confidential;
+            message = "services.rauthy.provision.clients.${n}.generatedSecretFile requires confidential = true.";
+          })
+          cfg.clients
+          ++ lib.mapAttrsToList (n: p: {
+            assertion = !(p.clientSecretBasic || p.clientSecretPost) || p.clientSecretFile != null;
+            message = "services.rauthy.provision.providers.${n} enables client-secret auth but has no clientSecretFile.";
+          })
+          cfg.providers
+          ++ lib.flatten (lib.mapAttrsToList (name: user: [
+              {
+                assertion = !(user.givenName != null && user.clearGivenName);
+                message = "services.rauthy.provision.users.${name} cannot set both givenName and clearGivenName.";
+              }
+              {
+                assertion = !(user.familyName != null && user.clearFamilyName);
+                message = "services.rauthy.provision.users.${name} cannot set both familyName and clearFamilyName.";
+              }
+              {
+                assertion = !(user.birthdate != null && user.clearBirthdate);
+                message = "services.rauthy.provision.users.${name} cannot set both birthdate and clearBirthdate.";
+              }
+              {
+                assertion = !(user.timezone != null && user.clearTimezone);
+                message = "services.rauthy.provision.users.${name} cannot set both timezone and clearTimezone.";
+              }
+              {
+                assertion = !(user.street != null && user.clearStreet);
+                message = "services.rauthy.provision.users.${name} cannot set both street and clearStreet.";
+              }
+              {
+                assertion = !(user.zip != null && user.clearZip);
+                message = "services.rauthy.provision.users.${name} cannot set both zip and clearZip.";
+              }
+              {
+                assertion = !(user.city != null && user.clearCity);
+                message = "services.rauthy.provision.users.${name} cannot set both city and clearCity.";
+              }
+              {
+                assertion = !(user.country != null && user.clearCountry);
+                message = "services.rauthy.provision.users.${name} cannot set both country and clearCountry.";
+              }
+              {
+                assertion = !(user.phone != null && user.clearPhone);
+                message = "services.rauthy.provision.users.${name} cannot set both phone and clearPhone.";
+              }
+              {
+                assertion = !(user.preferredUsername != null && user.clearPreferredUsername);
+                message = "services.rauthy.provision.users.${name} cannot set both preferredUsername and clearPreferredUsername.";
+              }
+              {
+                assertion = !user.sendPasswordEmail || user.passwordEmailRedirectUri != null;
+                message = "services.rauthy.provision.users.${name}.passwordEmailRedirectUri is required when sendPasswordEmail = true.";
+              }
+            ])
+            cfg.users)
+          ++ [
+            {
+              assertion = !cfg.generatedApiKey.enable || cfg.generatedApiKey.configFile != null;
+              message = "services.rauthy.provision.generatedApiKey.configFile is required when generatedApiKey.enable = true.";
             }
             {
-              assertion = !(user.timezone != null && user.clearTimezone);
-              message = "services.rauthy.provision.users.${name} cannot set both timezone and clearTimezone.";
+              assertion = !cfg.transientApiKey.enable || cfg.apiKeyEnvironmentFile != null || cfg.generatedApiKey.enable;
+              message = "services.rauthy.provision.transientApiKey.enable requires apiKeyEnvironmentFile or generatedApiKey as the key-manager source.";
             }
-            {
-              assertion = !(user.street != null && user.clearStreet);
-              message = "services.rauthy.provision.users.${name} cannot set both street and clearStreet.";
-            }
-            {
-              assertion = !(user.zip != null && user.clearZip);
-              message = "services.rauthy.provision.users.${name} cannot set both zip and clearZip.";
-            }
-            {
-              assertion = !(user.city != null && user.clearCity);
-              message = "services.rauthy.provision.users.${name} cannot set both city and clearCity.";
-            }
-            {
-              assertion = !(user.country != null && user.clearCountry);
-              message = "services.rauthy.provision.users.${name} cannot set both country and clearCountry.";
-            }
-            {
-              assertion = !(user.phone != null && user.clearPhone);
-              message = "services.rauthy.provision.users.${name} cannot set both phone and clearPhone.";
-            }
-            {
-              assertion = !(user.preferredUsername != null && user.clearPreferredUsername);
-              message = "services.rauthy.provision.users.${name} cannot set both preferredUsername and clearPreferredUsername.";
-            }
-            {
-              assertion = !user.sendPasswordEmail || user.passwordEmailRedirectUri != null;
-              message = "services.rauthy.provision.users.${name}.passwordEmailRedirectUri is required when sendPasswordEmail = true.";
-            }
-          ])
-          cfg.users)
-        ++ [
-          {
-            assertion = !cfg.generatedApiKey.enable || cfg.generatedApiKey.environmentFile != null;
-            message = "services.rauthy.provision.generatedApiKey.environmentFile is required when generatedApiKey.enable = true.";
-          }
-          {
-            assertion = !cfg.transientApiKey.enable || cfg.apiKeyEnvironmentFile != null;
-            message = "services.rauthy.provision.transientApiKey.enable requires apiKeyEnvironmentFile as the key-manager source.";
-          }
-        ];
+          ];
 
-      systemd.services.${generatedApiKeyUnit} = mkIf cfg.generatedApiKey.enable {
-        description = "Extract generated Rauthy bootstrap API key";
-        after = ["rauthy.service"];
-        requires = ["rauthy.service"];
-        path = [pkgs.coreutils];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = extractGeneratedApiKeyScript;
-          EnvironmentFile = [cfg.generatedApiKey.environmentFile];
-        };
-      };
-
-      systemd.services.rauthy-provision = {
-        description = "Declaratively provision Rauthy (users, groups, roles, clients, providers)";
-        after = cfg.serviceAfter ++ lib.optional cfg.generatedApiKey.enable "${generatedApiKeyUnit}.service";
-        requires = cfg.serviceAfter ++ lib.optional cfg.generatedApiKey.enable "${generatedApiKeyUnit}.service";
-        wantedBy = ["multi-user.target"];
-        restartTriggers = [stateFile];
-
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = provisionScript;
-          EnvironmentFile = lib.mkIf (cfg.apiKeyEnvironmentFile != null) [(toString cfg.apiKeyEnvironmentFile)];
-          # Rauthy may still be warming up when the unit first fires.
-          Restart = "on-failure";
-          RestartSec = "10s";
+        systemd.services.${generatedApiKeyUnit} = mkIf cfg.generatedApiKey.enable {
+          description = "Extract generated Rauthy bootstrap API key";
+          after = ["rauthy.service"];
+          requires = ["rauthy.service"];
+          path = [pkgs.coreutils];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = extractGeneratedApiKeyScript;
+            EnvironmentFile = lib.optional (cfg.generatedApiKey.environmentFile != null) (toString cfg.generatedApiKey.environmentFile);
+          };
         };
 
-        unitConfig = {
-          StartLimitBurst = 6;
-          StartLimitIntervalSec = 300;
+        systemd.services.rauthy-provision = {
+          description = "Declaratively provision Rauthy (users, groups, roles, clients, providers)";
+          after = cfg.serviceAfter ++ lib.optional cfg.generatedApiKey.enable "${generatedApiKeyUnit}.service";
+          requires = cfg.serviceAfter ++ lib.optional cfg.generatedApiKey.enable "${generatedApiKeyUnit}.service";
+          wantedBy = ["multi-user.target"];
+          restartTriggers = [stateFile];
+
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = provisionScript;
+            EnvironmentFile = lib.mkIf (cfg.apiKeyEnvironmentFile != null) [(toString cfg.apiKeyEnvironmentFile)];
+            # Rauthy may still be warming up when the unit first fires.
+            Restart = "on-failure";
+            RestartSec = "10s";
+          };
+
+          unitConfig = {
+            StartLimitBurst = 6;
+            StartLimitIntervalSec = 300;
+          };
         };
-      };
-    }
-    // lib.optionalAttrs (lib.hasAttrByPath ["services" "rauthy" "settings"] options) {
+      }
+    ]
+    ++ lib.optional (lib.hasAttrByPath ["services" "rauthy" "settings"] options) {
       services.rauthy.settings.bootstrap = mkIf cfg.generatedApiKey.enable {
         bootstrap_dir = toString bootstrapApiKeysDir;
         generated_secrets_file = cfg.generatedApiKey.generatedSecretsFile;
         generated_secrets_ttl = cfg.generatedApiKey.generatedSecretsTtl;
       };
     }
-    // lib.optionalAttrs (lib.hasAttrByPath ["services" "rauthy" "environmentFiles"] options) {
+    ++ lib.optional (lib.hasAttrByPath ["services" "rauthy" "environmentFiles"] options) {
       services.rauthy.environmentFiles = mkIf (cfg.apiKeyEnvironmentFile != null) [bootstrapApiKeyEnvFile];
-    });
+    }
+  ));
 }

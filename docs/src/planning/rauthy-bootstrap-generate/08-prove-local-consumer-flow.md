@@ -6,7 +6,7 @@
 
 ## Working Tree
 
-Use `/data/nvme0/can/Projects/nix-provenance`, `/data/nvme0/can/Projects/canix`, and the local Rauthy PR 2 branch. Phase 07 must be complete.
+Use `/data/nvme0/can/Projects/nix-provenance`, `/data/nvme0/can/Projects/canix`, and `/data/nvme0/can/Projects/rauthy-pr2` on branch `local/pr2-consumer`. Phase 07 must be complete.
 
 ## Goal
 

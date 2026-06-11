@@ -27,7 +27,8 @@ listener (e.g. `http://127.0.0.1:8080`) to bypass the reverse proxy.
 Use a Rauthy bootstrap API key or an already assembled API key with these
 access groups, each granting `read`+`create`+`update`+`delete`:
 
-- `Users`, `Groups`, `Roles`, `Clients`
+- `Users`, `Groups`, `Roles`, `Clients`, `Scopes`, `UserAttributes`,
+  `AuthProviders`
 
 Add `Secrets` `update` when any client sets `generated_secret_file`; Rauthy
 requires that right to rotate/generate confidential client secrets. The
@@ -39,6 +40,16 @@ For fully declarative bring-up, set Rauthy's `BOOTSTRAP_API_KEY` to a base64
 environment file. In the NixOS module, point `apiKeyEnvironmentFile` at that
 same environment file; the unit assembles `<apiKeyName>$<secret>` at runtime
 without putting the secret in argv or the Nix store.
+
+With Rauthy's generated bootstrap-secret support, prefer
+`services.rauthy.provision.generatedApiKey.enable = true`. The module renders a
+bootstrap `api_keys.json` entry with `secret = "generate"`, asks Rauthy to write
+its encrypted generated-secret container, then extracts the generated API key
+with `rauthy bootstrap get --config-file ... --kind api-key --field token`.
+
+When `--transient-api-key` is used, the manager key must also grant `ApiKeys`
+`read`+`create`+`update`+`delete`; the transient reconciliation key itself does
+not receive `ApiKeys` rights.
 
 ## State file
 

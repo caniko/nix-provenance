@@ -52,13 +52,13 @@
     "rauthy-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1780810643,
-        "narHash": "sha256-S6lOO76IcZH0/bsZUpPxHFewjm9TmHsNlYJjvP+yj2k=",
-        "path": "/data/nvme0/can/Projects/rauthy-pr2-clean",
+        "lastModified": 1781163732,
+        "narHash": "sha256-9emLGenZ9Gi1wSETKCRj88qeq2tbxvN325tY1KJydwQ=",
+        "path": "/data/nvme0/can/Projects/rauthy-pr2",
         "type": "path"
       },
       "original": {
-        "path": "/data/nvme0/can/Projects/rauthy-pr2-clean",
+        "path": "/data/nvme0/can/Projects/rauthy-pr2",
         "type": "path"
       }
     },

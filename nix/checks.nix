@@ -34,6 +34,7 @@
 
   immichEval = evalSystem ./modules/test/immich-eval.nix;
   rauthyEval = evalSystem ./modules/test/rauthy-eval.nix;
+  rauthyGeneratedEval = evalSystem ./modules/test/rauthy-generated-api-key-eval.nix;
   vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
   vikunjaProvisionEval = evalSystem ./modules/test/vikunja-provision-eval.nix;
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
@@ -142,6 +143,36 @@ in {
         echo "rauthy: rendered state must contain only secret paths, never client secret values" >&2
         exit 1
       fi
+      touch $out
+    '';
+
+  rauthy-generated-api-key-module-eval = let
+    bootstrapSvc = rauthyGeneratedEval.config.systemd.services.rauthy-bootstrap-api-key;
+    provisionSvc = rauthyGeneratedEval.config.systemd.services.rauthy-provision;
+    bootstrapSettings = builtins.toJSON rauthyGeneratedEval.config.services.rauthy.settings.bootstrap;
+    bootstrapDir = rauthyGeneratedEval.config.services.rauthy.settings.bootstrap.bootstrap_dir;
+  in
+    runCommand "rauthy-generated-api-key-module-eval" {} ''
+      test -x ${bootstrapSvc.serviceConfig.ExecStart}
+      grep -q -- 'bootstrap get' ${bootstrapSvc.serviceConfig.ExecStart} \
+        || { echo "rauthy generated API key: bootstrap extraction command missing" >&2; exit 1; }
+      grep -q -- '--config-file /etc/rauthy/config.toml' ${bootstrapSvc.serviceConfig.ExecStart} \
+        || { echo "rauthy generated API key: extraction must use --config-file" >&2; exit 1; }
+      grep -q -- '--kind api-key' ${bootstrapSvc.serviceConfig.ExecStart} \
+        || { echo "rauthy generated API key: extraction must request api-key kind" >&2; exit 1; }
+      grep -q -- '--field token' ${bootstrapSvc.serviceConfig.ExecStart} \
+        || { echo "rauthy generated API key: extraction must request token field" >&2; exit 1; }
+      grep -q -- '--key-manager-api-key-file /run/rauthy-provision/api-key' ${provisionSvc.serviceConfig.ExecStart} \
+        || { echo "rauthy generated API key: transient mode must use generated key as manager key" >&2; exit 1; }
+      grep -q -- '--transient-api-key' ${provisionSvc.serviceConfig.ExecStart} \
+        || { echo "rauthy generated API key: transient flag missing from provisioner script" >&2; exit 1; }
+      settings=${lib.escapeShellArg bootstrapSettings}
+      printf '%s' "$settings" | grep -q 'bootstrap.secrets.enc' \
+        || { echo "rauthy generated API key: generated_secrets_file missing from Rauthy bootstrap settings" >&2; exit 1; }
+      grep -q 'AuthProviders' ${bootstrapDir}/api_keys.json \
+        || { echo "rauthy generated API key: AuthProviders access group missing" >&2; exit 1; }
+      grep -q 'ApiKeys' ${bootstrapDir}/api_keys.json \
+        || { echo "rauthy generated API key: manager key must include ApiKeys access for transient mode" >&2; exit 1; }
       touch $out
     '';
 
