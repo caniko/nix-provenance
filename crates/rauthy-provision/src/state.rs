@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use provenance_core::serde_ext::{default_true, double_option};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 fn default_language() -> String {
@@ -36,7 +36,7 @@ fn default_flows() -> Vec<String> {
 
 /// Top-level declarative state. Keys are the natural identifier for each
 /// entity type (group name, role name, user email, client id).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct State {
     #[serde(default)]
@@ -58,21 +58,21 @@ pub struct State {
     pub providers: BTreeMap<String, ProviderSpec>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GroupSpec {
     #[serde(default = "default_true")]
     pub present: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleSpec {
     #[serde(default = "default_true")]
     pub present: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeSpec {
     #[serde(default = "default_true")]
@@ -85,14 +85,16 @@ pub struct ScopeSpec {
     pub claims_at_root: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserAttributeSpec {
     #[serde(default = "default_true")]
     pub present: bool,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_value: Option<Value>,
     #[serde(default)]
     pub user_editable: bool,
@@ -106,38 +108,49 @@ pub struct UserAttributeSpec {
 /// Profile fields are reconciled only when explicitly set. Unset fields remain
 /// unmanaged, so federated profile-claim sync from an upstream IdP can keep
 /// owning them.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserSpec {
     #[serde(default = "default_true")]
     pub present: bool,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub given_name: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub family_name: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub birthdate: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub street: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub zip: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub city: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub phone: Option<Option<String>>,
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_expires: Option<i64>,
     #[serde(default)]
     pub roles: Vec<String>,
     #[serde(default)]
     pub groups: Vec<String>,
     #[serde(default, deserialize_with = "double_option::deserialize")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub preferred_username: Option<Option<String>>,
     #[serde(default)]
     pub attributes: BTreeMap<String, Value>,
@@ -152,16 +165,18 @@ pub struct UserSpec {
     /// `https://app.example.com/login`), NOT a raw OIDC callback. Only meaningful
     /// when `send_password_email` is true.
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub password_email_redirect_uri: Option<String>,
 }
 
 /// An OIDC client (relying party).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientSpec {
     #[serde(default = "default_true")]
     pub present: bool,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default = "default_true")]
     pub confidential: bool,
@@ -184,6 +199,7 @@ pub struct ClientSpec {
     /// client secret. The file is created only if missing, so existing client
     /// credentials are not rotated on every reconcile.
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub generated_secret_file: Option<String>,
 }
 
@@ -196,7 +212,7 @@ fn default_provider_scope() -> String {
 }
 
 /// An upstream auth provider, for example kanidm as Rauthy's source IdP.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderSpec {
     #[serde(default = "default_true")]
@@ -211,9 +227,11 @@ pub struct ProviderSpec {
     pub token_endpoint: String,
     pub userinfo_endpoint: String,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub jwks_endpoint: Option<String>,
     pub client_id: String,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_secret_file: Option<String>,
     #[serde(default = "default_provider_scope")]
     pub scope: String,
@@ -228,12 +246,16 @@ pub struct ProviderSpec {
     #[serde(default)]
     pub auto_link: bool,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub admin_claim_path: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub admin_claim_value: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mfa_claim_path: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mfa_claim_value: Option<String>,
 }
 

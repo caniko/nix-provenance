@@ -183,7 +183,7 @@
         });
       in
         {
-          inherit (crates.packages) identity-cli immich-provision rauthy-provision vikunja-provision;
+          inherit (crates.packages) identity-cli immich-provision rauthy-provision rauthy-state-render vikunja-provision;
           rauthy-vikunja-groups = rauthyVikunjaGroups;
         }
         // (import ./nix/overlays/stalwart-016.nix final _prev);

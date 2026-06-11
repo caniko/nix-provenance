@@ -51,6 +51,7 @@ in {
   identity-cli = packages.identity-cli;
   immich-provision = packages.immich-provision;
   rauthy-provision = packages.rauthy-provision;
+  rauthy-state-render = packages.rauthy-state-render;
   vikunja-provision = packages.vikunja-provision;
   stalwart = packages.stalwart;
   stalwart-cli = packages.stalwart-cli;
@@ -60,6 +61,7 @@ in {
   # Lint each crate against its isolated deps.
   identity-clippy = mkClippy "identity-cli";
   immich-clippy = mkClippy "immich-provision";
+  rauthy-state-render-clippy = mkClippy "rauthy-state-render";
   rauthy-clippy = mkClippy "rauthy-provision";
   vikunja-clippy = mkClippy "vikunja-provision";
 
@@ -72,6 +74,9 @@ in {
   );
   rauthy-nextest = craneLib.cargoNextest (
     args.rauthy-provision // {cargoArtifacts = cargoArtifacts.rauthy-provision;}
+  );
+  rauthy-state-render-test = craneLib.cargoTest (
+    args.rauthy-state-render // {cargoArtifacts = cargoArtifacts.rauthy-state-render;}
   );
   vikunja-test = craneLib.cargoTest (
     args.vikunja-provision

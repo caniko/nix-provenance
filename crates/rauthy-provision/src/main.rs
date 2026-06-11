@@ -10,8 +10,6 @@
 //! removal). Pass `--no-auto-remove` to skip even those deletions.
 
 mod client;
-mod state;
-
 use std::collections::BTreeMap;
 use std::fmt::Arguments;
 use std::fs;
@@ -30,7 +28,9 @@ use client::{
     RauthyClient, ScopeRequest, UpdateClientRequest, UpdateUserRequest, UserAttributeConfigRequest,
     UserAttributeValueRequest, UserPatchRequest, UserPatchValue,
 };
-use state::{ClientSpec, ProviderSpec, ScopeSpec, State, UserAttributeSpec, UserSpec};
+use rauthy_provision::state::{
+    ClientSpec, ProviderSpec, ScopeSpec, State, UserAttributeSpec, UserSpec,
+};
 
 #[derive(Parser, Debug)]
 #[command(

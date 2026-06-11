@@ -21,17 +21,20 @@
 
   immichArgs = mkArgs "immich-provision";
   rauthyArgs = mkArgs "rauthy-provision";
+  rauthyStateRenderArgs = mkArgs "rauthy-state-render";
   vikunjaArgs = mkArgs "vikunja-provision";
   identityArgs = mkArgs "identity-cli";
 
   immichDeps = craneLib.buildDepsOnly immichArgs;
   rauthyDeps = craneLib.buildDepsOnly rauthyArgs;
+  rauthyStateRenderDeps = craneLib.buildDepsOnly rauthyStateRenderArgs;
   vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
 in {
   args = {
     immich-provision = immichArgs;
     rauthy-provision = rauthyArgs;
+    rauthy-state-render = rauthyStateRenderArgs;
     vikunja-provision = vikunjaArgs;
     identity-cli = identityArgs;
   };
@@ -39,6 +42,7 @@ in {
   cargoArtifacts = {
     immich-provision = immichDeps;
     rauthy-provision = rauthyDeps;
+    rauthy-state-render = rauthyStateRenderDeps;
     vikunja-provision = vikunjaDeps;
     identity-cli = identityDeps;
   };
@@ -70,6 +74,16 @@ in {
         meta = {
           description = "Declarative provisioning client for Rauthy (users, groups, roles, OIDC clients)";
           mainProgram = "rauthy-provision";
+          license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    rauthy-state-render = craneLib.buildPackage (rauthyStateRenderArgs
+      // {
+        cargoArtifacts = rauthyStateRenderDeps;
+        meta = {
+          description = "Offline generic renderer for rauthy-provision state JSON";
+          mainProgram = "rauthy-state-render";
           license = with lib.licenses; [mit asl20];
         };
       });

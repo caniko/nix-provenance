@@ -18,6 +18,7 @@
 # Reference
 
 - [Per-user Fields](./reference/per-user-fields.md)
+- [Rauthy State Renderer](./reference/rauthy-state-render.md)
 - [Licensing](./reference/licensing.md)
 
 # RFCs

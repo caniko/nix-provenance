@@ -4,6 +4,7 @@ members = [
   "crates/provenance-core",
   "crates/immich-provision",
   "crates/rauthy-provision",
+  "crates/rauthy-state-render",
   "crates/vikunja-provision",
   "crates/identity-cli",
 ]
