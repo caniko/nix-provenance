@@ -437,10 +437,10 @@ fn push_profile_field(
     del: &mut Vec<String>,
     key: &'static str,
     desired: &Option<Option<String>>,
-    current: Option<&String>,
+    current: Option<&str>,
 ) {
     match desired {
-        Some(Some(desired)) if current != Some(desired) => put.push(UserPatchValue {
+        Some(Some(desired)) if current != Some(desired.as_str()) => put.push(UserPatchValue {
             key,
             value: Value::String(desired.clone()),
         }),
@@ -457,63 +457,63 @@ fn profile_patch(user: &client::UserResponse, spec: &UserSpec) -> UserPatchReque
         &mut del,
         "given_name",
         &spec.given_name,
-        user.given_name.as_ref(),
+        user.given_name.as_deref(),
     );
     push_profile_field(
         &mut put,
         &mut del,
         "family_name",
         &spec.family_name,
-        user.family_name.as_ref(),
+        user.family_name.as_deref(),
     );
     push_profile_field(
         &mut put,
         &mut del,
         "user_values.birthdate",
         &spec.birthdate,
-        user.user_values.birthdate.as_ref(),
+        user.user_values.birthdate.as_deref(),
     );
     push_profile_field(
         &mut put,
         &mut del,
         "user_values.tz",
         &spec.timezone,
-        user.user_values.tz.as_ref(),
+        user.user_values.tz.as_deref(),
     );
     push_profile_field(
         &mut put,
         &mut del,
         "user_values.street",
         &spec.street,
-        user.user_values.street.as_ref(),
+        user.user_values.street.as_deref(),
     );
     push_profile_field(
         &mut put,
         &mut del,
         "user_values.zip",
         &spec.zip,
-        user.user_values.zip.as_ref(),
+        user.user_values.zip.as_deref(),
     );
     push_profile_field(
         &mut put,
         &mut del,
         "user_values.city",
         &spec.city,
-        user.user_values.city.as_ref(),
+        user.user_values.city.as_deref(),
     );
     push_profile_field(
         &mut put,
         &mut del,
         "user_values.country",
         &spec.country,
-        user.user_values.country.as_ref(),
+        user.user_values.country.as_deref(),
     );
     push_profile_field(
         &mut put,
         &mut del,
         "user_values.phone",
         &spec.phone,
-        user.user_values.phone.as_ref(),
+        user.user_values.phone.as_deref(),
     );
 
     UserPatchRequest { put, del }
