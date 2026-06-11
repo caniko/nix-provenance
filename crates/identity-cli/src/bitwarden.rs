@@ -342,7 +342,7 @@ fn optional_string_field(value: &Value, field: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_input_with_provision, BwLoginItem, UpsertInput};
+    use super::{resolve_input_with_provision, validate_password_source, BwLoginItem, UpsertInput};
 
     #[test]
     fn explicit_fields_win_over_json() {
@@ -417,5 +417,32 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("missing --password-from"));
+    }
+
+    #[test]
+    fn password_source_validation_accepts_stdin_and_existing_files() {
+        let path = std::env::temp_dir().join(format!(
+            "identity-cli-password-source-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, "secret").unwrap();
+
+        assert!(validate_password_source("-").is_ok());
+        assert!(validate_password_source(path.to_str().unwrap()).is_ok());
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn password_source_validation_rejects_missing_files() {
+        let path = std::env::temp_dir().join(format!(
+            "identity-cli-password-source-missing-{}",
+            std::process::id()
+        ));
+
+        let err = validate_password_source(path.to_str().unwrap()).unwrap_err();
+
+        assert!(err.to_string().contains("password file does not exist"));
+        assert!(err.to_string().contains(path.to_str().unwrap()));
     }
 }
