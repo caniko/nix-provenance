@@ -337,6 +337,14 @@ impl ClientInput {
             self.default_scopes.iter(),
             errors,
         );
+        if self.flows_enabled.is_empty() {
+            errors.push(format!("client '{client_id}' flowsEnabled must not be empty"));
+        }
+        validate_non_empty_values(
+            format!("client '{client_id}' flow"),
+            self.flows_enabled.iter(),
+            errors,
+        );
     }
 
     fn into_spec(self) -> ClientSpec {
@@ -563,7 +571,6 @@ mod tests {
           "allowedOrigins": ["https://tasks.example.com"],
           "scopes": ["openid", "profile", "email", "groups", "vikunja_groups"],
           "defaultScopes": ["openid", "profile", "email", "groups", "vikunja_groups"],
-          "flowsEnabled": [],
           "generatedSecretFile": "/var/lib/rauthy-provision/clients/vikunja.secret"
         }
       },
@@ -631,6 +638,16 @@ mod tests {
         .unwrap();
         let err = input.render().unwrap_err().to_string();
         assert!(err.contains("must enable PKCE"));
+    }
+
+    #[test]
+    fn validates_empty_client_flows() {
+        let input: RenderInput = serde_json::from_str(
+            r#"{ "clients": { "vikunja": { "flowsEnabled": [] } } }"#,
+        )
+        .unwrap();
+        let err = input.render().unwrap_err().to_string();
+        assert!(err.contains("flowsEnabled must not be empty"));
     }
 
     #[test]
