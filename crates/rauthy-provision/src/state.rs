@@ -81,6 +81,8 @@ pub struct ScopeSpec {
     pub attr_include_access: Vec<String>,
     #[serde(default)]
     pub attr_include_id: Vec<String>,
+    #[serde(default)]
+    pub claims_at_root: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -267,7 +269,7 @@ mod tests {
     #[test]
     fn parses_scope_user_attribute_and_user_values() {
         let s: State = serde_json::from_str(
-            r#"{ "scopes": { "vikunja_groups": { "attr_include_id": ["vikunja_groups"] } },
+            r#"{ "scopes": { "vikunja_groups": { "attr_include_id": ["vikunja_groups"], "claims_at_root": true } },
               "user_attributes": { "vikunja_groups": { "user_editable": false } },
               "users": { "a@example.com": {
                 "preferred_username": "alice",
@@ -291,6 +293,7 @@ mod tests {
             s.scopes["vikunja_groups"].attr_include_id,
             vec!["vikunja_groups".to_string()]
         );
+        assert!(s.scopes["vikunja_groups"].claims_at_root);
         assert!(!s.user_attributes["vikunja_groups"].user_editable);
         assert_eq!(
             s.users["a@example.com"].preferred_username,

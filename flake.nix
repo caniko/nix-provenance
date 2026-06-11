@@ -76,11 +76,6 @@
                 npm run build
                 popd
               '';
-              patches =
-                (old.patches or [])
-                ++ [
-                  ./nix/patches/rauthy/0001-emit-vikunja-groups-top-level-claim.patch
-                ];
             });
             inherit (pkgs) stalwart stalwart-cli;
           };
@@ -184,11 +179,6 @@
             npm run build
             popd
           '';
-          patches =
-            (old.patches or [])
-            ++ [
-              ./nix/patches/rauthy/0001-emit-vikunja-groups-top-level-claim.patch
-            ];
         });
       in
         {

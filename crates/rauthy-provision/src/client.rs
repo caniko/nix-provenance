@@ -62,6 +62,8 @@ pub struct ScopeResponse {
     pub attr_include_access: Option<Vec<String>>,
     #[serde(default)]
     pub attr_include_id: Option<Vec<String>>,
+    #[serde(default)]
+    pub claims_at_root: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,6 +208,7 @@ pub struct ScopeRequest {
     pub attr_include_access: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attr_include_id: Option<Vec<String>>,
+    pub claims_at_root: bool,
 }
 
 #[derive(Debug, Serialize)]

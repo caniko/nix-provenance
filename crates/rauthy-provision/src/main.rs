@@ -591,13 +591,16 @@ fn scope_request(name: &str, spec: &ScopeSpec) -> ScopeRequest {
         scope: name.to_string(),
         attr_include_access: opt_vec(&spec.attr_include_access),
         attr_include_id: opt_vec(&spec.attr_include_id),
+        claims_at_root: spec.claims_at_root,
     }
 }
 
 fn scope_drifted(cur: &client::ScopeResponse, spec: &ScopeSpec) -> bool {
     let cur_access = cur.attr_include_access.as_deref().unwrap_or_default();
     let cur_id = cur.attr_include_id.as_deref().unwrap_or_default();
-    !same_set(cur_access, &spec.attr_include_access) || !same_set(cur_id, &spec.attr_include_id)
+    !same_set(cur_access, &spec.attr_include_access)
+        || !same_set(cur_id, &spec.attr_include_id)
+        || cur.claims_at_root != spec.claims_at_root
 }
 
 fn user_attribute_request(name: &str, spec: &UserAttributeSpec) -> UserAttributeConfigRequest {

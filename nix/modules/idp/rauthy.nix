@@ -41,6 +41,11 @@
         default = [];
         description = "Custom user attributes to include in ID tokens when this custom scope is granted.";
       };
+      claimsAtRoot = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Whether included custom attributes should be emitted as root JWT claims instead of under the custom claim.";
+      };
     };
   };
   userAttributeSubmodule = types.submodule {
@@ -488,6 +493,7 @@
         inherit (s) present;
         attr_include_access = s.attrIncludeAccess;
         attr_include_id = s.attrIncludeId;
+        claims_at_root = s.claimsAtRoot;
       })
       cfg.scopes;
     user_attributes =
