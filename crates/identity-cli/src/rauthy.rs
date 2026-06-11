@@ -167,8 +167,11 @@ pub async fn reset_password(base_url: &str, user: &EmailUser) -> Result<()> {
         .context("reading PoW challenge body")?;
 
     // 2. Solve it locally (CPU-bound; spow parses the difficulty from the body).
-    let pow =
-        spow::pow::Pow::work(&challenge).map_err(|e| anyhow!("solving PoW challenge: {e}"))?;
+    let pow = tokio::task::spawn_blocking(move || {
+        spow::pow::Pow::work(&challenge).map_err(|e| anyhow!("solving PoW challenge: {e}"))
+    })
+    .await
+    .context("joining PoW solver task")??;
 
     // 3. POST request_reset (no auth header; email + redirect + solved PoW).
     #[derive(serde::Serialize)]
