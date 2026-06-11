@@ -20,12 +20,14 @@
   };
 
   immichArgs = mkArgs "immich-provision";
+  kanidmStateRenderArgs = mkArgs "kanidm-state-render";
   rauthyArgs = mkArgs "rauthy-provision";
   rauthyStateRenderArgs = mkArgs "rauthy-state-render";
   vikunjaArgs = mkArgs "vikunja-provision";
   identityArgs = mkArgs "identity-cli";
 
   immichDeps = craneLib.buildDepsOnly immichArgs;
+  kanidmStateRenderDeps = craneLib.buildDepsOnly kanidmStateRenderArgs;
   rauthyDeps = craneLib.buildDepsOnly rauthyArgs;
   rauthyStateRenderDeps = craneLib.buildDepsOnly rauthyStateRenderArgs;
   vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
@@ -33,6 +35,7 @@
 in {
   args = {
     immich-provision = immichArgs;
+    kanidm-state-render = kanidmStateRenderArgs;
     rauthy-provision = rauthyArgs;
     rauthy-state-render = rauthyStateRenderArgs;
     vikunja-provision = vikunjaArgs;
@@ -41,6 +44,7 @@ in {
 
   cargoArtifacts = {
     immich-provision = immichDeps;
+    kanidm-state-render = kanidmStateRenderDeps;
     rauthy-provision = rauthyDeps;
     rauthy-state-render = rauthyStateRenderDeps;
     vikunja-provision = vikunjaDeps;
@@ -65,6 +69,16 @@ in {
           description = "Declarative Immich identity provisioning for NixOS and Kanidm";
           mainProgram = "immich-provision";
           license = [lib.licenses.agpl3Only];
+        };
+      });
+
+    kanidm-state-render = craneLib.buildPackage (kanidmStateRenderArgs
+      // {
+        cargoArtifacts = kanidmStateRenderDeps;
+        meta = {
+          description = "Offline generic renderer for kanidm-provision JSON";
+          mainProgram = "kanidm-state-render";
+          license = with lib.licenses; [mit asl20];
         };
       });
 

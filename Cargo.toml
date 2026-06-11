@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/provenance-core",
   "crates/immich-provision",
+  "crates/kanidm-state-render",
   "crates/rauthy-provision",
   "crates/rauthy-state-render",
   "crates/vikunja-provision",

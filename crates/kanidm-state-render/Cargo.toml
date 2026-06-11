@@ -1,0 +1,25 @@
+[package]
+name = "kanidm-state-render"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Offline generic renderer for kanidm-provision JSON"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage = "https://codeberg.org/caniko/nix-provenance"
+authors.workspace = true
+keywords = ["kanidm", "oidc", "provisioning", "renderer"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "kanidm-state-render"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

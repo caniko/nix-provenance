@@ -12,7 +12,6 @@ use serde::Serialize;
 use tokio::time::{sleep, Duration};
 use totp_rs::{Algorithm, TOTP};
 
-const DEFAULT_URL: &str = "https://auth.tartanoglu.com";
 const IDM_ADMIN: &str = "idm_admin";
 const ADMIN: &str = "admin";
 const GENERATED_PASSWORD_LEN: usize = 24;
@@ -33,10 +32,10 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
-    /// Build a config with the default production Kanidm URL.
-    pub fn new(idm_admin_password_file: String) -> Self {
+    /// Build a config for an explicit Kanidm URL.
+    pub fn new(url: String, idm_admin_password_file: String) -> Self {
         Self {
-            url: DEFAULT_URL.to_string(),
+            url,
             idm_admin_password_file,
             admin_password_file: None,
         }

@@ -74,7 +74,7 @@ enum RauthyCommand {
 #[cfg(feature = "kanidm")]
 struct KanidmArgs {
     /// Kanidm base URL.
-    #[arg(long, default_value = "https://auth.tartanoglu.com")]
+    #[arg(long, env = "KANIDM_URL")]
     url: String,
 
     /// File containing the idm_admin password.

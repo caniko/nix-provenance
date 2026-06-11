@@ -2680,6 +2680,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanidm-state-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kanidm_build_profiles"
 version = "1.10.3"
 source = "git+https://github.com/kanidm/kanidm.git?tag=v1.10.3#16f8c97c4dc5eb44656dac0091209aae9e3ce47a"

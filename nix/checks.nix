@@ -50,6 +50,7 @@ in {
   # Build all crates.
   identity-cli = packages.identity-cli;
   immich-provision = packages.immich-provision;
+  kanidm-state-render = packages.kanidm-state-render;
   rauthy-provision = packages.rauthy-provision;
   rauthy-state-render = packages.rauthy-state-render;
   vikunja-provision = packages.vikunja-provision;
@@ -61,6 +62,7 @@ in {
   # Lint each crate against its isolated deps.
   identity-clippy = mkClippy "identity-cli";
   immich-clippy = mkClippy "immich-provision";
+  kanidm-state-render-clippy = mkClippy "kanidm-state-render";
   rauthy-state-render-clippy = mkClippy "rauthy-state-render";
   rauthy-clippy = mkClippy "rauthy-provision";
   vikunja-clippy = mkClippy "vikunja-provision";
@@ -71,6 +73,9 @@ in {
   );
   immich-test = craneLib.cargoTest (
     args.immich-provision // {cargoArtifacts = cargoArtifacts.immich-provision;}
+  );
+  kanidm-state-render-test = craneLib.cargoTest (
+    args.kanidm-state-render // {cargoArtifacts = cargoArtifacts.kanidm-state-render;}
   );
   rauthy-nextest = craneLib.cargoNextest (
     args.rauthy-provision // {cargoArtifacts = cargoArtifacts.rauthy-provision;}
@@ -300,6 +305,13 @@ in {
     runCommand "kanidm-credentials-module-eval" {} ''
       test -n ${lib.escapeShellArg serviceConfig}
       test -x ${svc.serviceConfig.ExecStart}
+      script=$(cat ${svc.serviceConfig.ExecStart})
+      printf '%s' "$script" | grep -q 'set-ldap-unix-bind true'
+      printf '%s' "$script" | grep -q 'set-posix-password can'
+      printf '%s' "$script" | grep -q 'set-posix-password noreply'
+      printf '%s' "$script" | grep -q 'service-account create stalwart-ldap'
+      printf '%s' "$script" | grep -q 'group-add-members idm_people_pii_read stalwart-ldap'
+      printf '%s' "$script" | grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token'
       touch $out
     '';
 

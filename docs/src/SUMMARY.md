@@ -18,6 +18,7 @@
 # Reference
 
 - [Per-user Fields](./reference/per-user-fields.md)
+- [Kanidm State Renderer](./reference/kanidm-state-render.md)
 - [Rauthy State Renderer](./reference/rauthy-state-render.md)
 - [Licensing](./reference/licensing.md)
 
