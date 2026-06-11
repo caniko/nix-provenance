@@ -120,11 +120,12 @@
       # System-independent pure-Nix helpers (see nix/lib/default.nix).
       lib = import ./nix/lib/default.nix {inherit (nixpkgs) lib;};
 
-      # One named NixOS module per tenant. `default` is a back-compat alias for
-      # the live canix consumer (rauthy); it is dropped once canix imports
-      # `nixosModules.rauthy` explicitly.
+      # One named NixOS module per tenant. Rauthy consumers should import both
+      # `rauthyServer` (the server service) and `rauthy` (the provisioner)
+      # until nixpkgs ships `services.rauthy` on the supported branch.
       nixosModules = {
         immich = import ./nix/modules/service-oidc/immich.nix {inherit self;};
+        rauthyServer = import ./nix/modules/idp/rauthy-server.nix;
         rauthy = import ./nix/modules/idp/rauthy.nix {inherit self;};
         vikunja = import ./nix/modules/config-only/vikunja.nix {inherit self;};
         vikunjaProvision = import ./nix/modules/service-oidc/vikunja.nix {inherit self;};

@@ -626,7 +626,11 @@
       cfg.providers;
   };
 
-  stateFile = pkgs.writeText "rauthy-provision-state.json" (builtins.toJSON manifest);
+  generatedStateFile = pkgs.writeText "rauthy-provision-state.json" (builtins.toJSON manifest);
+  effectiveStateFile =
+    if cfg.stateFile != null
+    then cfg.stateFile
+    else generatedStateFile;
 
   cliArgs =
     lib.escapeShellArgs
@@ -634,7 +638,7 @@
         "--url"
         cfg.endpoint
         "--state"
-        (toString stateFile)
+        (toString effectiveStateFile)
       ]
       ++ lib.optionals cfg.transientApiKey.enable [
         "--transient-api-key"
@@ -780,6 +784,18 @@ in {
       description = "Accept invalid TLS certificates when talking to the endpoint.";
     };
 
+    stateFile = mkOption {
+      type = types.nullOr (types.oneOf [types.path types.str]);
+      default = null;
+      description = ''
+        JSON state file passed directly to `rauthy-provision --state`.
+        When set, this replaces the module-rendered state from `groups`,
+        `roles`, `scopes`, `userAttributes`, `users`, `clients`, and
+        `providers`. This is the preferred interface for consumers with
+        complex registry logic that is better validated outside Nix.
+      '';
+    };
+
     serviceAfter = mkOption {
       type = types.listOf types.str;
       default = ["rauthy.service"];
@@ -856,64 +872,80 @@ in {
               assertion = cfg.apiKeyName != "" && !(lib.hasInfix "$" cfg.apiKeyName);
               message = "services.rauthy.provision.apiKeyName must be non-empty and must not contain '$'.";
             }
+            {
+              assertion =
+                cfg.stateFile
+                == null
+                || (cfg.groups
+                  == {}
+                  && cfg.roles == {}
+                  && cfg.scopes == {}
+                  && cfg.userAttributes == {}
+                  && cfg.users == {}
+                  && cfg.clients == {}
+                  && cfg.providers == {});
+              message = "services.rauthy.provision.stateFile replaces groups, roles, scopes, userAttributes, users, clients, and providers; do not set both.";
+            }
           ]
-          ++ lib.mapAttrsToList (n: c: {
-            assertion = c.generatedSecretFile == null || c.confidential;
-            message = "services.rauthy.provision.clients.${n}.generatedSecretFile requires confidential = true.";
-          })
-          cfg.clients
-          ++ lib.mapAttrsToList (n: p: {
-            assertion = !(p.clientSecretBasic || p.clientSecretPost) || p.clientSecretFile != null;
-            message = "services.rauthy.provision.providers.${n} enables client-secret auth but has no clientSecretFile.";
-          })
-          cfg.providers
-          ++ lib.flatten (lib.mapAttrsToList (name: user: [
-              {
-                assertion = !(user.givenName != null && user.clearGivenName);
-                message = "services.rauthy.provision.users.${name} cannot set both givenName and clearGivenName.";
-              }
-              {
-                assertion = !(user.familyName != null && user.clearFamilyName);
-                message = "services.rauthy.provision.users.${name} cannot set both familyName and clearFamilyName.";
-              }
-              {
-                assertion = !(user.birthdate != null && user.clearBirthdate);
-                message = "services.rauthy.provision.users.${name} cannot set both birthdate and clearBirthdate.";
-              }
-              {
-                assertion = !(user.timezone != null && user.clearTimezone);
-                message = "services.rauthy.provision.users.${name} cannot set both timezone and clearTimezone.";
-              }
-              {
-                assertion = !(user.street != null && user.clearStreet);
-                message = "services.rauthy.provision.users.${name} cannot set both street and clearStreet.";
-              }
-              {
-                assertion = !(user.zip != null && user.clearZip);
-                message = "services.rauthy.provision.users.${name} cannot set both zip and clearZip.";
-              }
-              {
-                assertion = !(user.city != null && user.clearCity);
-                message = "services.rauthy.provision.users.${name} cannot set both city and clearCity.";
-              }
-              {
-                assertion = !(user.country != null && user.clearCountry);
-                message = "services.rauthy.provision.users.${name} cannot set both country and clearCountry.";
-              }
-              {
-                assertion = !(user.phone != null && user.clearPhone);
-                message = "services.rauthy.provision.users.${name} cannot set both phone and clearPhone.";
-              }
-              {
-                assertion = !(user.preferredUsername != null && user.clearPreferredUsername);
-                message = "services.rauthy.provision.users.${name} cannot set both preferredUsername and clearPreferredUsername.";
-              }
-              {
-                assertion = !user.sendPasswordEmail || user.passwordEmailRedirectUri != null;
-                message = "services.rauthy.provision.users.${name}.passwordEmailRedirectUri is required when sendPasswordEmail = true.";
-              }
-            ])
-            cfg.users)
+          ++ lib.optionals (cfg.stateFile == null) (
+            lib.mapAttrsToList (n: c: {
+              assertion = c.generatedSecretFile == null || c.confidential;
+              message = "services.rauthy.provision.clients.${n}.generatedSecretFile requires confidential = true.";
+            })
+            cfg.clients
+            ++ lib.mapAttrsToList (n: p: {
+              assertion = !(p.clientSecretBasic || p.clientSecretPost) || p.clientSecretFile != null;
+              message = "services.rauthy.provision.providers.${n} enables client-secret auth but has no clientSecretFile.";
+            })
+            cfg.providers
+            ++ lib.flatten (lib.mapAttrsToList (name: user: [
+                {
+                  assertion = !(user.givenName != null && user.clearGivenName);
+                  message = "services.rauthy.provision.users.${name} cannot set both givenName and clearGivenName.";
+                }
+                {
+                  assertion = !(user.familyName != null && user.clearFamilyName);
+                  message = "services.rauthy.provision.users.${name} cannot set both familyName and clearFamilyName.";
+                }
+                {
+                  assertion = !(user.birthdate != null && user.clearBirthdate);
+                  message = "services.rauthy.provision.users.${name} cannot set both birthdate and clearBirthdate.";
+                }
+                {
+                  assertion = !(user.timezone != null && user.clearTimezone);
+                  message = "services.rauthy.provision.users.${name} cannot set both timezone and clearTimezone.";
+                }
+                {
+                  assertion = !(user.street != null && user.clearStreet);
+                  message = "services.rauthy.provision.users.${name} cannot set both street and clearStreet.";
+                }
+                {
+                  assertion = !(user.zip != null && user.clearZip);
+                  message = "services.rauthy.provision.users.${name} cannot set both zip and clearZip.";
+                }
+                {
+                  assertion = !(user.city != null && user.clearCity);
+                  message = "services.rauthy.provision.users.${name} cannot set both city and clearCity.";
+                }
+                {
+                  assertion = !(user.country != null && user.clearCountry);
+                  message = "services.rauthy.provision.users.${name} cannot set both country and clearCountry.";
+                }
+                {
+                  assertion = !(user.phone != null && user.clearPhone);
+                  message = "services.rauthy.provision.users.${name} cannot set both phone and clearPhone.";
+                }
+                {
+                  assertion = !(user.preferredUsername != null && user.clearPreferredUsername);
+                  message = "services.rauthy.provision.users.${name} cannot set both preferredUsername and clearPreferredUsername.";
+                }
+                {
+                  assertion = !user.sendPasswordEmail || user.passwordEmailRedirectUri != null;
+                  message = "services.rauthy.provision.users.${name}.passwordEmailRedirectUri is required when sendPasswordEmail = true.";
+                }
+              ])
+              cfg.users)
+          )
           ++ [
             {
               assertion = !cfg.generatedApiKey.enable || cfg.generatedApiKey.configFile != null;
@@ -943,7 +975,7 @@ in {
           after = cfg.serviceAfter ++ lib.optional cfg.generatedApiKey.enable "${generatedApiKeyUnit}.service";
           requires = cfg.serviceAfter ++ lib.optional cfg.generatedApiKey.enable "${generatedApiKeyUnit}.service";
           wantedBy = ["multi-user.target"];
-          restartTriggers = [stateFile];
+          restartTriggers = [effectiveStateFile];
 
           serviceConfig = {
             Type = "oneshot";

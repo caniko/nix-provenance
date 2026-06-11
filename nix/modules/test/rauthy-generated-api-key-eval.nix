@@ -6,31 +6,23 @@
   ...
 }: {
   imports = [
-    {
-      options.services.rauthy = {
-        package = lib.mkOption {
-          type = lib.types.package;
-          default = pkgs.writeShellScriptBin "rauthy" ''
-            exit 0
-          '';
-          description = "Stub Rauthy package for generated API-key module evaluation.";
-        };
-        settings = lib.mkOption {
-          type = lib.types.attrsOf lib.types.anything;
-          default = {};
-          description = "Stub Rauthy settings option for generated API-key module evaluation.";
-        };
-        environmentFiles = lib.mkOption {
-          type = lib.types.listOf (lib.types.oneOf [lib.types.path lib.types.str]);
-          default = [];
-          description = "Stub Rauthy environmentFiles option for generated API-key module evaluation.";
-        };
-      };
-    }
+    self.nixosModules.rauthyServer
     self.nixosModules.rauthy
   ];
 
   config = {
+    services.rauthy = {
+      enable = true;
+      package = pkgs.writeShellScriptBin "rauthy" ''
+        exit 0
+      '';
+      settings.server = {
+        scheme = "http";
+        listen_address = "127.0.0.1";
+        port_http = 8080;
+      };
+    };
+
     services.rauthy.provision = {
       enable = true;
       package = pkgs.writeShellScriptBin "rauthy-provision" ''

@@ -19,7 +19,10 @@
       desc = "Vikunja team sync groups";
       userEditable = false;
     };
-    scopes.vikunja_groups.attrIncludeId = ["vikunja_groups"];
+    scopes.vikunja_groups = {
+      attrIncludeId = ["vikunja_groups"];
+      claimsAtRoot = true;
+    };
     users."alice@example.com" = {
       givenName = "Alice";
       familyName = "Smith";

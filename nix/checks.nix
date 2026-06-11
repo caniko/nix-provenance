@@ -33,7 +33,9 @@
     };
 
   immichEval = evalSystem ./modules/test/immich-eval.nix;
+  rauthyServerEval = evalSystem ./modules/test/rauthy-server-eval.nix;
   rauthyEval = evalSystem ./modules/test/rauthy-eval.nix;
+  rauthyStateFileEval = evalSystem ./modules/test/rauthy-state-file-eval.nix;
   rauthyGeneratedEval = evalSystem ./modules/test/rauthy-generated-api-key-eval.nix;
   vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
   vikunjaProvisionEval = evalSystem ./modules/test/vikunja-provision-eval.nix;
@@ -101,6 +103,28 @@ in {
       touch $out
     '';
 
+  rauthy-server-module-eval = let
+    svc = rauthyServerEval.config.systemd.services.rauthy;
+    serviceConfig = builtins.toJSON svc.serviceConfig;
+    environment = builtins.toJSON svc.environment;
+  in
+    runCommand "rauthy-server-module-eval" {} ''
+      test -n ${lib.escapeShellArg serviceConfig}
+      env=${lib.escapeShellArg environment}
+      exec_start=${lib.escapeShellArg svc.serviceConfig.ExecStart}
+      printf '%s' "$exec_start" | grep -q -- 'serve --config-file' \
+        || { echo "rauthy server: ExecStart must run the Rauthy server with generated config" >&2; exit 1; }
+      test -f ${rauthyServerEval.config.services.rauthy.configFile} \
+        || { echo "rauthy server: generated configFile option must point to a TOML file" >&2; exit 1; }
+      printf '%s' "$env" | grep -q 'PG_HOST' \
+        || { echo "rauthy server: PostgreSQL environment missing when configurePostgres is enabled" >&2; exit 1; }
+      printf '%s' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.EnvironmentFile)} | grep -q '/run/secrets/rauthy-env' \
+        || { echo "rauthy server: primary environmentFile missing" >&2; exit 1; }
+      printf '%s' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.EnvironmentFile)} | grep -q '/run/rauthy/generated.env' \
+        || { echo "rauthy server: extra environmentFiles missing" >&2; exit 1; }
+      touch $out
+    '';
+
   rauthy-module-eval = let
     svc = rauthyEval.config.systemd.services.rauthy-provision;
     serviceConfig = builtins.toJSON rauthyEval.config.systemd.services.rauthy-provision.serviceConfig;
@@ -137,12 +161,28 @@ in {
         || { echo "rauthy: custom Vikunja user attribute value missing" >&2; exit 1; }
       printf '%s' "$scopes" | grep -q 'attrIncludeId' \
         || { echo "rauthy: custom scope attrIncludeId missing" >&2; exit 1; }
+      printf '%s' "$scopes" | grep -q 'claimsAtRoot' \
+        || { echo "rauthy: custom scope claimsAtRoot missing" >&2; exit 1; }
       printf '%s' "$attrs" | grep -q 'vikunja_groups' \
         || { echo "rauthy: userAttributes missing vikunja_groups" >&2; exit 1; }
       if printf '%s' "$clients" | grep -q 'clientsecret'; then
         echo "rauthy: rendered state must contain only secret paths, never client secret values" >&2
         exit 1
       fi
+      touch $out
+    '';
+
+  rauthy-state-file-module-eval = let
+    svc = rauthyStateFileEval.config.systemd.services.rauthy-provision;
+    stateFile = toString rauthyStateFileEval.config.services.rauthy.provision.stateFile;
+    restartTriggers = builtins.toJSON svc.restartTriggers;
+  in
+    runCommand "rauthy-state-file-module-eval" {} ''
+      grep -q -- ${lib.escapeShellArg "--state ${stateFile}"} ${lib.escapeShellArg svc.serviceConfig.ExecStart} \
+        || { echo "rauthy: provisioner must pass the configured services.rauthy.provision.stateFile path" >&2; exit 1; }
+      triggers=${lib.escapeShellArg restartTriggers}
+      printf '%s' "$triggers" | grep -q ${lib.escapeShellArg stateFile} \
+        || { echo "rauthy: provisioner restartTriggers must include services.rauthy.provision.stateFile" >&2; exit 1; }
       touch $out
     '';
 
