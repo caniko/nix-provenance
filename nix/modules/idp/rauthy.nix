@@ -697,16 +697,40 @@
     chmod 0700 "$parent"
 
     tmp="$parent/.api-key.$$.tmp"
-    rm -f "$tmp"
+    err="$parent/.api-key.$$.err"
+    trap 'rm -f "$tmp" "$err"' EXIT
+    attempts=30
+    attempt=1
     umask 077
-    ${lib.escapeShellArg (lib.getExe config.services.rauthy.package)} bootstrap get \
-      --config-file ${lib.escapeShellArg (toString cfg.generatedApiKey.configFile)} \
-      --kind api-key \
-      --id ${lib.escapeShellArg cfg.apiKeyName} \
-      --field token \
-      --format raw > "$tmp"
-    test -s "$tmp"
-    mv "$tmp" "$out"
+    while [ "$attempt" -le "$attempts" ]; do
+      rm -f "$tmp" "$err"
+      if ${lib.escapeShellArg (lib.getExe config.services.rauthy.package)} bootstrap get \
+        --config-file ${lib.escapeShellArg (toString cfg.generatedApiKey.configFile)} \
+        --kind api-key \
+        --id ${lib.escapeShellArg cfg.apiKeyName} \
+        --field token \
+        --format raw > "$tmp" 2> "$err" \
+        && [ -s "$tmp" ]; then
+        mv "$tmp" "$out"
+        exit 0
+      fi
+
+      if [ "$attempt" -lt "$attempts" ]; then
+        sleep 2
+      fi
+      attempt=$((attempt + 1))
+    done
+
+    echo "Rauthy generated bootstrap API key was not available after $attempts attempts." >&2
+    echo "Expected generated secrets file: ${lib.escapeShellArg cfg.generatedApiKey.generatedSecretsFile}" >&2
+    echo "Expected API key id: ${lib.escapeShellArg cfg.apiKeyName}" >&2
+    echo "Config file: ${lib.escapeShellArg (toString cfg.generatedApiKey.configFile)}" >&2
+    echo "Diagnostic command: systemctl status rauthy.service rauthy-bootstrap-api-key.service && journalctl -u rauthy.service -u rauthy-bootstrap-api-key.service -n 200 --no-pager" >&2
+    if [ -s "$err" ]; then
+      echo "Last rauthy bootstrap get error:" >&2
+      head -n 20 "$err" >&2
+    fi
+    exit 1
   '';
 in {
   options.services.rauthy.provision = {
@@ -967,6 +991,15 @@ in {
             RemainAfterExit = true;
             ExecStart = extractGeneratedApiKeyScript;
             EnvironmentFile = lib.optional (cfg.generatedApiKey.environmentFile != null) (toString cfg.generatedApiKey.environmentFile);
+            # Rauthy can be active before first-boot bootstrap has written the
+            # generated secret container.
+            Restart = "on-failure";
+            RestartSec = "10s";
+          };
+
+          unitConfig = {
+            StartLimitBurst = 6;
+            StartLimitIntervalSec = 300;
           };
         };
 

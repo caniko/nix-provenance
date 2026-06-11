@@ -207,6 +207,14 @@ in {
         || { echo "rauthy generated API key: extraction must request api-key kind" >&2; exit 1; }
       grep -q -- '--field token' ${bootstrapSvc.serviceConfig.ExecStart} \
         || { echo "rauthy generated API key: extraction must request token field" >&2; exit 1; }
+      grep -q -- 'Rauthy generated bootstrap API key was not available' ${bootstrapSvc.serviceConfig.ExecStart} \
+        || { echo "rauthy generated API key: extraction must have a bounded retry diagnostic" >&2; exit 1; }
+      test ${lib.escapeShellArg bootstrapSvc.serviceConfig.Restart} = on-failure \
+        || { echo "rauthy generated API key: extraction unit must restart on failure" >&2; exit 1; }
+      test ${lib.escapeShellArg bootstrapSvc.serviceConfig.RestartSec} = 10s \
+        || { echo "rauthy generated API key: extraction unit restart delay must be 10s" >&2; exit 1; }
+      test ${lib.escapeShellArg (toString bootstrapSvc.unitConfig.StartLimitBurst)} = 6 \
+        || { echo "rauthy generated API key: extraction unit start limit burst must be set" >&2; exit 1; }
       grep -q -- '--key-manager-api-key-file /run/rauthy-provision/api-key' ${provisionSvc.serviceConfig.ExecStart} \
         || { echo "rauthy generated API key: transient mode must use generated key as manager key" >&2; exit 1; }
       grep -q -- '--transient-api-key' ${provisionSvc.serviceConfig.ExecStart} \
