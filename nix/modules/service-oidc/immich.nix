@@ -6,6 +6,7 @@
 }: let
   inherit (lib) mkEnableOption mkIf mkOption optional optionalAttrs types;
   cfg = config.services.immich.provision;
+  passwords = self.lib.passwords;
 
   presentOption = mkOption {
     type = types.bool;
@@ -66,6 +67,7 @@
         default = null;
         description = "Whether Immich should require a password change.";
       };
+      passwordFile = passwords.passwordFileOption;
       delete.force = mkOption {
         type = types.bool;
         default = false;
@@ -104,7 +106,7 @@
       mobileRedirectUri = cfg.oauth.mobileRedirectUri;
     };
 
-  userManifest = lib.mapAttrs (_: user:
+  userManifest = lib.mapAttrs (name: user:
     {
       inherit (user) present;
       delete.force = user.delete.force;
@@ -130,7 +132,10 @@
         then null
         else user.avatarColor;
     }
-    // optionalAttrs (user.shouldChangePassword != null) {inherit (user) shouldChangePassword;})
+    // optionalAttrs (user.shouldChangePassword != null) {inherit (user) shouldChangePassword;}
+    // optionalAttrs (user.passwordFile != null) {
+      passwordFile = passwords.userPasswordRuntimePath "immich-provision" name;
+    })
   cfg.users;
 
   stateFile = pkgs.writeText "immich-provision-state.json" (builtins.toJSON {users = userManifest;});
@@ -359,8 +364,11 @@ in {
         RemainAfterExit = true;
         ExecStart = provisionScript;
         EnvironmentFile = optional (config.services.immich.secretsFile != null) config.services.immich.secretsFile;
+        LoadCredential = passwords.userPasswordCredentials "immich-provision" cfg.users;
         RuntimeDirectory = "immich-provision";
         RuntimeDirectoryMode = "0700";
+        StateDirectory = "immich-provision";
+        StateDirectoryMode = "0700";
         User = config.services.immich.user;
         Group = config.services.immich.group;
       };

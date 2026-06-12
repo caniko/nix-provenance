@@ -18,6 +18,7 @@
 }: let
   inherit (lib) mkEnableOption mkIf mkOption optionalAttrs optionalString types;
   cfg = config.services.rauthy.provision;
+  passwords = self.lib.passwords;
   generatedApiKeyUnit = "rauthy-bootstrap-api-key";
 
   presentOption = mkOption {
@@ -217,6 +218,7 @@
           when sendPasswordEmail is true.
         '';
       };
+      passwordFile = passwords.passwordFileOption;
     };
   };
 
@@ -504,7 +506,7 @@
         user_editable = a.userEditable;
       })
       cfg.userAttributes;
-    users = lib.mapAttrs (_: u:
+    users = lib.mapAttrs (name: u:
       {
         inherit
           (u)
@@ -581,6 +583,9 @@
       }
       // optionalAttrs (u.passwordEmailRedirectUri != null) {
         password_email_redirect_uri = u.passwordEmailRedirectUri;
+      }
+      // optionalAttrs (u.passwordFile != null) {
+        password_file = passwords.userPasswordRuntimePath "rauthy-provision" name;
       })
     cfg.users;
     clients =
@@ -967,6 +972,10 @@ in {
                   assertion = !user.sendPasswordEmail || user.passwordEmailRedirectUri != null;
                   message = "services.rauthy.provision.users.${name}.passwordEmailRedirectUri is required when sendPasswordEmail = true.";
                 }
+                {
+                  assertion = !(user.sendPasswordEmail && user.passwordFile != null);
+                  message = "services.rauthy.provision.users.${name} cannot set both sendPasswordEmail and passwordFile.";
+                }
               ])
               cfg.users)
           )
@@ -1015,6 +1024,9 @@ in {
             RemainAfterExit = true;
             ExecStart = provisionScript;
             EnvironmentFile = lib.mkIf (cfg.apiKeyEnvironmentFile != null) [(toString cfg.apiKeyEnvironmentFile)];
+            LoadCredential = passwords.userPasswordCredentials "rauthy-provision" cfg.users;
+            StateDirectory = "rauthy-provision";
+            StateDirectoryMode = "0700";
             # Rauthy may still be warming up when the unit first fires.
             Restart = "on-failure";
             RestartSec = "10s";

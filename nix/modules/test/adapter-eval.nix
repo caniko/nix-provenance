@@ -33,6 +33,8 @@ in {
       displayName = "Pink Raven";
       loginUrl = "https://raven.tartanoglu.com/login";
       redirectUris = ["https://raven.tartanoglu.com/auth/callback"];
+      postLogoutRedirectUris = ["https://raven.tartanoglu.com/"];
+      allowedOrigins = ["https://raven.tartanoglu.com"];
       # Rauthy here relays mail through Stalwart on the host (acknowledge it).
       mailServerConfigured = true;
       users = {
@@ -50,6 +52,13 @@ in {
           email = "carolinestahl@gmx.net";
           displayName = "Caroline";
           credential = adapter.passwordInitByEmail {};
+        };
+        bot = {
+          email = "bot@example.com";
+          displayName = "Bot";
+          credential = adapter.passwordFromFile {
+            passwordFile = "/run/agenix/pink-raven-bot-password";
+          };
         };
       };
     };

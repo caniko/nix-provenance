@@ -43,6 +43,7 @@
           oidcID = "ops";
         }
       ];
+      passwordFile = "/run/agenix/rauthy-alice-password";
     };
     users."bob@example.com" = {
       clearFamilyName = true;

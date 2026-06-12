@@ -11,6 +11,7 @@
 #![warn(missing_docs)]
 
 pub mod http;
+pub mod password;
 pub mod reconcile;
 pub mod secret;
 pub mod serde_ext;

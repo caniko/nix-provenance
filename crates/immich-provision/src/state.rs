@@ -38,6 +38,8 @@ pub struct UserSpec {
     pub avatar_color: Option<Option<String>>,
     #[serde(rename = "shouldChangePassword")]
     pub should_change_password: Option<bool>,
+    #[serde(rename = "passwordFile")]
+    pub password_file: Option<String>,
     pub delete: DeleteSpec,
 }
 
@@ -52,6 +54,7 @@ impl Default for UserSpec {
             quota_size_in_bytes: None,
             avatar_color: None,
             should_change_password: None,
+            password_file: None,
             delete: DeleteSpec::default(),
         }
     }
@@ -120,7 +123,8 @@ mod tests {
                   "storageLabel": null,
                   "quotaSizeInBytes": 100,
                   "avatarColor": "blue",
-                  "shouldChangePassword": false
+                  "shouldChangePassword": false,
+                  "passwordFile": "/run/credentials/immich-provision.service/password-alice"
                 }
               }
             }"#,
@@ -133,6 +137,10 @@ mod tests {
         assert_eq!(user.quota_size_in_bytes, Some(Some(100)));
         assert_eq!(user.avatar_color, Some(Some("blue".to_string())));
         assert_eq!(user.should_change_password, Some(false));
+        assert_eq!(
+            user.password_file.as_deref(),
+            Some("/run/credentials/immich-provision.service/password-alice")
+        );
     }
 
     #[test]

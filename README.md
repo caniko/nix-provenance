@@ -11,11 +11,14 @@ OIDC either directly from Kanidm or through Rauthy when Rauthy fronts external
 apps. External users without Kanidm identities are initialized through Rauthy's
 email-based set-password flow.
 
-Downstream service provisioners therefore manage app-side users, profile
-metadata, roles, groups, OIDC claims, and service configuration. They do **not**
-manage app-local passwords, PINs, password-reset flows, or notification emails;
-credential-bearing fields such as Immich `password` and `pinCode` are
-intentionally unsupported.
+Downstream service provisioners manage app-side users, profile metadata, roles,
+groups, OIDC claims, and service configuration. App/platform-local passwords
+are supported only as runtime password-file references, normally
+`config.age.secrets.<name>.path`; modules load those files through systemd
+credentials and reconcilers store only rotation-marker hashes. Plaintext
+passwords must never enter Nix-rendered JSON, the Nix store, argv, logs, or
+environment variables. PINs, app-local password-reset flows, and notification
+emails remain out of scope unless the identity model changes again.
 
 Each **tenant** reconciles one system from a Nix-rendered JSON state file via a
 `Type=oneshot` systemd unit ordered after that system. A tenant is not always a
@@ -46,7 +49,7 @@ tenant taxonomy and the add-a-tenant checklist.
 - `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart,stalwart-cli,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
-- `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter}` — `usersFromKanidmPersons`
+- `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}` — `usersFromKanidmPersons`
   for Immich/Rauthy, service-specific `kanidmOAuth2System` helpers for Immich,
   Vikunja, and Forgejo, Stalwart's kanidm LDAP helpers, and `adapter` — the
   backend-agnostic primitives third-party flakes use (see below)
@@ -64,12 +67,17 @@ strategy:
 - `adapter.passwordInitByEmail { redirectUri ? null; }` — a native Rauthy user
   Rauthy emails a one-time set-password link to. **Requires SMTP (e.g. relaying
   through Stalwart) on the Rauthy host.** Rauthy-backend only.
+- `adapter.passwordFromFile { passwordFile; }` — a native Rauthy user whose
+  password is reconciled from a runtime password file such as an agenix secret.
+  Rauthy-backend only.
 
 ```nix
 services.provenance.externalApps.pink-raven = {
   backend = "rauthy";                                  # outward-facing → Rauthy
   loginUrl = "https://raven.tartanoglu.com/login";
   redirectUris = ["https://raven.tartanoglu.com/auth/callback"];
+  postLogoutRedirectUris = ["https://raven.tartanoglu.com/"];
+  allowedOrigins = ["https://raven.tartanoglu.com"];
   users = {
     can.email = "can@tartanoglu.com";
     can.credential = inputs.nix-provenance.lib.adapter.kanidmLogin;        # canix

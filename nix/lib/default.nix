@@ -9,8 +9,9 @@
   forgejo = import ./forgejo.nix {inherit lib;};
   stalwart = import ./stalwart.nix {inherit lib;};
   adapter = import ./adapter.nix {inherit lib;};
+  passwords = import ./passwords.nix {inherit lib;};
 in {
-  inherit immich rauthy vikunja forgejo stalwart adapter;
+  inherit immich rauthy vikunja forgejo stalwart adapter passwords;
 
   # Back-compat alias retained ONLY during the canix migration: the live consumer
   # historically called `lib.usersFromKanidmPersons` on the rauthy-provision

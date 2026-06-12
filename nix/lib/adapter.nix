@@ -67,8 +67,16 @@ in rec {
     inherit redirectUri;
   };
 
+  # External/native: the user's Rauthy password is managed from a runtime
+  # password file, typically an agenix secret path.
+  passwordFromFile = {passwordFile}: {
+    method = "passwordFromFile";
+    inherit passwordFile;
+  };
+
   isPasswordInitByEmail = c: (c.method or null) == "passwordInitByEmail";
   isKanidmLogin = c: (c.method or null) == "kanidmLogin";
+  isPasswordFromFile = c: (c.method or null) == "passwordFromFile";
 
   # Does this user set contain at least one emailed-set-password user? (Used by
   # the module to gate the mail-server warning/assertion.)
@@ -112,13 +120,16 @@ in rec {
             family = null;
           };
         emailed = isPasswordInitByEmail cred;
+        filePassword = isPasswordFromFile cred;
         redirect =
           if (cred.redirectUri or null) != null
           then cred.redirectUri
           else loginUrl;
       in
-        if !(isKanidmLogin cred || emailed)
-        then throw "adapter.rauthyUsers: user '${email}' has an unrecognised credential; use adapter.kanidmLogin or adapter.passwordInitByEmail."
+        if !(isKanidmLogin cred || emailed || filePassword)
+        then throw "adapter.rauthyUsers: user '${email}' has an unrecognised credential; use adapter.kanidmLogin, adapter.passwordInitByEmail, or adapter.passwordFromFile."
+        else if emailed && filePassword
+        then throw "adapter.rauthyUsers: user '${email}' cannot combine passwordInitByEmail and passwordFromFile."
         else if emailed && redirect == null
         then throw "adapter.rauthyUsers: emailed user '${email}' needs a redirect target — set passwordInitByEmail { redirectUri = ...; } or pass loginUrl to rauthyUsers."
         else
@@ -133,6 +144,9 @@ in rec {
             // lib.optionalAttrs emailed {
               sendPasswordEmail = true;
               passwordEmailRedirectUri = redirect;
+            }
+            // lib.optionalAttrs filePassword {
+              passwordFile = cred.passwordFile;
             })
     )
     users;
@@ -185,7 +199,7 @@ in rec {
     lib.mapAttrs (
       name: u:
         if !isKanidmLogin u.credential
-        then throw "adapter.kanidmPersons: user '${name}' must use adapter.kanidmLogin on the kanidm backend (passwordInitByEmail is a rauthy-only flow)."
+        then throw "adapter.kanidmPersons: user '${name}' must use adapter.kanidmLogin on the kanidm backend (passwordInitByEmail and passwordFromFile are rauthy-only flows)."
         else {
           present = u.present or true;
           displayName = u.displayName or name;

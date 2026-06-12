@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use provenance_core::password::PasswordMarkerStore;
 
 use client::ImmichClient;
 use reconcile::reconcile;
@@ -55,6 +56,10 @@ struct Cli {
     /// Seconds to wait for Immich to answer before reconciling.
     #[arg(long, default_value_t = 60)]
     ready_timeout: u64,
+
+    /// Directory used to persist password rotation markers.
+    #[arg(long)]
+    password_marker_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -76,7 +81,26 @@ fn main() -> Result<()> {
         .wait_ready(Duration::from_secs(cli.ready_timeout))
         .context("waiting for Immich to become ready")?;
 
-    let summary = reconcile(&client, &state, cli.allow_user_delete)?;
+    let marker_dir = match &cli.password_marker_dir {
+        Some(path) => path.clone(),
+        None => match std::env::var_os("STATE_DIRECTORY").map(PathBuf::from) {
+            Some(state_dir) => state_dir.join("password-markers"),
+            None if state
+                .users
+                .values()
+                .any(|user| user.password_file.is_some()) =>
+            {
+                anyhow::bail!("password markers require --password-marker-dir or STATE_DIRECTORY")
+            }
+            None => std::env::temp_dir().join("immich-provision-password-markers-unused"),
+        },
+    };
+    let summary = reconcile(
+        &client,
+        &state,
+        cli.allow_user_delete,
+        &PasswordMarkerStore::new(marker_dir),
+    )?;
     eprintln!(
         "[immich-provision] done: created={}, updated={}, deleted={}, unchanged={}",
         summary.created, summary.updated, summary.deleted, summary.unchanged

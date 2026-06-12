@@ -9,11 +9,13 @@ their NixOS modules. Every tenant shares one **spine**:
 > runtime file/env, never a Nix store path.
 
 The spine does not imply that every upstream field is in scope. Credentials are
-owned by the identity plane: Kanidm for internal humans and Rauthy's
-set-password email flow for external users. Service-side modules manage
-downstream users, profile metadata, roles, groups, claims, and OIDC settings,
-but not app-local password or PIN fields. The field-level contract is documented
-in [Per-user Fields](../reference/per-user-fields.md).
+owned by explicit runtime sources: Kanidm for internal humans, Rauthy's
+set-password email flow for external users, and agenix-style password files for
+declared platform-local passwords. Service-side modules may manage passwords
+only by passing runtime file paths through systemd credentials and persisting
+rotation-marker hashes; PINs, reset-link flows, and notification emails remain
+out of scope. The field-level contract is documented in
+[Per-user Fields](../reference/per-user-fields.md).
 
 Reconcilers share the same control shape:
 
@@ -65,7 +67,8 @@ like pink-raven integrates its users without earning a module, lib, or crate
 here. It is pure-Nix wiring on top of `services.rauthy.provision` /
 `services.kanidm.provision`; it owns no reconciler. The reusable
 `passwordInitByEmail` credential primitive (Rauthy's emailed set-password flow,
-requiring SMTP such as Stalwart) lives here. See
+requiring SMTP such as Stalwart) and the `passwordFromFile` primitive
+(Rauthy-native password from an agenix-style file) live here. See
 [Third-party External Apps](../guides/external-apps.md).
 
 ## Shared code

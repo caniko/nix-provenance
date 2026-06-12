@@ -1,11 +1,17 @@
 use anyhow::{bail, Result};
+use provenance_core::password::{read_password_file, PasswordMarkerStore};
 use provenance_core::reconcile::Summary;
 use serde_json::{json, Map, Value};
 
 use crate::client::{ImmichClient, ImmichUser};
 use crate::state::{State, UserSpec};
 
-pub fn reconcile(client: &ImmichClient, state: &State, allow_user_delete: bool) -> Result<Summary> {
+pub fn reconcile(
+    client: &ImmichClient,
+    state: &State,
+    allow_user_delete: bool,
+    password_markers: &PasswordMarkerStore,
+) -> Result<Summary> {
     let config = client.system_config()?;
     let oauth_enabled = config.oauth.enabled;
     let existing = client.list_users()?;
@@ -20,22 +26,40 @@ pub fn reconcile(client: &ImmichClient, state: &State, allow_user_delete: bool) 
 
         match (spec.present, current) {
             (true, Some(user)) => {
-                let update = build_update_user_request(user, spec);
+                let mut update = build_update_user_request(user, spec);
+                let password = resolve_password(spec)?;
+                let password_marker_id = format!("immich:{email}");
+                let password_changed = match password.as_deref() {
+                    Some(password) => {
+                        password_markers.needs_update(&password_marker_id, password)?
+                    }
+                    None => false,
+                };
+                if password_changed {
+                    update.insert("password".to_string(), json!(password.as_deref().unwrap()));
+                }
                 if update.is_empty() {
                     summary.unchanged += 1;
                 } else {
                     client.update_user(&user.id, &update)?;
+                    if let Some(password) = password.filter(|_| password_changed) {
+                        password_markers.commit(&password_marker_id, &password)?;
+                    }
                     summary.updated += 1;
                 }
             }
             (true, None) => {
-                if !oauth_enabled {
+                if !oauth_enabled && spec.password_file.is_none() {
                     bail!(
-                        "refusing to create OAuth-only user {key}: Immich OAuth is disabled in system config"
+                        "refusing to create OAuth-only user {key}: Immich OAuth is disabled in system config and no passwordFile is set"
                     );
                 }
-                let body = build_create_user_request(key, spec)?;
+                let password = resolve_password(spec)?;
+                let body = build_create_user_request(key, spec, password.as_deref())?;
                 client.create_user(&body)?;
+                if let Some(password) = password {
+                    password_markers.commit(&format!("immich:{email}"), &password)?;
+                }
                 summary.created += 1;
             }
             (false, Some(user)) => {
@@ -54,7 +78,11 @@ pub fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
-pub fn build_create_user_request(key: &str, spec: &UserSpec) -> Result<Map<String, Value>> {
+pub fn build_create_user_request(
+    key: &str,
+    spec: &UserSpec,
+    password: Option<&str>,
+) -> Result<Map<String, Value>> {
     let mut body = Map::new();
     body.insert("email".to_string(), json!(spec.identity_email(key)?));
     body.insert("name".to_string(), json!(required_name(key, spec)?));
@@ -67,6 +95,7 @@ pub fn build_create_user_request(key: &str, spec: &UserSpec) -> Result<Map<Strin
         "shouldChangePassword",
         spec.should_change_password,
     );
+    insert_if_some(&mut body, "password", password);
     Ok(body)
 }
 
@@ -108,6 +137,13 @@ pub fn build_update_user_request(existing: &ImmichUser, spec: &UserSpec) -> Map<
     }
 
     body
+}
+
+fn resolve_password(spec: &UserSpec) -> Result<Option<String>> {
+    spec.password_file
+        .as_deref()
+        .map(read_password_file)
+        .transpose()
 }
 
 pub fn ensure_delete_allowed(key: &str, spec: &UserSpec, allow_user_delete: bool) -> Result<()> {
@@ -193,7 +229,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let body = build_create_user_request("alice", &state.users["alice"]).unwrap();
+        let body = build_create_user_request("alice", &state.users["alice"], None).unwrap();
         assert_eq!(body["email"], json!("alice@example.com"));
         assert_eq!(body["name"], json!("Alice"));
         assert_eq!(body["avatarColor"], json!("blue"));
@@ -201,6 +237,22 @@ mod tests {
         assert!(!body.contains_key("pinCode"));
         assert!(!body.contains_key("notify"));
         assert!(!body.contains_key("oauthId"));
+    }
+
+    #[test]
+    fn create_request_contains_password_when_runtime_secret_is_supplied() {
+        let state: State =
+            serde_json::from_str(r#"{ "users": { "alice@example.com": { "name": "Alice" } } }"#)
+                .unwrap();
+        let body = build_create_user_request(
+            "alice@example.com",
+            &state.users["alice@example.com"],
+            Some("runtime-secret"),
+        )
+        .unwrap();
+
+        assert_eq!(body["password"], json!("runtime-secret"));
+        assert!(!body.contains_key("pinCode"));
     }
 
     #[test]

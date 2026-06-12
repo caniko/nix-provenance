@@ -243,6 +243,8 @@ struct UserInput {
     send_password_email: bool,
     #[serde(default)]
     password_email_redirect_uri: Option<String>,
+    #[serde(default)]
+    password_file: Option<String>,
 }
 
 impl UserInput {
@@ -250,6 +252,11 @@ impl UserInput {
         if self.send_password_email && self.password_email_redirect_uri.is_none() {
             errors.push(format!(
                 "user '{email}' sets sendPasswordEmail but no passwordEmailRedirectUri"
+            ));
+        }
+        if self.send_password_email && self.password_file.is_some() {
+            errors.push(format!(
+                "user '{email}' cannot set both sendPasswordEmail and passwordFile"
             ));
         }
         if let Some(expires) = self.user_expires {
@@ -281,6 +288,7 @@ impl UserInput {
             attributes: self.attributes,
             send_password_email: self.send_password_email,
             password_email_redirect_uri: self.password_email_redirect_uri,
+            password_file: self.password_file,
         }
     }
 }
@@ -338,7 +346,9 @@ impl ClientInput {
             errors,
         );
         if self.flows_enabled.is_empty() {
-            errors.push(format!("client '{client_id}' flowsEnabled must not be empty"));
+            errors.push(format!(
+                "client '{client_id}' flowsEnabled must not be empty"
+            ));
         }
         validate_non_empty_values(
             format!("client '{client_id}' flow"),
@@ -642,10 +652,9 @@ mod tests {
 
     #[test]
     fn validates_empty_client_flows() {
-        let input: RenderInput = serde_json::from_str(
-            r#"{ "clients": { "vikunja": { "flowsEnabled": [] } } }"#,
-        )
-        .unwrap();
+        let input: RenderInput =
+            serde_json::from_str(r#"{ "clients": { "vikunja": { "flowsEnabled": [] } } }"#)
+                .unwrap();
         let err = input.render().unwrap_err().to_string();
         assert!(err.contains("flowsEnabled must not be empty"));
     }

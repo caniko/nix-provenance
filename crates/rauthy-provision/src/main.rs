@@ -20,6 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
+use provenance_core::password::{read_password_file, PasswordMarkerStore};
 use provenance_core::setops::{is_subset, opt_vec, same_set, union};
 use serde_json::Value;
 
@@ -91,6 +92,10 @@ struct Cli {
     /// Skip deletions: entities declared `present = false` are left untouched.
     #[arg(long)]
     no_auto_remove: bool,
+
+    /// Directory used to persist password rotation markers.
+    #[arg(long)]
+    password_marker_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -121,7 +126,30 @@ fn run_with_api_key(cli: &Cli, state: &State, api_key: &str) -> Result<()> {
         .wait_ready(30, Duration::from_secs(2))
         .context("waiting for rauthy to be ready")?;
 
-    reconcile(&client, state, cli.no_auto_remove)
+    reconcile(
+        &client,
+        state,
+        cli.no_auto_remove,
+        password_marker_store(cli, state)?,
+    )
+}
+
+fn password_marker_store(cli: &Cli, state: &State) -> Result<PasswordMarkerStore> {
+    let dir = match &cli.password_marker_dir {
+        Some(path) => path.clone(),
+        None => match std::env::var_os("STATE_DIRECTORY").map(PathBuf::from) {
+            Some(state_dir) => state_dir.join("password-markers"),
+            None if state
+                .users
+                .values()
+                .any(|user| user.password_file.is_some()) =>
+            {
+                bail!("password markers require --password-marker-dir or STATE_DIRECTORY")
+            }
+            None => std::env::temp_dir().join("rauthy-provision-password-markers-unused"),
+        },
+    };
+    Ok(PasswordMarkerStore::new(dir))
 }
 
 fn run_with_transient_api_key(cli: &Cli, state: &State) -> Result<()> {
@@ -202,14 +230,19 @@ fn access(group: &'static str, access_rights: &[&'static str]) -> ApiKeyAccessRe
     }
 }
 
-fn reconcile(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
+fn reconcile(
+    client: &RauthyClient,
+    state: &State,
+    no_auto_remove: bool,
+    password_markers: PasswordMarkerStore,
+) -> Result<()> {
     // Groups and roles first — users reference them by name.
     reconcile_groups(client, state, no_auto_remove)?;
     reconcile_roles(client, state, no_auto_remove)?;
     reconcile_user_attributes(client, state, no_auto_remove)?;
     reconcile_scopes(client, state, no_auto_remove)?;
     reconcile_providers(client, state, no_auto_remove)?;
-    reconcile_users(client, state, no_auto_remove)?;
+    reconcile_users(client, state, no_auto_remove, &password_markers)?;
     reconcile_clients(client, state, no_auto_remove)?;
 
     log(format_args!("done"));
@@ -318,8 +351,14 @@ fn reconcile_scopes(client: &RauthyClient, state: &State, no_auto_remove: bool) 
     Ok(())
 }
 
-fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
+fn reconcile_users(
+    client: &RauthyClient,
+    state: &State,
+    no_auto_remove: bool,
+    password_markers: &PasswordMarkerStore,
+) -> Result<()> {
     for (email, spec) in &state.users {
+        validate_user_credential_strategy(email, spec)?;
         let current = client.get_user_by_email(email)?;
         match (spec.present, current) {
             (true, None) => {
@@ -328,6 +367,7 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
                 if spec.preferred_username.is_some()
                     || has_declared_profile_fields(spec)
                     || !spec.attributes.is_empty()
+                    || spec.password_file.is_some()
                 {
                     let user = client.get_user_by_email(email)?.ok_or_else(|| {
                         anyhow!("Rauthy user {email} was created but could not be read back")
@@ -335,6 +375,7 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
                     reconcile_user_profile_fields(client, &user, spec)?;
                     reconcile_user_preferred_username(client, &user, spec)?;
                     reconcile_user_attributes_values(client, &user, spec)?;
+                    reconcile_user_password(client, &user, spec, password_markers)?;
                 }
                 // Email a set-password link only on first create (never on
                 // update), so at most one email is ever sent per user.
@@ -358,6 +399,7 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
                 reconcile_user_profile_fields(client, &user, spec)?;
                 reconcile_user_preferred_username(client, &user, spec)?;
                 reconcile_user_attributes_values(client, &user, spec)?;
+                reconcile_user_password(client, &user, spec, password_markers)?;
             }
             (false, Some(user)) if !no_auto_remove => {
                 log(format_args!("delete user {email}"));
@@ -367,6 +409,35 @@ fn reconcile_users(client: &RauthyClient, state: &State, no_auto_remove: bool) -
         }
     }
     Ok(())
+}
+
+fn validate_user_credential_strategy(email: &str, spec: &UserSpec) -> Result<()> {
+    if spec.send_password_email && spec.password_file.is_some() {
+        bail!("user {email} cannot set both send_password_email and password_file");
+    }
+    Ok(())
+}
+
+fn reconcile_user_password(
+    client: &RauthyClient,
+    user: &client::UserResponse,
+    spec: &UserSpec,
+    markers: &PasswordMarkerStore,
+) -> Result<()> {
+    let Some(path) = spec.password_file.as_deref() else {
+        return Ok(());
+    };
+    let password = read_password_file(path)
+        .with_context(|| format!("resolving password_file for Rauthy user {}", user.email))?;
+    let marker_id = format!("rauthy:{}", user.email);
+    if !markers.needs_update(&marker_id, &password)? {
+        return Ok(());
+    }
+    log(format_args!("update user {} password", user.email));
+    let mut update = update_user(user, spec);
+    update.password = Some(password.clone());
+    client.update_user(&user.id, &update)?;
+    markers.commit(&marker_id, &password)
 }
 
 fn new_user(email: &str, spec: &UserSpec) -> NewUserRequest {
@@ -416,6 +487,7 @@ fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserReques
         },
         enabled: user.enabled,
         email_verified: user.email_verified,
+        password: None,
         user_expires: spec.user_expires.or(user.user_expires),
     }
 }
@@ -971,6 +1043,11 @@ fn client_drifted(cur: &client::ClientResponse, spec: &ClientSpec) -> bool {
 
     !cur.enabled
         || !same_set(&cur.redirect_uris, &spec.redirect_uris)
+        || !same_set(
+            &cur.post_logout_redirect_uris,
+            &spec.post_logout_redirect_uris,
+        )
+        || !same_set(&cur.allowed_origins, &spec.allowed_origins)
         || !same_set(&cur.scopes, &spec.scopes)
         || !same_set(&cur.flows_enabled, &spec.flows_enabled)
         || !same_set(cur_challenges, &desired_challenges)
@@ -1049,6 +1126,19 @@ mod tests {
             "groups": groups,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn password_file_conflicts_with_set_password_email() {
+        let s: UserSpec = serde_json::from_value(serde_json::json!({
+            "send_password_email": true,
+            "password_email_redirect_uri": "https://app.example.com/login",
+            "password_file": "/run/credentials/rauthy-provision.service/password-a"
+        }))
+        .unwrap();
+
+        let err = validate_user_credential_strategy("a@example.com", &s).unwrap_err();
+        assert!(err.to_string().contains("cannot set both"));
     }
 
     fn empty_state_file(name: &str) -> PathBuf {
@@ -1239,6 +1329,7 @@ mod tests {
             transient_api_key_ttl: 600,
             accept_invalid_certs: false,
             no_auto_remove: false,
+            password_marker_dir: Some(std::env::temp_dir()),
         };
 
         let err = run_with_transient_api_key(&cli, &State::default()).unwrap_err();
@@ -1417,6 +1508,7 @@ mod tests {
         assert!(upd.roles.contains(&"rauthy_admin".to_string()));
         assert!(upd.roles.contains(&"internal".to_string()));
         assert!(upd.roles.contains(&"bekiper".to_string()));
+        assert!(upd.password.is_none());
         let g = upd.groups.unwrap();
         assert!(g.contains(&"other".to_string()));
         assert!(g.contains(&"internal".to_string()));
@@ -1426,6 +1518,8 @@ mod tests {
     fn client_drift_ignores_unordered_sets() {
         let current = client::ClientResponse {
             redirect_uris: vec!["https://app/alt".to_string(), "https://app/cb".to_string()],
+            post_logout_redirect_uris: vec![],
+            allowed_origins: vec![],
             scopes: vec![
                 "email".to_string(),
                 "openid".to_string(),
@@ -1454,6 +1548,8 @@ mod tests {
         .unwrap();
         let disabled = client::ClientResponse {
             redirect_uris: vec!["https://app/cb".to_string()],
+            post_logout_redirect_uris: vec![],
+            allowed_origins: vec![],
             scopes: vec![
                 "openid".to_string(),
                 "profile".to_string(),
@@ -1481,6 +1577,8 @@ mod tests {
         let current = client::ClientResponse {
             enabled: true,
             redirect_uris: vec!["https://app/cb".to_string()],
+            post_logout_redirect_uris: vec![],
+            allowed_origins: vec![],
             scopes: vec![
                 "openid".to_string(),
                 "profile".to_string(),
@@ -1505,6 +1603,34 @@ mod tests {
             ..current
         };
         assert!(!client_drifted(&current, &spec));
+    }
+
+    #[test]
+    fn client_drift_detects_logout_and_origin_changes() {
+        let current = client::ClientResponse {
+            enabled: true,
+            redirect_uris: vec!["https://app/cb".to_string()],
+            post_logout_redirect_uris: vec![],
+            allowed_origins: vec![],
+            scopes: vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string(),
+            ],
+            flows_enabled: vec![
+                "authorization_code".to_string(),
+                "refresh_token".to_string(),
+            ],
+            challenges: Some(vec!["S256".to_string()]),
+        };
+        let spec: ClientSpec = serde_json::from_value(serde_json::json!({
+            "redirect_uris": ["https://app/cb"],
+            "post_logout_redirect_uris": ["https://app/"],
+            "allowed_origins": ["https://app"]
+        }))
+        .unwrap();
+
+        assert!(client_drifted(&current, &spec));
     }
 
     #[test]

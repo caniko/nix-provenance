@@ -3,11 +3,13 @@
 `nix-provenance` is a DRY monorepo of declarative identity and OIDC
 provisioners plus their NixOS modules.
 
-Credentials are intentionally centralized. Internal users authenticate through
+Credentials are intentionally explicit. Internal users authenticate through
 Kanidm, while external users can be initialized through Rauthy's emailed
-set-password flow. Service-side provisioners do not manage app-local passwords,
-PINs, reset links, or notification emails; they manage user/profile metadata,
-authorization data, and OIDC wiring. See
+set-password flow or through runtime password files. Service-side provisioners
+may manage platform-local passwords only via agenix-style password-file
+references loaded with systemd credentials; plaintext passwords never enter
+Nix-rendered state, the Nix store, argv, logs, or environment variables. PINs,
+reset links, and notification emails remain out of scope. See
 [Per-user Fields](./reference/per-user-fields.md) for the supported
 per-platform surface.
 
@@ -39,7 +41,7 @@ mixed-license boundary that keeps the shared core permissive.
 
 - `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart,stalwart-cli,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}`
-- `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter}`
+- `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}`
 
 ## Key guides
 

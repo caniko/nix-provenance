@@ -17,10 +17,11 @@ uniform, backend-agnostic user schema.
 
 | Axis | Choice | Meaning |
 |------|--------|---------|
-| **backend** | `rauthy` | the app federates with Rauthy (outward-facing services). Required for any emailed user. |
+| **backend** | `rauthy` | the app federates with Rauthy (outward-facing services). Required for emailed and password-file users. |
 | | `kanidm` | the app federates with kanidm directly (internal services). |
 | **per-user credential** | `kanidmLogin` | the user already has a kanidm identity. Federated; nothing emailed or stored here. |
 | | `passwordInitByEmail` | a native Rauthy user Rauthy emails a one-time set-password link to. **Rauthy backend only.** |
+| | `passwordFromFile` | a native Rauthy user whose password is reconciled from a runtime file such as an agenix secret. **Rauthy backend only.** |
 
 `passwordInitByEmail` **requires a mail or SMTP server (for example Stalwart)
 reachable from the Rauthy host**. Rauthy drives its `request_reset` flow once
@@ -35,6 +36,9 @@ module:
 
 - `adapter.kanidmLogin`: credential descriptor (constant)
 - `adapter.passwordInitByEmail { redirectUri ? null; }`: credential descriptor
+- `adapter.passwordFromFile { passwordFile; }`: credential descriptor for a
+  native Rauthy password loaded from a runtime file such as
+  `config.age.secrets.<name>.path`
 - `adapter.rauthyUsers { users, loginUrl ? null, language ? "en", commonGroups ? []; }`:
   renders `services.rauthy.provision.users`. `commonGroups` is applied to every
   user (on top of each user's own `groups`)
@@ -63,6 +67,8 @@ in {
     displayName = "Pink Raven";
     loginUrl = "https://raven.tartanoglu.com/login";
     redirectUris = ["https://raven.tartanoglu.com/auth/callback"];
+    postLogoutRedirectUris = ["https://raven.tartanoglu.com/"];
+    allowedOrigins = ["https://raven.tartanoglu.com"];
     mailServerConfigured = true;
 
     users = {
@@ -193,6 +199,8 @@ mail-server logs, not the command's exit code.
   journals, not just the HTTP status.
 - `passwordInitByEmail` on the kanidm backend: asserted against; use
   `kanidmLogin`.
+- `passwordFromFile` on the kanidm backend: asserted against; the adapter
+  currently creates Kanidm persons but does not initialize primary credentials.
 - Rauthy backend without importing `nixosModules.rauthy`: the adapter writes
   `services.rauthy.provision.*`, so those options must exist on the same host.
 - Two apps keying the same email: Rauthy keys users by email, so the collision

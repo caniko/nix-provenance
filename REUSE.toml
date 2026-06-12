@@ -63,6 +63,6 @@ SPDX-License-Identifier = "MIT OR Apache-2.0"
 # Catch-all for new, shared, permissive files. Listed LAST so docs/architecture.md
 # overrides the AGPL docs/** rule above.
 [[annotations]]
-path = ["flake.nix", "flake.lock", "Cargo.toml", "Cargo.lock", "README.md", "LICENSING.md", "REUSE.toml", ".gitignore", "nix/lib/default.nix", "nix/packages.nix", "nix/checks.nix", "nix/modules/config-only/.gitkeep", "nix/modules/ldap/.gitkeep", "crates/provenance-core/**", "docs/book.toml", "docs/architecture.md", "docs/planning/**", "docs/src/SUMMARY.md", "docs/src/introduction.md", "docs/src/getting-started/development.md", "docs/src/concepts/architecture.md", "docs/src/guides/external-apps.md", "docs/src/reference/licensing.md", ".forgejo/**"]
+path = ["flake.nix", "flake.lock", "Cargo.toml", "Cargo.lock", "README.md", "LICENSING.md", "REUSE.toml", ".gitignore", "nix/lib/default.nix", "nix/lib/passwords.nix", "nix/packages.nix", "nix/checks.nix", "nix/modules/config-only/.gitkeep", "nix/modules/ldap/.gitkeep", "crates/provenance-core/**", "docs/book.toml", "docs/architecture.md", "docs/planning/**", "docs/src/SUMMARY.md", "docs/src/introduction.md", "docs/src/getting-started/development.md", "docs/src/concepts/architecture.md", "docs/src/guides/external-apps.md", "docs/src/reference/licensing.md", ".forgejo/**"]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"

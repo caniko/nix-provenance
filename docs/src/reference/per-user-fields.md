@@ -1,15 +1,19 @@
 # Per-user Fields
 
 `nix-provenance` is opinionated about where credentials live. Internal human
-credentials are owned by Kanidm. External users without Kanidm identities are
-initialized through Rauthy's email-based set-password flow. Downstream service
-provisioners manage app-side users, profile metadata, groups, roles, claims,
-and service configuration; they do not manage app-local passwords, PINs,
-password-reset flows, or notification emails.
+credentials are owned by Kanidm. External users without Kanidm identities can be
+initialized through Rauthy's email-based set-password flow or through
+platform-local passwords read from runtime password files.
 
-This means credential-bearing fields such as Immich `password`, Immich
-`pinCode`, and app-local notification-email flows are intentionally unsupported
-by service-side provisioners.
+Password files should normally be agenix secrets referenced as
+`config.age.secrets.<name>.path`. NixOS modules load them with systemd
+`LoadCredential`, reconcilers read the runtime credential path, and only a
+password-content hash is stored in the service state directory as a rotation
+marker. Plaintext passwords must never be rendered into JSON, the Nix store,
+argv, logs, or environment variables.
+
+PINs, app-local password-reset flows, and notification-email flows remain
+unsupported unless the repository identity model changes again.
 
 ## Immich
 
@@ -26,18 +30,22 @@ only when explicitly set.
 | `storageLabel` / `clearStorageLabel` | `storageLabel` | Set a storage label or explicitly clear it with `null` |
 | `quotaSizeInBytes` / `clearQuota` | `quotaSizeInBytes` | Set a quota or explicitly clear it with `null` |
 | `avatarColor` / `clearAvatarColor` | `avatarColor` | Set an Immich avatar color or explicitly clear it with `null` |
-| `shouldChangePassword` | `shouldChangePassword` | Optional Immich password-change flag; this does not provision a password |
+| `shouldChangePassword` | `shouldChangePassword` | Optional Immich password-change flag |
+| `passwordFile` | `passwordFile` | Runtime file containing the Immich password; loaded through systemd credentials and applied only on create or marker-driven rotation |
 | `delete.force` | `delete.force` | Per-user delete lock |
 
-The reconciler deliberately never sends `password`, `pinCode`, `notify`, or
-`oauthId`. Users are created as OAuth-only users through the patched short-lived
-local provision token, and OAuth account linking is left to Immich.
+The reconciler never sends `pinCode`, `notify`, or `oauthId`. Users without
+`passwordFile` are created as OAuth-only users through the patched short-lived
+local provision token and require Immich OAuth to be enabled. Users with
+`passwordFile` can be created as local-password users. Existing-user password
+rotation happens only when the password file content hash differs from the
+stored marker.
 
 ## Rauthy
 
 `services.rauthy.provision.users` is keyed by primary email address. Rauthy
-users are created passwordless unless `sendPasswordEmail = true` is explicitly
-set for external users.
+users are created passwordless unless `sendPasswordEmail = true` or
+`passwordFile` is explicitly set.
 
 | Nix option | State field | Behavior |
 |------------|-------------|----------|
@@ -59,6 +67,7 @@ set for external users.
 | `attributes` | `attributes` | Custom Rauthy user attribute values, rendered as JSON |
 | `sendPasswordEmail` | `send_password_email` | On creation only, request Rauthy's set-password email flow |
 | `passwordEmailRedirectUri` | `password_email_redirect_uri` | Required when `sendPasswordEmail = true` |
+| `passwordFile` | `password_file` | Runtime file containing the native Rauthy password; mutually exclusive with `sendPasswordEmail` |
 
 Unset nullable profile fields are unmanaged and are omitted from rendered state.
 Use the matching `clear*` option only when you want the reconciler to send an
@@ -67,10 +76,18 @@ allows that value to be absent.
 
 ## Vikunja, Forgejo, And Stalwart
 
-These integrations do not expose direct app-local per-user profile management
-in `nix-provenance`.
+These integrations do not expose direct app-local per-user profile or password
+management in `nix-provenance`.
 
 Vikunja provisioning manages teams and memberships by username; OIDC user
 creation/linking remains Vikunja's responsibility. Forgejo wiring configures
 the OIDC login surface. Stalwart uses Kanidm LDAP for mailbox authentication and
 must bind against Kanidm rather than compare local app passwords.
+
+## External App Adapter
+
+`lib.adapter.passwordFromFile { passwordFile; }` maps a backend-agnostic
+external app user to `services.rauthy.provision.users.<email>.passwordFile`.
+It is valid only on the Rauthy backend. The Kanidm backend currently creates
+Kanidm persons but does not own primary credential initialization through the
+adapter.

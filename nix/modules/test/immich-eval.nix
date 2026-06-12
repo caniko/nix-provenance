@@ -31,6 +31,7 @@
         email = "eric@example.com";
         name = "Eric";
         clearAvatarColor = true;
+        passwordFile = "/run/agenix/immich-eric-password";
       };
     };
   };

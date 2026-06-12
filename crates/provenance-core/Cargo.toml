@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
+sha2 = "0.10"
 # reqwest with NO TLS feature on purpose: the leaf crate's TLS choice
 # (rustls-tls vs rustls-tls-native-roots) wins via additive feature unification,
 # so this permissive core never forces a TLS backend and never links openssl.

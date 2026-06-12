@@ -167,6 +167,12 @@ pub struct UserSpec {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_email_redirect_uri: Option<String>,
+    /// Runtime file containing the user's native Rauthy password. The file path
+    /// is read at reconcile time; the password value is never serialized into
+    /// state.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password_file: Option<String>,
 }
 
 /// An OIDC client (relying party).
@@ -286,6 +292,19 @@ mod tests {
         assert!(u.attributes.is_empty());
         assert!(u.preferred_username.is_none());
         assert!(u.user_expires.is_none());
+        assert!(u.password_file.is_none());
+    }
+
+    #[test]
+    fn parses_password_file_reference() {
+        let s: State = serde_json::from_str(
+            r#"{ "users": { "a@example.com": { "password_file": "/run/credentials/rauthy-provision.service/password-a" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.users["a@example.com"].password_file.as_deref(),
+            Some("/run/credentials/rauthy-provision.service/password-a")
+        );
     }
 
     #[test]

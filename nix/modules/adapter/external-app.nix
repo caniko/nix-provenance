@@ -118,6 +118,18 @@
         example = ["https://app.example.com/auth/callback"];
         description = "Allowed OIDC redirect URIs (rauthy client redirect_uris / kanidm originUrl).";
       };
+      postLogoutRedirectUris = mkOption {
+        type = types.listOf types.str;
+        default = [];
+        example = ["https://app.example.com/"];
+        description = "Allowed Rauthy post-logout redirect URIs (rauthy backend only).";
+      };
+      allowedOrigins = mkOption {
+        type = types.listOf types.str;
+        default = [];
+        example = ["https://app.example.com"];
+        description = "Allowed browser/CORS origins for the Rauthy client (rauthy backend only).";
+      };
       scopes = mkOption {
         type = types.listOf types.str;
         default = ["openid" "profile" "email" "groups"];
@@ -225,6 +237,8 @@ in {
           inherit (a) confidential;
           enablePkce = true;
           redirectUris = a.redirectUris;
+          postLogoutRedirectUris = a.postLogoutRedirectUris;
+          allowedOrigins = a.allowedOrigins;
           scopes = a.scopes;
           defaultScopes = a.scopes;
         })

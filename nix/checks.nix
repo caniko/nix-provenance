@@ -106,10 +106,22 @@ in {
 
   # Both NixOS modules must evaluate to a concrete oneshot serviceConfig.
   immich-module-eval = let
-    serviceConfig = builtins.toJSON immichEval.config.systemd.services.immich-provision.serviceConfig;
+    svc = immichEval.config.systemd.services.immich-provision;
+    serviceConfig = builtins.toJSON svc.serviceConfig;
   in
     runCommand "immich-module-eval" {} ''
       test -n ${lib.escapeShellArg serviceConfig}
+      service=${lib.escapeShellArg serviceConfig}
+      state_file=$(grep -o '/nix/store/[^ ]*immich-provision-state.json' ${svc.serviceConfig.ExecStart})
+      state=$(cat "$state_file")
+      printf '%s' "$service" | grep -q '/run/agenix/immich-eric-password' \
+        || { echo "immich: password LoadCredential source missing" >&2; exit 1; }
+      printf '%s' "$state" | grep -q '/run/credentials/immich-provision.service/password-eric' \
+        || { echo "immich: rendered state must reference runtime credential path" >&2; exit 1; }
+      if printf '%s' "$state" | grep -q 'immich-eric-password'; then
+        echo "immich: rendered state must not contain agenix source path" >&2
+        exit 1
+      fi
       touch $out
     '';
 
@@ -141,6 +153,7 @@ in {
     restartTriggers = builtins.toJSON svc.restartTriggers;
     clients = builtins.toJSON rauthyEval.config.services.rauthy.provision.clients;
     users = builtins.toJSON rauthyEval.config.services.rauthy.provision.users;
+    renderedState = builtins.readFile (builtins.head svc.restartTriggers);
     scopes = builtins.toJSON rauthyEval.config.services.rauthy.provision.scopes;
     userAttrs = builtins.toJSON rauthyEval.config.services.rauthy.provision.userAttributes;
   in
@@ -148,6 +161,7 @@ in {
       test -n ${lib.escapeShellArg serviceConfig}
       clients=${lib.escapeShellArg clients}
       users=${lib.escapeShellArg users}
+      rendered_state=${lib.escapeShellArg renderedState}
       scopes=${lib.escapeShellArg scopes}
       attrs=${lib.escapeShellArg userAttrs}
       triggers=${lib.escapeShellArg restartTriggers}
@@ -169,6 +183,14 @@ in {
         || { echo "rauthy: phone missing from rendered user state" >&2; exit 1; }
       printf '%s' "$users" | grep -q 'vikunja_groups' \
         || { echo "rauthy: custom Vikunja user attribute value missing" >&2; exit 1; }
+      printf '%s' "$rendered_state" | grep -q '/run/credentials/rauthy-provision.service/password-alice' \
+        || { echo "rauthy: rendered users must reference runtime password credential" >&2; exit 1; }
+      printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/rauthy-alice-password' \
+        || { echo "rauthy: password LoadCredential source missing" >&2; exit 1; }
+      if printf '%s' "$rendered_state" | grep -q 'rauthy-alice-password'; then
+        echo "rauthy: rendered state must not contain agenix source path" >&2
+        exit 1
+      fi
       printf '%s' "$scopes" | grep -q 'attrIncludeId' \
         || { echo "rauthy: custom scope attrIncludeId missing" >&2; exit 1; }
       printf '%s' "$scopes" | grep -q 'claimsAtRoot' \
@@ -319,20 +341,33 @@ in {
   # kanidm login, eric/caroline emailed a set-password link) and the kanidm-backend
   # OAuth2 federation client + person, all from the uniform user schema.
   adapter-module-eval = let
+    svc = adapterEval.config.systemd.services.rauthy-provision;
+    serviceConfig = builtins.toJSON svc.serviceConfig;
+    renderedState = builtins.readFile (builtins.head svc.restartTriggers);
     rauthyUsers = builtins.toJSON adapterEval.config.services.rauthy.provision.users;
     kanidmOauth2 = builtins.toJSON adapterEval.config.services.kanidm.provision.systems.oauth2;
     kanidmPersons = builtins.toJSON adapterEval.config.services.kanidm.provision.persons;
   in
     runCommand "adapter-module-eval" {} ''
       users=${lib.escapeShellArg rauthyUsers}
+      rendered_state=${lib.escapeShellArg renderedState}
       oauth2=${lib.escapeShellArg kanidmOauth2}
       persons=${lib.escapeShellArg kanidmPersons}
-      for e in can@tartanoglu.com efirley@protonmail.com carolinestahl@gmx.net; do
+      service=${lib.escapeShellArg serviceConfig}
+      for e in can@tartanoglu.com efirley@protonmail.com carolinestahl@gmx.net bot@example.com; do
         printf '%s' "$users" | grep -q "$e" || { echo "adapter: rauthy user $e missing" >&2; exit 1; }
       done
       # eric + caroline get an emailed set-password link; can does not.
       printf '%s' "$users" | grep -q '"sendPasswordEmail":true' \
         || { echo "adapter: no emailed (passwordInitByEmail) rauthy user rendered" >&2; exit 1; }
+      printf '%s' "$rendered_state" | grep -q '/run/credentials/rauthy-provision.service/password-bot' \
+        || { echo "adapter: passwordFromFile did not render runtime password path" >&2; exit 1; }
+      printf '%s' "$service" | grep -q '/run/agenix/pink-raven-bot-password' \
+        || { echo "adapter: passwordFromFile LoadCredential source missing" >&2; exit 1; }
+      printf '%s' "$rendered_state" | grep -q '"post_logout_redirect_uris":\["https://raven.tartanoglu.com/"\]' \
+        || { echo "adapter: pink-raven post-logout redirect missing" >&2; exit 1; }
+      printf '%s' "$rendered_state" | grep -q '"allowed_origins":\["https://raven.tartanoglu.com"\]' \
+        || { echo "adapter: pink-raven allowed origin missing" >&2; exit 1; }
       # kanidm backend rendered an OAuth2 federation client + its person.
       printf '%s' "$oauth2"  | grep -q 'internal-tool'   || { echo "adapter: kanidm oauth2 system missing" >&2; exit 1; }
       printf '%s' "$persons" | grep -q 'dejana'          || { echo "adapter: kanidm person missing" >&2; exit 1; }

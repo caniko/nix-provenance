@@ -89,6 +89,10 @@ this model before calling the renderer.
       "preferredUsername": "external",
       "sendPasswordEmail": true,
       "passwordEmailRedirectUri": "https://app.example.com/login"
+    },
+    "bot@example.com": {
+      "present": true,
+      "passwordFile": "/run/credentials/rauthy-provision.service/password-bot"
     }
   }
 }
@@ -96,5 +100,6 @@ this model before calling the renderer.
 
 Validation currently rejects empty entity keys, public clients without PKCE,
 public clients with generated secret files, password-email users without a
-redirect URI, non-positive user expiry timestamps, and upstream providers that
-select client-secret authentication without a secret file.
+redirect URI, users that set both `sendPasswordEmail` and `passwordFile`,
+non-positive user expiry timestamps, and upstream providers that select
+client-secret authentication without a secret file.

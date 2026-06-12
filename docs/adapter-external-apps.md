@@ -15,10 +15,11 @@ reconciler — it is pure-Nix wiring that writes `services.rauthy.provision` /
 
 | Axis | Choice | Meaning |
 |------|--------|---------|
-| **backend** | `rauthy` | the app federates with Rauthy (outward-facing services). Required for any emailed user. |
+| **backend** | `rauthy` | the app federates with Rauthy (outward-facing services). Required for emailed and password-file users. |
 | | `kanidm` | the app federates with kanidm directly (internal services). |
 | **per-user credential** | `kanidmLogin` | the user already has a kanidm identity. Federated; nothing emailed or stored here. |
 | | `passwordInitByEmail` | a native Rauthy user Rauthy emails a one-time set-password link to. **Rauthy backend only.** |
+| | `passwordFromFile` | a native Rauthy user whose password is reconciled from a runtime file such as an agenix secret. **Rauthy backend only.** |
 
 `passwordInitByEmail` **requires a mail/SMTP server (e.g. Stalwart) reachable
 from the Rauthy host** — Rauthy drives its `request_reset` flow once at user
@@ -34,10 +35,14 @@ module:
 - `adapter.kanidmLogin` — credential descriptor (constant).
 - `adapter.passwordInitByEmail { redirectUri ? null; }` — credential descriptor.
   `redirectUri` defaults to the app `loginUrl` when used through the module.
+- `adapter.passwordFromFile { passwordFile; }` — credential descriptor for a
+  native Rauthy password loaded from a runtime file such as
+  `config.age.secrets.<name>.path`.
 - `adapter.rauthyUsers { users, loginUrl ? null, language ? "en"; }` →
   a `services.rauthy.provision.users` attrset (keyed by email). `kanidmLogin`
   users are passwordless/federated; `passwordInitByEmail` users carry
-  `sendPasswordEmail = true` + the redirect.
+  `sendPasswordEmail = true` + the redirect; `passwordFromFile` users carry
+  `passwordFile`.
 - `adapter.rauthyGroupsOf users` → the distinct rauthy group names referenced.
 - `adapter.kanidmOAuth2System { originUrl, group, … }` → a generic
   `services.kanidm.provision.systems.oauth2.<name>` attrset (the federation
@@ -66,6 +71,8 @@ in {
     displayName = "Pink Raven";
     loginUrl = "https://raven.tartanoglu.com/login";          # emailed-link landing
     redirectUris = ["https://raven.tartanoglu.com/auth/callback"];
+    postLogoutRedirectUris = ["https://raven.tartanoglu.com/"];
+    allowedOrigins = ["https://raven.tartanoglu.com"];
     mailServerConfigured = true;                              # Rauthy SMTP via Stalwart
 
     users = {
@@ -152,6 +159,8 @@ ships the reusable surface and the eval-gated worked example
   the Rauthy/Stalwart journals, not the HTTP status.
 - **`passwordInitByEmail` on the kanidm backend.** Asserted against — kanidm has
   its own credential-reset path, not Rauthy's emailed flow. Use `kanidmLogin`.
+- **`passwordFromFile` on the kanidm backend.** Asserted against — the adapter
+  currently creates Kanidm persons but does not initialize primary credentials.
 - **Rauthy backend without importing `nixosModules.rauthy`.** The adapter writes
   `services.rauthy.provision.*`; those options must be declared (and provisioning
   enabled) by importing the rauthy module on the same host.

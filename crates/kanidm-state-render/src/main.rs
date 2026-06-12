@@ -523,10 +523,7 @@ mod tests {
 
         let json = serde_json::to_value(state).expect("serialize state");
         assert_eq!(json["groups"]["staff"]["present"], true);
-        assert_eq!(
-            json["groups"]["staff"]["members"],
-            serde_json::json!([])
-        );
+        assert_eq!(json["groups"]["staff"]["members"], serde_json::json!([]));
         assert!(json["groups"]["staff"].get("overwriteMembers").is_none());
         assert_eq!(json["persons"]["alice"]["enableUnix"], true);
         assert_eq!(json["persons"]["alice"]["gidNumber"], 1000);

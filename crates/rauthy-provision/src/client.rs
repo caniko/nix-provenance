@@ -144,6 +144,10 @@ pub struct ClientResponse {
     #[serde(default)]
     pub redirect_uris: Vec<String>,
     #[serde(default)]
+    pub post_logout_redirect_uris: Vec<String>,
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    #[serde(default)]
     pub scopes: Vec<String>,
     #[serde(default)]
     pub flows_enabled: Vec<String>,
@@ -267,6 +271,8 @@ pub struct UpdateUserRequest {
     pub groups: Option<Vec<String>>,
     pub enabled: bool,
     pub email_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_expires: Option<i64>,
 }
