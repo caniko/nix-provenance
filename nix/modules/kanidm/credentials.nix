@@ -37,7 +37,8 @@
   loadCredentials =
     ["idm-admin:${cfg.idmAdminPasswordFile}"]
     ++ lib.optional (cfg.adminPasswordFile != null) "admin:${cfg.adminPasswordFile}"
-    ++ lib.mapAttrsToList (name: acct: "posix-${name}:${acct.passwordFile}") cfg.posixAccounts;
+    ++ lib.mapAttrsToList (name: acct: "posix-${name}:${acct.passwordFile}") cfg.posixAccounts
+    ++ lib.mapAttrsToList (name: acct: "primary-${name}:${acct.primaryPasswordFile}") (lib.filterAttrs (_: acct: acct.primaryPasswordFile != null) cfg.posixAccounts);
 
   reconcile = pkgs.writeShellApplication {
     name = "kanidm-credentials-reconcile";
@@ -89,11 +90,30 @@
       # account that kanidm-provision has not posix-enabled yet — does not block
       # the others). The reconcile still exits non-zero if any failed.
       rc=0
+      marker_dir="$STATE_DIRECTORY/password-markers"
+      mkdir -p "$marker_dir"
       ${lib.concatMapStringsSep "\n" (name: ''
-          if ! idm set-posix-password ${lib.escapeShellArg name} --posix-from "$cred/posix-${name}" >/dev/null; then
-            echo "kanidm-credentials: failed to set POSIX password for ${name}" >&2
-            rc=1
-          fi
+          ${lib.optionalString (cfg.posixAccounts.${name}.primaryPasswordFile != null) ''
+            primary_hash="$(sha256sum "$cred/primary-${name}" | cut -d ' ' -f1)"
+            primary_marker="$marker_dir/primary-${builtins.substring 0 16 (builtins.hashString "sha256" name)}.sha256"
+            if [ ! -s "$primary_marker" ] || [ "$(cat "$primary_marker")" != "$primary_hash" ]; then
+              if idm provision ${lib.escapeShellArg name} --primary-from "$cred/primary-${name}" --posix-from "$cred/posix-${name}" >/dev/null; then
+                printf '%s\n' "$primary_hash" > "$primary_marker"
+              else
+                echo "kanidm-credentials: failed to provision primary/POSIX credentials for ${name}" >&2
+                rc=1
+              fi
+            elif ! idm set-posix-password ${lib.escapeShellArg name} --posix-from "$cred/posix-${name}" >/dev/null; then
+              echo "kanidm-credentials: failed to set POSIX password for ${name}" >&2
+              rc=1
+            fi
+          ''}
+          ${lib.optionalString (cfg.posixAccounts.${name}.primaryPasswordFile == null) ''
+            if ! idm set-posix-password ${lib.escapeShellArg name} --posix-from "$cred/posix-${name}" >/dev/null; then
+              echo "kanidm-credentials: failed to set POSIX password for ${name}" >&2
+              rc=1
+            fi
+          ''}
         '')
         posixNames}
       exit "$rc"
@@ -171,6 +191,15 @@ in {
         options.passwordFile = mkOption {
           type = types.path;
           description = "File whose contents become the account's POSIX password.";
+        };
+        options.primaryPasswordFile = mkOption {
+          type = types.nullOr types.path;
+          default = null;
+          description = ''
+            Optional file whose contents become the account's primary Kanidm
+            password via `identity-cli kanidm provision`. This also reasserts
+            passwordFile as the POSIX password in the same credential update.
+          '';
         };
       });
     };

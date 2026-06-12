@@ -13,7 +13,10 @@
     adminPasswordFile = "/run/agenix/admin";
     ldapUnixBind = true;
     posixAccounts = {
-      can.passwordFile = "/run/agenix/posix-can";
+      can = {
+        passwordFile = "/run/agenix/posix-can";
+        primaryPasswordFile = "/run/agenix/primary-can";
+      };
       noreply.passwordFile = "/run/agenix/posix-noreply";
     };
     serviceAccount = {

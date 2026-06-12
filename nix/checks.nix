@@ -329,8 +329,10 @@ in {
       test -x ${svc.serviceConfig.ExecStart}
       script=$(cat ${svc.serviceConfig.ExecStart})
       printf '%s' "$script" | grep -q 'set-ldap-unix-bind true'
-      printf '%s' "$script" | grep -q 'set-posix-password can'
+      printf '%s' "$script" | grep -q 'provision can --primary-from'
       printf '%s' "$script" | grep -q 'set-posix-password noreply'
+      printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/primary-can' \
+        || { echo "kanidm-credentials: primary password LoadCredential missing" >&2; exit 1; }
       printf '%s' "$script" | grep -q 'service-account create stalwart-ldap'
       printf '%s' "$script" | grep -q 'group-add-members idm_people_pii_read stalwart-ldap'
       printf '%s' "$script" | grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token'
