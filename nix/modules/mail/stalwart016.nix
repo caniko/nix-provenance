@@ -90,7 +90,7 @@
       pkgs.gnugrep
       cfg.package
       cfg.cliPackage
-    ];
+    ] ++ lib.optional cfg.provision.storeHealthCheck.enable pkgs.postgresql;
     text = ''
       set -euo pipefail
 
@@ -122,6 +122,35 @@
       ${lib.optionalString hasGeneratedPlan ''
         if ! grep -Fx "generated_plan=$generated_plan_file" "$registry_marker_file" >/dev/null 2>&1; then
           registry_pending=1
+        fi
+      ''}
+
+      ${lib.optionalString cfg.provision.storeHealthCheck.enable ''
+        # Store schema health check: before skipping recovery, verify the core
+        # data table exists.  If PostgreSQL was reinitialised (e.g. after a
+        # NixOS switch that changed the PG package), this catches the missing
+        # schema and forces a recovery-mode re-apply that recreates all tables.
+        # BindsTo=postgresql.service ensures Stalwart has already restarted
+        # when PG did, so the credential and connection ought to be fresh.
+        if [ "$migration_pending" != 1 ] && [ "$registry_pending" != 1 ]; then
+          probe_table=${lib.escapeShellArg cfg.provision.storeHealthCheck.probeTable}
+          pg_password_file="$CREDENTIALS_DIRECTORY/${postgres.passwordCredential}"
+          if [ -r "$pg_password_file" ] && [ -s "$pg_password_file" ]; then
+            export PGPASSWORD="$(cat "$pg_password_file")"
+            if ! ${pkgs.postgresql}/bin/psql \
+              -h ${postgres.host} -p ${toString postgres.port} \
+              -U ${postgres.username} -d ${postgres.database} \
+              -t -c "SELECT 1 FROM $probe_table LIMIT 1" \
+              >/dev/null 2>&1
+            then
+              echo "stalwart016: store health check failed (table '$probe_table' unreachable) — forcing recovery mode to recreate schema" >&2
+              rm -f "$registry_marker_file"
+              registry_pending=1
+            fi
+          else
+            echo "stalwart016: store health check skipped (PG credential not readable)" >&2
+          fi
+          unset PGPASSWORD
         fi
       ''}
 
@@ -517,6 +546,26 @@ in {
         description = "Pass --continue-on-error to stalwart-cli apply.";
       };
 
+      storeHealthCheck = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Before skipping recovery (both markers current), probe the PostgreSQL
+            store for a core table.  If the table is missing — for example after
+            a PostgreSQL data-directory reinitialisation that wiped the schema —
+            force a recovery-mode re-apply that recreates all tables.
+            Implies BindsTo=postgresql.service so Stalwart restarts when PG
+            restarts.
+          '';
+        };
+        probeTable = mkOption {
+          type = types.str;
+          default = "f";
+          description = "Core table name to probe in the store health check.";
+        };
+      };
+
       startupAttempts = mkOption {
         type = types.ints.positive;
         default = 120;
@@ -614,6 +663,7 @@ in {
       wantedBy = ["multi-user.target"];
       after = ["network.target"] ++ lib.optional postgres.createLocally "postgresql.target";
       wants = lib.optional postgres.createLocally "postgresql.target";
+      bindsTo = lib.optional postgres.createLocally "postgresql.service";
       environment.STALWART_HOSTNAME = cfg.hostname;
 
       serviceConfig = {
