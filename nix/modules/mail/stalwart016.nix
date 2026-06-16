@@ -136,7 +136,8 @@
           probe_table=${lib.escapeShellArg cfg.provision.storeHealthCheck.probeTable}
           pg_password_file="$CREDENTIALS_DIRECTORY/${postgres.passwordCredential}"
           if [ -r "$pg_password_file" ] && [ -s "$pg_password_file" ]; then
-            export PGPASSWORD="$(cat "$pg_password_file")"
+            pg_password="$(cat "$pg_password_file")"
+            export PGPASSWORD="$pg_password"
             if ! ${pkgs.postgresql}/bin/psql \
               -h ${postgres.host} -p ${toString postgres.port} \
               -U ${postgres.username} -d ${postgres.database} \
