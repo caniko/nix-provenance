@@ -52,8 +52,8 @@
     "rauthy-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1781630964,
-        "narHash": "sha256-gpWpjW6f4jrqhxJZamfy+Mhq+QB0rN4KMuU8wq6ErAA=",
+        "lastModified": 1781703031,
+        "narHash": "sha256-DH635GMArY0OgOVAQva0W1lSAKxWTauPYzayv0d1bMg=",
         "path": "/data/nvme0/can/Projects/rauthy-pr2",
         "type": "path"
       },
