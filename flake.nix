@@ -4,11 +4,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
+    rs-harbor = {
+      url = "git+https://codeberg.org/caniko/rs-harbor.git";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    crane.url = "github:ipetkov/crane";
+    # rust-overlay and crane are re-exported by rs-harbor; follow them through.
+    rust-overlay.follows = "rs-harbor/rust-overlay";
+    crane.follows = "rs-harbor/crane";
     rauthy-src = {
       # Canonical local consumer worktree for stacked PR2 validation. Keep this
       # path on the consumer-ready branch rather than a detached HEAD.
@@ -21,6 +23,7 @@
     self,
     nixpkgs,
     flake-utils,
+    rs-harbor,
     rust-overlay,
     crane,
     rauthy-src,
@@ -37,10 +40,13 @@
           ];
         };
         inherit (pkgs) lib;
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        toolchain = rs-harbor.lib.mkToolchain {
+          inherit pkgs;
+          channel = "stable";
           extensions = ["rustfmt" "clippy"];
+          crossTargets = [];
         };
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        inherit (toolchain) rustToolchain craneLib;
         src = craneLib.cleanCargoSource ./.;
 
         crates = import ./nix/packages.nix {
@@ -183,7 +189,7 @@
         });
       in
         {
-          inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision;
+          inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision stalwart016-provision;
           rauthy-vikunja-groups = rauthyVikunjaGroups;
         }
         // (import ./nix/overlays/stalwart-016.nix final _prev);
