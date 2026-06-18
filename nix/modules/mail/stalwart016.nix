@@ -11,6 +11,7 @@
 
   defaultPackage = lib.attrByPath ["packages" system "stalwart"] pkgs.stalwart self;
   defaultCliPackage = lib.attrByPath ["packages" system "stalwart-cli"] pkgs.stalwart-cli self;
+  defaultProvisionPackage = lib.attrByPath ["packages" system "stalwart016-provision"] pkgs.stalwart016-provision self;
 
   credentialPath = name: "/run/credentials/stalwart.service/${name}";
   postgres = cfg.datastore.postgresql;
@@ -31,6 +32,36 @@
     useTls = postgres.useTls;
     allowInvalidCerts = postgres.allowInvalidCerts;
     poolMaxConnections = postgres.poolMaxConnections;
+  };
+
+  # JSON config for the Rust provisioner binary (generated at eval time,
+  # stored in /nix/store).  Runtime credential paths are passed as separate
+  # CLI args so systemd's %d specifier can resolve them.
+  provisionConfig = json.generate "stalwart016-provision-config.json" {
+    migration_marker_file = cfg.provision.migrationMarkerFile;
+    registry_marker_file = cfg.provision.registryMarkerFile;
+    legacy_marker_file = cfg.provision.markerFile;
+    generated_plan_file = toString generatedPlanFile;
+    migration_apply_files = map toString migrationApplyFiles;
+    stalwart_binary = lib.getExe cfg.package;
+    stalwart_config = "/etc/stalwart016/config.json";
+    hostname = cfg.hostname;
+    stalwart_cli_binary = lib.getExe cfg.cliPackage;
+    recovery_url = cfg.provision.recoveryUrl;
+    recovery_admin_username = cfg.recoveryAdmin.username;
+    startup_attempts = cfg.provision.startupAttempts;
+    startup_interval_secs = cfg.provision.startupInterval;
+    query_output_dir = "/var/lib/stalwart016";
+    query_objects = cfg.provision.queryObjects;
+    continue_on_error = cfg.provision.continueOnError;
+    require_verified_backup_sentinel = cfg.provision.requireVerifiedBackupSentinel;
+    store_health_check = cfg.provision.storeHealthCheck.enable;
+    probe_table = cfg.provision.storeHealthCheck.probeTable;
+    psql_binary = if cfg.provision.storeHealthCheck.enable then (lib.getExe pkgs.postgresql) else null;
+    pg_host = postgres.host;
+    pg_port = postgres.port;
+    pg_user = postgres.username;
+    pg_database = postgres.database;
   };
 
   enabledListeners =
@@ -62,8 +93,6 @@
     pkgs.writeText "stalwart016-apply.ndjson"
     (lib.concatMapStrings (op: builtins.toJSON op + "\n") generatedPlan);
   migrationApplyFiles = cfg.provision.migrationApplyFiles ++ cfg.provision.applyFiles;
-  registryApplyFiles = lib.optional (generatedPlan != []) generatedPlanFile;
-  hasGeneratedPlan = generatedPlan != [];
 
   # Runtime (non-store) apply inputs — e.g. a live migrate_v016.py export — must be
   # readable from inside the service sandbox. The unit runs with PrivateTmp +
@@ -83,192 +112,6 @@
     ++ lib.optional cfg.provision.enable "${cfg.recoveryAdmin.passwordCredential}:${cfg.recoveryAdmin.passwordFile}"
     ++ lib.mapAttrsToList (name: path: "${name}:${path}") cfg.credentials;
 
-  provisionScript = pkgs.writeShellApplication {
-    name = "stalwart016-provision";
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.gnugrep
-      cfg.package
-      cfg.cliPackage
-    ] ++ lib.optional cfg.provision.storeHealthCheck.enable pkgs.postgresql;
-    text = ''
-      set -euo pipefail
-
-      migration_marker_file=${lib.escapeShellArg cfg.provision.migrationMarkerFile}
-      registry_marker_file=${lib.escapeShellArg cfg.provision.registryMarkerFile}
-      legacy_marker_file=${lib.escapeShellArg cfg.provision.markerFile}
-      generated_plan_file=${lib.escapeShellArg (toString generatedPlanFile)}
-
-      mkdir -p "$(dirname "$migration_marker_file")" "$(dirname "$registry_marker_file")"
-
-      # Older module revisions used one global marker. Treat it as proof that any
-      # non-idempotent migration inputs already ran, but do not let it suppress a
-      # changed registry plan.
-      if [ -e "$legacy_marker_file" ] && [ ! -e "$migration_marker_file" ]; then
-        {
-          printf 'completed_at=%s\n' "$(date -Is)"
-          printf 'legacy_marker=%s\n' "$legacy_marker_file"
-        } > "$migration_marker_file"
-      fi
-
-      migration_pending=0
-      ${lib.optionalString (migrationApplyFiles != []) ''
-        if [ ! -e "$migration_marker_file" ]; then
-          migration_pending=1
-        fi
-      ''}
-
-      registry_pending=0
-      ${lib.optionalString hasGeneratedPlan ''
-        if ! grep -Fx "generated_plan=$generated_plan_file" "$registry_marker_file" >/dev/null 2>&1; then
-          registry_pending=1
-        fi
-      ''}
-
-      ${lib.optionalString cfg.provision.storeHealthCheck.enable ''
-        # Store schema health check: before skipping recovery, verify the core
-        # data table exists.  If PostgreSQL was reinitialised (e.g. after a
-        # NixOS switch that changed the PG package), this catches the missing
-        # schema and forces a recovery-mode re-apply that recreates all tables.
-        # BindsTo=postgresql.service ensures Stalwart has already restarted
-        # when PG did, so the credential and connection ought to be fresh.
-        if [ "$migration_pending" != 1 ] && [ "$registry_pending" != 1 ]; then
-          probe_table=${lib.escapeShellArg cfg.provision.storeHealthCheck.probeTable}
-          pg_password_file="$CREDENTIALS_DIRECTORY/${postgres.passwordCredential}"
-          if [ -r "$pg_password_file" ] && [ -s "$pg_password_file" ]; then
-            pg_password="$(cat "$pg_password_file")"
-            export PGPASSWORD="$pg_password"
-            if ! ${pkgs.postgresql}/bin/psql \
-              -h ${postgres.host} -p ${toString postgres.port} \
-              -U ${postgres.username} -d ${postgres.database} \
-              -t -c "SELECT 1 FROM $probe_table LIMIT 1" \
-              >/dev/null 2>&1
-            then
-              echo "stalwart016: store health check failed (table '$probe_table' unreachable) — forcing recovery mode to recreate schema" >&2
-              rm -f "$registry_marker_file"
-              registry_pending=1
-            fi
-          else
-            echo "stalwart016: store health check skipped (PG credential not readable)" >&2
-          fi
-          unset PGPASSWORD
-        fi
-      ''}
-
-      if [ "$migration_pending" != 1 ] && [ "$registry_pending" != 1 ]; then
-        echo "stalwart016: migration and registry provisioning already current; skipping recovery apply"
-        exit 0
-      fi
-
-      ${lib.optionalString (cfg.provision.requireVerifiedBackupSentinel != null) ''
-        # Irreversible-step gate: recovery mode is the first 0.16 touch of the datastore;
-        # after it the 0.15.x binary can no longer read the DB. Refuse without a verified
-        # 0.15 backup (the migration backup.sh writes this sentinel only after a passing
-        # verify-restore). This makes the "R2 floor" a hard precondition, not procedural.
-        if [ ! -s ${lib.escapeShellArg cfg.provision.requireVerifiedBackupSentinel} ]; then
-          echo "stalwart016: REFUSING recovery-mode provisioning — no verified-backup sentinel at ${cfg.provision.requireVerifiedBackupSentinel}" >&2
-          echo "stalwart016: run the migration backup.sh before the 0.16 cutover." >&2
-          exit 1
-        fi
-      ''}
-      recovery_password_file="$CREDENTIALS_DIRECTORY/${cfg.recoveryAdmin.passwordCredential}"
-      if [ ! -s "$recovery_password_file" ]; then
-        echo "stalwart016: recovery admin password credential is missing or empty" >&2
-        exit 1
-      fi
-
-      recovery_password="$(tr -d '\n' < "$recovery_password_file")"
-      export HOME=/var/lib/stalwart016
-      export XDG_CONFIG_HOME=/var/lib/stalwart016/.config
-      mkdir -p "$XDG_CONFIG_HOME"
-
-      if timeout 1 ${pkgs.bash}/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080' >/dev/null 2>&1; then
-        echo "stalwart016: refusing to start recovery mode because 127.0.0.1:8080 is already listening" >&2
-        echo "stalwart016: stop the conflicting service before provisioning; on thething this is usually rauthy.service" >&2
-        exit 1
-      fi
-
-      export STALWART_RECOVERY_MODE=1
-      export STALWART_RECOVERY_ADMIN="${lib.escapeShellArg cfg.recoveryAdmin.username}:$recovery_password"
-      export STALWART_HOSTNAME=${lib.escapeShellArg cfg.hostname}
-
-      ${lib.getExe cfg.package} --config /etc/stalwart016/config.json &
-      recovery_pid="$!"
-
-      cleanup() {
-        kill "$recovery_pid" 2>/dev/null || true
-        wait "$recovery_pid" 2>/dev/null || true
-      }
-      trap cleanup EXIT
-
-      ready=0
-      for _ in $(seq 1 ${toString cfg.provision.startupAttempts}); do
-        if STALWART_URL=${lib.escapeShellArg cfg.provision.recoveryUrl} \
-          STALWART_USER=${lib.escapeShellArg cfg.recoveryAdmin.username} \
-          STALWART_PASSWORD="$recovery_password" \
-          ${lib.getExe cfg.cliPackage} query ${lib.escapeShellArg cfg.provision.recoveryProbeObject} --json > /var/lib/stalwart016/recovery-probe.json 2>/dev/null; then
-          ready=1
-          break
-        fi
-        sleep ${lib.escapeShellArg cfg.provision.startupInterval}
-      done
-
-      if [ "$ready" != 1 ]; then
-        echo "stalwart016: recovery listener did not become ready at ${cfg.provision.recoveryUrl}" >&2
-        exit 1
-      fi
-
-      apply_document() {
-        apply_file="$1"
-        # Fail with the offending PATH (stalwart-cli's own "No such file or
-        # directory (os error 2)" names no file). Runtime inputs hidden by the
-        # sandbox (PrivateTmp/ProtectHome/ProtectSystem) surface here too.
-        if [ ! -r "$apply_file" ]; then
-          echo "stalwart016: apply input not readable inside the service sandbox: $apply_file" >&2
-          echo "stalwart016: the unit runs with PrivateTmp + ProtectHome + ProtectSystem=strict, so host /tmp, /var/tmp and /home are NOT visible. Stage migration inputs under a sandbox-visible directory (e.g. /var/lib/stalwart016-migration); the module binds migration/apply file parent dirs read-only, but the dir must exist at activation." >&2
-          exit 1
-        fi
-        STALWART_URL=${lib.escapeShellArg cfg.provision.recoveryUrl} \
-        STALWART_USER=${lib.escapeShellArg cfg.recoveryAdmin.username} \
-        STALWART_PASSWORD="$recovery_password" \
-        ${lib.getExe cfg.cliPackage} apply --no-color ${lib.optionalString cfg.provision.continueOnError "--continue-on-error"} --file "$apply_file"
-      }
-
-      if [ "$migration_pending" = 1 ]; then
-        ${lib.concatMapStringsSep "\n" (file: ''
-          apply_document ${lib.escapeShellArg (toString file)}
-        '')
-        migrationApplyFiles}
-        {
-          printf 'completed_at=%s\n' "$(date -Is)"
-          printf 'migration_files=%s\n' ${lib.escapeShellArg (lib.concatStringsSep " " (map toString migrationApplyFiles))}
-        } > "$migration_marker_file"
-      else
-        echo "stalwart016: migration apply already completed ($migration_marker_file exists); skipping migration inputs"
-      fi
-
-      if [ "$registry_pending" = 1 ]; then
-        ${lib.concatMapStringsSep "\n" (file: ''
-          apply_document ${lib.escapeShellArg (toString file)}
-        '')
-        registryApplyFiles}
-        {
-          printf 'completed_at=%s\n' "$(date -Is)"
-          printf 'generated_plan=%s\n' "$generated_plan_file"
-        } > "$registry_marker_file"
-      else
-        echo "stalwart016: generated registry plan already current; skipping registry apply"
-      fi
-
-      ${lib.concatMapStringsSep "\n" (object: ''
-          STALWART_URL=${lib.escapeShellArg cfg.provision.recoveryUrl} \
-          STALWART_USER=${lib.escapeShellArg cfg.recoveryAdmin.username} \
-          STALWART_PASSWORD="$recovery_password" \
-          ${lib.getExe cfg.cliPackage} query ${lib.escapeShellArg object} --json > /var/lib/stalwart016/query-${object}.json
-        '')
-        cfg.provision.queryObjects}
-    '';
-  };
 in {
   options.services.stalwart016 = {
     enable = mkEnableOption "Stalwart 0.16 JSON-bootstrap service";
@@ -285,6 +128,13 @@ in {
       default = defaultCliPackage;
       defaultText = "self.packages.\${system}.stalwart-cli";
       description = "stalwart-cli package used for headless registry provisioning.";
+    };
+
+    provisionPackage = mkOption {
+      type = types.package;
+      default = defaultProvisionPackage;
+      defaultText = "self.packages.\${system}.stalwart016-provision";
+      description = "stalwart016-provision binary for recovery-mode provisioning.";
     };
 
     hostname = mkOption {
@@ -674,7 +524,12 @@ in {
         StateDirectory = "stalwart016";
         WorkingDirectory = "/var/lib/stalwart016";
         LoadCredential = loadCredentials;
-        ExecStartPre = lib.optional cfg.provision.enable (lib.getExe provisionScript);
+        ExecStartPre = lib.optional cfg.provision.enable
+          (let
+            pwFlag = "--recovery-password-file %d/${cfg.recoveryAdmin.passwordCredential}";
+            healthCheckFlag = lib.optionalString cfg.provision.storeHealthCheck.enable
+              "--pg-password-file %d/${postgres.passwordCredential}";
+          in "${lib.getExe cfg.provisionPackage} --config ${provisionConfig} ${pwFlag} ${healthCheckFlag}");
         ExecStart = "${lib.getExe cfg.package} --config /etc/stalwart016/config.json";
         Restart = "on-failure";
         RestartSec = "5s";

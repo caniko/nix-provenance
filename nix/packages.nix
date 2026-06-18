@@ -19,12 +19,26 @@
     doCheck = false;
   };
 
+  # Like mkArgs but with an explicit version (avoids crateNameFromCargoToml
+  # path resolution issues when the Cargo.toml is not at the workspace root).
+  buildArgs = pname: ver: {
+    inherit src;
+    pname = pname;
+    version = ver;
+    strictDeps = true;
+    cargoExtraArgs = "-p ${pname}";
+    doCheck = false;
+  };
+
   immichArgs = mkArgs "immich-provision";
   kanidmStateRenderArgs = mkArgs "kanidm-state-render";
   rauthyArgs = mkArgs "rauthy-provision";
   rauthyStateRenderArgs = mkArgs "rauthy-state-render";
   vikunjaArgs = mkArgs "vikunja-provision";
   identityArgs = mkArgs "identity-cli";
+  # stalwart016-provision uses explicit version because crateNameFromCargoToml
+  # may not resolve the cargoToml path across evaluation contexts.
+  stalwartProvisionArgs = buildArgs "stalwart016-provision" "0.1.0";
 
   immichDeps = craneLib.buildDepsOnly immichArgs;
   kanidmStateRenderDeps = craneLib.buildDepsOnly kanidmStateRenderArgs;
@@ -32,6 +46,7 @@
   rauthyStateRenderDeps = craneLib.buildDepsOnly rauthyStateRenderArgs;
   vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
+  stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
 in {
   args = {
     immich-provision = immichArgs;
@@ -40,6 +55,7 @@ in {
     rauthy-state-render = rauthyStateRenderArgs;
     vikunja-provision = vikunjaArgs;
     identity-cli = identityArgs;
+    stalwart016-provision = stalwartProvisionArgs;
   };
 
   cargoArtifacts = {
@@ -49,6 +65,7 @@ in {
     rauthy-state-render = rauthyStateRenderDeps;
     vikunja-provision = vikunjaDeps;
     identity-cli = identityDeps;
+    stalwart016-provision = stalwartProvisionDeps;
   };
 
   packages = {
@@ -108,6 +125,16 @@ in {
         meta = {
           description = "Declarative provisioning client for Vikunja teams and memberships";
           mainProgram = "vikunja-provision";
+          license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    stalwart016-provision = craneLib.buildPackage (stalwartProvisionArgs
+      // {
+        cargoArtifacts = stalwartProvisionDeps;
+        meta = {
+          description = "Recovery-mode provisioner for Stalwart Mail Server 0.16";
+          mainProgram = "stalwart016-provision";
           license = with lib.licenses; [mit asl20];
         };
       });

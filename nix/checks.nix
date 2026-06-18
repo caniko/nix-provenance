@@ -56,6 +56,7 @@ in {
   vikunja-provision = packages.vikunja-provision;
   stalwart = packages.stalwart;
   stalwart-cli = packages.stalwart-cli;
+  stalwart016-provision = packages.stalwart016-provision;
   docs = docs;
   site = docs;
 
@@ -66,6 +67,7 @@ in {
   rauthy-state-render-clippy = mkClippy "rauthy-state-render";
   rauthy-clippy = mkClippy "rauthy-provision";
   vikunja-clippy = mkClippy "vikunja-provision";
+  stalwart016-provision-clippy = mkClippy "stalwart016-provision";
 
   # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
   identity-test = craneLib.cargoTest (
@@ -87,6 +89,14 @@ in {
     args.vikunja-provision
     // {
       cargoArtifacts = cargoArtifacts.vikunja-provision;
+      doCheck = true;
+    }
+  );
+
+  stalwart016-provision-test = craneLib.cargoTest (
+    args.stalwart016-provision
+    // {
+      cargoArtifacts = cargoArtifacts.stalwart016-provision;
       doCheck = true;
     }
   );
