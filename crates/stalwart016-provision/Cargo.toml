@@ -1,0 +1,34 @@
+[package]
+name = "stalwart016-provision"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Recovery-mode provisioner for Stalwart Mail Server 0.16"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+authors.workspace = true
+keywords = ["stalwart", "mail", "provisioning", "nixos"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "stalwart016-provision"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+provenance-core = { path = "../provenance-core" }
+# Phantom dependency: ensures reqwest TLS features unify with provenance-core's
+# http module. Without a TLS feature, `danger_accept_invalid_certs` fails to
+# compile. This crate does NOT speak HTTP directly — TLS choice is arbitrary.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
