@@ -243,8 +243,14 @@ fn main() -> Result<()> {
                 health::StoreHealth::Ok => {}
                 health::StoreHealth::Unreachable => {
                     eprintln!(
+                        "stalwart016-provision: store health check skipped \
+                         (PostgreSQL unreachable — may be restarting)"
+                    );
+                }
+                health::StoreHealth::TableMissing => {
+                    eprintln!(
                         "stalwart016-provision: store health check failed (table '{}' \
-                         unreachable) — forcing recovery mode",
+                         missing) — forcing recovery mode",
                         cfg.probe_table
                     );
                     let _ = fs::remove_file(&cfg.registry_marker);

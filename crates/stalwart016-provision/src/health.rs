@@ -4,6 +4,11 @@
 //! datastore is reachable and the schema exists. Used as a safety net when
 //! both marker files claim "current" — catches a silently-wiped PostgreSQL
 //! data directory (e.g., after a NixOS switch that reinitialised PG).
+//!
+//! The probe is two-phase: first a bare `SELECT 1` to establish PG is
+//! reachable, then `SELECT 1 FROM <table> LIMIT 1` to verify the schema.
+//! A connection failure in phase 1 is treated as transient (PG may be
+//! restarting); only a phase-2 miss triggers recovery mode.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -15,17 +20,26 @@ use anyhow::{Context, Result};
 pub enum StoreHealth {
     /// Store is reachable and the probe table exists.
     Ok,
-    /// The probe failed — table missing or connection refused.
+    /// PostgreSQL is unreachable (connection refused, auth failure,
+    /// timeout).  The caller should skip the health check — this is
+    /// likely transient and does not mean the schema is gone.
     Unreachable,
+    /// PostgreSQL is reachable but the probe table is missing from the
+    /// database.  The schema needs to be re-created in recovery mode.
+    TableMissing,
     /// The PG password credential file is unreadable or empty.
     CredentialUnreadable,
 }
 
 /// Probe a PostgreSQL table to verify the Stalwart store is healthy.
 ///
-/// Runs `psql -t -c "SELECT 1 FROM <probe_table> LIMIT 1"` against the
-/// configured PostgreSQL instance. Returns `StoreHealth::Unreachable` on
-/// any failure (table missing, connection refused, auth failure).
+/// Phase 1: run `SELECT 1` (bare, no table reference).  If this
+/// fails, PostgreSQL is unreachable — return `Unreachable` so the
+/// caller can skip.
+///
+/// Phase 2: run `SELECT 1 FROM <probe_table> LIMIT 1`.  If this
+/// fails (PG was reachable in phase 1 so the connection works), the
+/// probe table is missing — return `TableMissing`.
 pub fn probe_store(
     psql_binary: &Path,
     host: &str,
@@ -53,6 +67,31 @@ pub fn probe_store(
         return Ok(StoreHealth::CredentialUnreadable);
     }
 
+    // Phase 1: bare connectivity probe (no table reference).
+    let connect_ok = Command::new(psql_binary)
+        .arg("-h")
+        .arg(host)
+        .arg("-p")
+        .arg(port.to_string())
+        .arg("-U")
+        .arg(user)
+        .arg("-d")
+        .arg(database)
+        .arg("-t")
+        .arg("-c")
+        .arg("SELECT 1")
+        .env("PGPASSWORD", password)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("running psql connectivity probe")?
+        .success();
+
+    if !connect_ok {
+        return Ok(StoreHealth::Unreachable);
+    }
+
+    // Phase 2: table probe.
     let query = format!("SELECT 1 FROM {probe_table} LIMIT 1");
     let status = Command::new(psql_binary)
         .arg("-h")
@@ -70,11 +109,11 @@ pub fn probe_store(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .context(format!("running psql probe: {query}"))?;
+        .context(format!("running psql table probe: {query}"))?;
 
     if status.success() {
         Ok(StoreHealth::Ok)
     } else {
-        Ok(StoreHealth::Unreachable)
+        Ok(StoreHealth::TableMissing)
     }
 }

@@ -517,7 +517,10 @@ in {
       after = ["network.target"] ++ lib.optional postgres.createLocally "postgresql.target";
       wants = lib.optional postgres.createLocally "postgresql.target";
       bindsTo = lib.optional postgres.createLocally "postgresql.service";
-      environment.STALWART_HOSTNAME = cfg.hostname;
+      environment = {
+        STALWART_HOSTNAME = cfg.hostname;
+        HOME = "/var/lib/stalwart016";
+      };
 
       serviceConfig = {
         Type = "simple";
