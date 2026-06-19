@@ -154,14 +154,18 @@
     "rauthy-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1781719729,
-        "narHash": "sha256-tzB3nNSzyn3d0aEe9+IrxOalHBp/2UK3+hciiM0PPzU=",
-        "path": "/data/nvme0/can/Projects/rauthy-pr2",
-        "type": "path"
+        "lastModified": 1781876692,
+        "narHash": "sha256-5rtmZr39eA9+z/8LbpauhNylFHw//QW0IShGniTInG8=",
+        "ref": "feat/pr-b-api-key-generated",
+        "rev": "aa117c26d60acc7b31f0b75fb2a3e69664022c69",
+        "revCount": 3177,
+        "type": "git",
+        "url": "https://github.com/caniko/rauthy"
       },
       "original": {
-        "path": "/data/nvme0/can/Projects/rauthy-pr2",
-        "type": "path"
+        "ref": "feat/pr-b-api-key-generated",
+        "type": "git",
+        "url": "https://github.com/caniko/rauthy"
       }
     },
     "root": {

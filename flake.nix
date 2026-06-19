@@ -12,9 +12,8 @@
     rust-overlay.follows = "rs-harbor/rust-overlay";
     crane.follows = "rs-harbor/crane";
     rauthy-src = {
-      # Canonical local consumer worktree for stacked PR2 validation. Keep this
-      # path on the consumer-ready branch rather than a detached HEAD.
-      url = "path:/data/nvme0/can/Projects/rauthy-pr2";
+      # PR2 review-fix branch: feat(bootstrap) generated API key tokens
+      url = "git+https://github.com/caniko/rauthy?ref=feat/pr-b-api-key-generated";
       flake = false;
     };
   };
