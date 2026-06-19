@@ -57,7 +57,10 @@
     require_verified_backup_sentinel = cfg.provision.requireVerifiedBackupSentinel;
     store_health_check = cfg.provision.storeHealthCheck.enable;
     probe_table = cfg.provision.storeHealthCheck.probeTable;
-    psql_binary = if cfg.provision.storeHealthCheck.enable then (lib.getExe pkgs.postgresql) else null;
+    psql_binary =
+      if cfg.provision.storeHealthCheck.enable
+      then (lib.getExe' pkgs.postgresql "psql")
+      else null;
     pg_host = postgres.host;
     pg_port = postgres.port;
     pg_user = postgres.username;
@@ -111,7 +114,6 @@
     lib.optional (postgres.passwordFile != null) "${postgres.passwordCredential}:${postgres.passwordFile}"
     ++ lib.optional cfg.provision.enable "${cfg.recoveryAdmin.passwordCredential}:${cfg.recoveryAdmin.passwordFile}"
     ++ lib.mapAttrsToList (name: path: "${name}:${path}") cfg.credentials;
-
 in {
   options.services.stalwart016 = {
     enable = mkEnableOption "Stalwart 0.16 JSON-bootstrap service";
@@ -524,10 +526,12 @@ in {
         StateDirectory = "stalwart016";
         WorkingDirectory = "/var/lib/stalwart016";
         LoadCredential = loadCredentials;
-        ExecStartPre = lib.optional cfg.provision.enable
+        ExecStartPre =
+          lib.optional cfg.provision.enable
           (let
             pwFlag = "--recovery-password-file %d/${cfg.recoveryAdmin.passwordCredential}";
-            healthCheckFlag = lib.optionalString cfg.provision.storeHealthCheck.enable
+            healthCheckFlag =
+              lib.optionalString cfg.provision.storeHealthCheck.enable
               "--pg-password-file %d/${postgres.passwordCredential}";
           in "${lib.getExe cfg.provisionPackage} --config ${provisionConfig} ${pwFlag} ${healthCheckFlag}");
         ExecStart = "${lib.getExe cfg.package} --config /etc/stalwart016/config.json";
