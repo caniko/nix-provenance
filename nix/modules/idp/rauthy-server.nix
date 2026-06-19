@@ -163,7 +163,7 @@ in {
           PG_TLS = "disable";
           PG_PASSWORD = "";
         })
-        (lib.mkIf (cfg.smtp.rootCA != null) {SMTP_ROOT_CA = "${cfg.smtp.rootCA}";})
+        (lib.mkIf (cfg.smtp.rootCA != null) {SMTP_ROOT_CA = builtins.readFile cfg.smtp.rootCA;})
         (lib.mkIf cfg.smtp.starttlsOnly {SMTP_STARTTLS_ONLY = "true";})
       ];
       serviceConfig = {
