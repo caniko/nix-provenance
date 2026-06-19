@@ -91,6 +91,31 @@ in {
         Whether to use PostgreSQL instead of Hiqlite.
       '';
     };
+
+    smtp = {
+      rootCA = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          Path to a PEM CA certificate for SMTP TLS validation.
+          When set, rAuthy uses only this certificate (not the bundled
+          webpki-roots store) to validate the SMTP server's TLS
+          certificate chain.
+
+          This is typically the root CA that issued the mail server's
+          certificate — for example the Let's Encrypt ISRG Root X1.
+        '';
+      };
+
+      starttlsOnly = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Only connect to the SMTP server via STARTTLS.
+          Maps to rauthy's `SMTP_STARTTLS_ONLY` environment variable.
+        '';
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -138,6 +163,8 @@ in {
           PG_TLS = "disable";
           PG_PASSWORD = "";
         })
+        (lib.mkIf (cfg.smtp.rootCA != null) {SMTP_ROOT_CA = "${cfg.smtp.rootCA}";})
+        (lib.mkIf cfg.smtp.starttlsOnly {SMTP_STARTTLS_ONLY = "true";})
       ];
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} serve --config-file ${settings}";
