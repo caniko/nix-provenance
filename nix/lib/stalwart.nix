@@ -94,4 +94,25 @@ in {
       tokenFile
       ;
   };
+
+  # Emit a Domain.dkimManagement block for the registry apply format.
+  # When set on a Domain along with dnsManagement=Automatic and
+  # certificateManagement=Automatic, stalwart auto-generates and rotates
+  # DKIM keys (publishing the public half to DNS via the DnsServer).
+  #
+  # Selectors follow the template; do not depend on the template-produced
+  # name staying stable across restarts — it is a regeneration gate, not a
+  # permanent identity.  The DNS TXT records must carry whichever selectors
+  # stalwart actually created.
+  mkDkimManagement = {
+    algorithms ? ["Dkim1Ed25519Sha256" "Dkim1RsaSha256"],
+    selectorTemplate ? "v<version>-<type>-<date>",
+    rotateAfter ? "P90D",
+    retireAfter ? "P7D",
+    deleteAfter ? "P14D",
+  }: {
+    "@type" = "Automatic";
+    algorithms = toSet algorithms;
+    inherit selectorTemplate rotateAfter retireAfter deleteAfter;
+  };
 }
