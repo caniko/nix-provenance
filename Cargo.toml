@@ -14,8 +14,8 @@ members = [
 # Shared package metadata. `version` is intentionally NOT inherited — each crate
 # versions and tags independently (immich-provision-vX / rauthy-provision-vX).
 [workspace.package]
-edition = "2021"
-rust-version = "1.82"
+edition = "2024"
+rust-version = "1.95"
 repository = "https://codeberg.org/caniko/nix-provenance"
 authors = ["Can H. Tartanoglu <gpg@rotas.mozmail.com>"]
 

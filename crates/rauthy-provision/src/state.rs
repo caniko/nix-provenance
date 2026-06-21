@@ -351,9 +351,11 @@ mod tests {
         assert_eq!(user.country, Some(Some("Norway".to_string())));
         assert_eq!(user.phone, Some(Some("+4712345678".to_string())));
         assert_eq!(user.user_expires, Some(1893456000));
-        assert!(s.users["a@example.com"]
-            .attributes
-            .contains_key("vikunja_groups"));
+        assert!(
+            s.users["a@example.com"]
+                .attributes
+                .contains_key("vikunja_groups")
+        );
     }
 
     #[test]

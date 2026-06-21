@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::recovery::{apply_document, ApplyResult};
+use crate::recovery::{ApplyResult, apply_document};
 
 /// Structured result of applying a plan document.
 #[derive(Debug, Default)]
@@ -30,11 +30,15 @@ pub fn apply_plan(
     plan_file: &Path,
     continue_on_error: bool,
 ) -> Result<PlanResult> {
-    let result = apply_document(cli_binary, url, username, password, plan_file, continue_on_error)
-        .context(format!(
-            "applying plan from {}",
-            plan_file.display()
-        ))?;
+    let result = apply_document(
+        cli_binary,
+        url,
+        username,
+        password,
+        plan_file,
+        continue_on_error,
+    )
+    .context(format!("applying plan from {}", plan_file.display()))?;
 
     Ok(parse_apply_output(&result))
 }
@@ -89,10 +93,12 @@ fn parse_apply_output(result: &ApplyResult) -> PlanResult {
             }
 
             // Parse "(N failed)" at the end
-            if let Some(failed_part) = done.strip_suffix(')').and_then(|s| s.rfind('(').map(|i| &s[i + 1..])) {
-                if let Some(n) = parse_count_pair(failed_part, "failed") {
-                    plan.failed = n;
-                }
+            if let Some(failed_part) = done
+                .strip_suffix(')')
+                .and_then(|s| s.rfind('(').map(|i| &s[i + 1..]))
+                && let Some(n) = parse_count_pair(failed_part, "failed")
+            {
+                plan.failed = n;
             }
         }
     }
@@ -117,7 +123,11 @@ fn parse_count_pair(s: &str, word: &str) -> Option<usize> {
 /// Extract a trailing parenthesized count like "(4)" from a line.
 fn parse_count(line: &str) -> usize {
     line.rfind('(')
-        .and_then(|start| line[start + 1..].find(')').map(|end| &line[start + 1..start + 1 + end]))
+        .and_then(|start| {
+            line[start + 1..]
+                .find(')')
+                .map(|end| &line[start + 1..start + 1 + end])
+        })
         .and_then(|s| s.parse().ok())
         .unwrap_or(1)
 }

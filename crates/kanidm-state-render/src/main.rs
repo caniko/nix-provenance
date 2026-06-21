@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
@@ -194,12 +194,12 @@ impl PersonInput {
         if self.enable_unix && self.gid_number.is_none() {
             errors.push(format!("person '{name}' has enableUnix but no gidNumber"));
         }
-        if let Some(shell) = &self.login_shell {
-            if !shell.starts_with('/') {
-                errors.push(format!(
-                    "person '{name}' loginShell must be an absolute path"
-                ));
-            }
+        if let Some(shell) = &self.login_shell
+            && !shell.starts_with('/')
+        {
+            errors.push(format!(
+                "person '{name}' loginShell must be an absolute path"
+            ));
         }
     }
 }
@@ -532,13 +532,15 @@ mod tests {
             "/run/secrets/internal-tool"
         );
         assert_eq!(
-            json["systems"]["oauth2"]["internal-tool"]["claimMaps"]["roles"]["valuesByGroup"]
-                ["staff"][0],
+            json["systems"]["oauth2"]["internal-tool"]["claimMaps"]["roles"]["valuesByGroup"]["staff"]
+                [0],
             "admin"
         );
-        assert!(json["systems"]["oauth2"]["internal-tool"]
-            .get("removeOrphanedClaimMaps")
-            .is_none());
+        assert!(
+            json["systems"]["oauth2"]["internal-tool"]
+                .get("removeOrphanedClaimMaps")
+                .is_none()
+        );
         assert_eq!(json["systems"]["oauth2"]["native-app"]["public"], true);
     }
 

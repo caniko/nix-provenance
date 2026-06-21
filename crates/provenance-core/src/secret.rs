@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 
 /// Resolve a secret, preferring `file` over `inline`, trimming surrounding
 /// whitespace and rejecting empties. `what` names the secret in error messages;

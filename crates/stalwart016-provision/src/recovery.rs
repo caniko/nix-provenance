@@ -11,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::error::ProvisionError;
 
@@ -72,7 +72,7 @@ impl RecoveryServer {
         max_attempts: u32,
         interval: Duration,
     ) -> Result<()> {
-    for attempt in 1..=max_attempts {
+        for attempt in 1..=max_attempts {
             let result = Command::new(cli_binary)
                 .arg("query")
                 .arg(probe_object)
@@ -167,10 +167,7 @@ pub fn apply_document(
     }
 
     let mut cmd = Command::new(cli_binary);
-    cmd.arg("apply")
-        .arg("--no-color")
-        .arg("--file")
-        .arg(file);
+    cmd.arg("apply").arg("--no-color").arg("--file").arg(file);
     if continue_on_error {
         cmd.arg("--continue-on-error");
     }

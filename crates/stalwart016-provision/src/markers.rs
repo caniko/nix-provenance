@@ -164,8 +164,11 @@ fn atomic_write(tmp_path: &Path, dest_path: &Path, data: &[u8]) -> Result<()> {
     file.sync_all()
         .context(format!("fsyncing temp file {}", tmp_path.display()))?;
 
-    fs::rename(tmp_path, dest_path)
-        .context(format!("renaming {} -> {}", tmp_path.display(), dest_path.display()))?;
+    fs::rename(tmp_path, dest_path).context(format!(
+        "renaming {} -> {}",
+        tmp_path.display(),
+        dest_path.display()
+    ))?;
 
     // Re-verify mode after rename (rename preserves source mode on Linux,
     // but verify defensively).
@@ -228,8 +231,16 @@ mod tests {
     #[test]
     fn test_marker_missing_returns_none() {
         let dir = tempdir().unwrap();
-        assert!(read_migration_marker(&dir.path().join("nope")).unwrap().is_none());
-        assert!(read_registry_marker(&dir.path().join("nope")).unwrap().is_none());
+        assert!(
+            read_migration_marker(&dir.path().join("nope"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            read_registry_marker(&dir.path().join("nope"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

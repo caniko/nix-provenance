@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 
 /// Subset of the rauthy-provision state schema we need: the users map (keyed by

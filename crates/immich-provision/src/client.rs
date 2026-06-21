@@ -2,10 +2,10 @@ use std::fmt;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::blocking::{Client, RequestBuilder};
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 #[derive(Clone)]
 pub struct ImmichClient {

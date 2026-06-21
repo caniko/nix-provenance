@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use rauthy_provision::state::{
     ClientSpec, GroupSpec, ProviderSpec, RoleSpec, ScopeSpec, State, UserAttributeSpec, UserSpec,
@@ -259,10 +259,10 @@ impl UserInput {
                 "user '{email}' cannot set both sendPasswordEmail and passwordFile"
             ));
         }
-        if let Some(expires) = self.user_expires {
-            if expires <= 0 {
-                errors.push(format!("user '{email}' has non-positive userExpires"));
-            }
+        if let Some(expires) = self.user_expires
+            && expires <= 0
+        {
+            errors.push(format!("user '{email}' has non-positive userExpires"));
         }
         validate_non_empty_values(format!("user '{email}' role"), self.roles.iter(), errors);
         validate_non_empty_values(format!("user '{email}' group"), self.groups.iter(), errors);

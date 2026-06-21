@@ -4,11 +4,7 @@
 /// optional list fields from a request body.
 #[must_use]
 pub fn opt_vec(v: &[String]) -> Option<Vec<String>> {
-    if v.is_empty() {
-        None
-    } else {
-        Some(v.to_vec())
-    }
+    if v.is_empty() { None } else { Some(v.to_vec()) }
 }
 
 /// Order-insensitive equality of two string collections.

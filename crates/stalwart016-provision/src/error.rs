@@ -19,15 +19,19 @@ pub enum ProvisionError {
     #[error("port 8080 is already in use — another service is occupying the recovery port")]
     PortConflict,
 
-    #[error("recovery server did not become ready after {attempts} attempts ({interval_secs}s apart)")]
+    #[error(
+        "recovery server did not become ready after {attempts} attempts ({interval_secs}s apart)"
+    )]
     RecoveryTimeout { attempts: u32, interval_secs: f64 },
 
-    #[error("apply input not readable inside the service sandbox: {path}\n\
+    #[error(
+        "apply input not readable inside the service sandbox: {path}\n\
              hint: the unit runs with PrivateTmp + ProtectHome + ProtectSystem=strict,\n\
              so host /tmp, /var/tmp and /home are NOT visible. Stage migration inputs\n\
              under a sandbox-visible directory (e.g. /var/lib/stalwart016-migration);\n\
              the module binds migration/apply file parent dirs read-only, but the dir\n\
-             must exist at activation.")]
+             must exist at activation."
+    )]
     ApplyInputUnreadable { path: PathBuf },
 
     #[error("stalwart-cli apply failed on {file}: {detail}")]

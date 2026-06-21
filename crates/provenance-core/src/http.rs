@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use reqwest::blocking::{Client, Response};
+use anyhow::{Context, Result, bail};
 use reqwest::StatusCode;
+use reqwest::blocking::{Client, Response};
 use serde::de::DeserializeOwned;
 
 /// Build a blocking reqwest client with a user agent and optional request

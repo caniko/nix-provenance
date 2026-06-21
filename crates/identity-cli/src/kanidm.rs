@@ -4,12 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use std::fmt::Display;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use kanidm_client::KanidmClientBuilder;
 use kanidm_proto::internal::{CURegState, CUStatus, TotpAlgo, TotpSecret};
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use totp_rs::{Algorithm, TOTP};
 
 const IDM_ADMIN: &str = "idm_admin";

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use provenance_core::serde_ext::double_option;
 use serde::Deserialize;
 

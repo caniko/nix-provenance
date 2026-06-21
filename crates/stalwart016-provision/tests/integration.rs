@@ -43,7 +43,11 @@ fn test_config_parse_minimal() {
     let config_path = dir.path().join("config.json");
     let config_data = make_test_config(dir.path(), "plan.ndjson");
 
-    fs::write(&config_path, serde_json::to_string_pretty(&config_data).unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config_data).unwrap(),
+    )
+    .unwrap();
 
     let content = fs::read_to_string(&config_path).unwrap();
     let result: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -83,17 +87,23 @@ fn test_config_parse_with_sentinel() {
     });
 
     let config_path = dir.path().join("config.json");
-    fs::write(&config_path, serde_json::to_string_pretty(&config_data).unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config_data).unwrap(),
+    )
+    .unwrap();
 
     let content = fs::read_to_string(&config_path).unwrap();
     let result: serde_json::Value = serde_json::from_str(&content).unwrap();
 
     assert_eq!(result["hostname"], "mail.test.example");
     assert_eq!(result["store_health_check"], true);
-    assert!(result["migration_apply_files"][0]
-        .as_str()
-        .unwrap()
-        .ends_with("export.json"));
+    assert!(
+        result["migration_apply_files"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("export.json")
+    );
     assert_eq!(result["query_objects"][1], "Domain");
 }
 
@@ -112,7 +122,11 @@ fn test_config_defaults() {
     });
 
     let config_path = dir.path().join("config.json");
-    fs::write(&config_path, serde_json::to_string_pretty(&config_data).unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config_data).unwrap(),
+    )
+    .unwrap();
 
     let content = fs::read_to_string(&config_path).unwrap();
     let result: serde_json::Value = serde_json::from_str(&content).unwrap();

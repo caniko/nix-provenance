@@ -22,7 +22,7 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::Parser;
 use serde::Deserialize;
@@ -85,7 +85,10 @@ struct Config {
 
     #[serde(default = "default_startup_attempts")]
     startup_attempts: u32,
-    #[serde(default = "default_startup_interval", deserialize_with = "deserialize_f64")]
+    #[serde(
+        default = "default_startup_interval",
+        deserialize_with = "deserialize_f64"
+    )]
     startup_interval_secs: f64,
 
     #[serde(default = "default_query_output_dir")]
@@ -125,9 +128,15 @@ fn deserialize_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Err
         fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
             f.write_str("a float or a string containing a float")
         }
-        fn visit_f64<E: de::Error>(self, v: f64) -> Result<f64, E> { Ok(v) }
-        fn visit_u64<E: de::Error>(self, v: u64) -> Result<f64, E> { Ok(v as f64) }
-        fn visit_i64<E: de::Error>(self, v: i64) -> Result<f64, E> { Ok(v as f64) }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<f64, E> {
+            Ok(v)
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
         fn visit_str<E: de::Error>(self, v: &str) -> Result<f64, E> {
             v.parse().map_err(de::Error::custom)
         }
@@ -193,7 +202,10 @@ fn check_pending(cfg: &Config) -> Result<Pending> {
         }
     };
 
-    Ok(Pending { migration, registry })
+    Ok(Pending {
+        migration,
+        registry,
+    })
 }
 
 fn main() -> Result<()> {
@@ -205,15 +217,11 @@ fn main() -> Result<()> {
     .context("parsing config JSON")?;
 
     // ── Create marker directories ────────────────────────────
-    for dir in [
-        cfg.migration_marker.parent(),
-        cfg.registry_marker.parent(),
-    ]
-    .into_iter()
-    .flatten()
+    for dir in [cfg.migration_marker.parent(), cfg.registry_marker.parent()]
+        .into_iter()
+        .flatten()
     {
-        fs::create_dir_all(dir)
-            .context(format!("creating marker directory {}", dir.display()))?;
+        fs::create_dir_all(dir).context(format!("creating marker directory {}", dir.display()))?;
     }
 
     // ── Legacy marker promotion ──────────────────────────────
@@ -229,48 +237,48 @@ fn main() -> Result<()> {
     let mut pending = check_pending(&cfg)?;
 
     // ── Store health check ───────────────────────────────────
-    if !pending.migration && !pending.registry && cfg.store_health_check {
-        if let (Some(psql_bin), Some(pg_pw_file)) = (&cfg.psql_binary, &cli.pg_password_file) {
-            match health::probe_store(
-                psql_bin,
-                &cfg.pg_host,
-                cfg.pg_port,
-                &cfg.pg_user,
-                &cfg.pg_database,
-                pg_pw_file,
-                &cfg.probe_table,
-            )? {
-                health::StoreHealth::Ok => {}
-                health::StoreHealth::Unreachable => {
-                    eprintln!(
-                        "stalwart016-provision: store health check skipped \
+    if !pending.migration
+        && !pending.registry
+        && cfg.store_health_check
+        && let (Some(psql_bin), Some(pg_pw_file)) = (&cfg.psql_binary, &cli.pg_password_file)
+    {
+        match health::probe_store(
+            psql_bin,
+            &cfg.pg_host,
+            cfg.pg_port,
+            &cfg.pg_user,
+            &cfg.pg_database,
+            pg_pw_file,
+            &cfg.probe_table,
+        )? {
+            health::StoreHealth::Ok => {}
+            health::StoreHealth::Unreachable => {
+                eprintln!(
+                    "stalwart016-provision: store health check skipped \
                          (PostgreSQL unreachable — may be restarting)"
-                    );
-                }
-                health::StoreHealth::TableMissing => {
-                    eprintln!(
-                        "stalwart016-provision: store health check failed (table '{}' \
+                );
+            }
+            health::StoreHealth::TableMissing => {
+                eprintln!(
+                    "stalwart016-provision: store health check failed (table '{}' \
                          missing) — forcing recovery mode",
-                        cfg.probe_table
-                    );
-                    let _ = fs::remove_file(&cfg.registry_marker);
-                    pending.registry = true;
-                }
-                health::StoreHealth::CredentialUnreadable => {
-                    eprintln!(
-                        "stalwart016-provision: store health check skipped \
+                    cfg.probe_table
+                );
+                let _ = fs::remove_file(&cfg.registry_marker);
+                pending.registry = true;
+            }
+            health::StoreHealth::CredentialUnreadable => {
+                eprintln!(
+                    "stalwart016-provision: store health check skipped \
                          (PG credential not readable)"
-                    );
-                }
+                );
             }
         }
     }
 
     // ── Early exit if nothing pending ────────────────────────
     if !pending.migration && !pending.registry {
-        eprintln!(
-            "stalwart016-provision: migration and registry already current; nothing to do"
-        );
+        eprintln!("stalwart016-provision: migration and registry already current; nothing to do");
         return Ok(());
     }
 
@@ -293,7 +301,10 @@ fn main() -> Result<()> {
 
     // ── Port conflict check ──────────────────────────────────
     {
-        let stripped = cfg.recovery_url.strip_prefix("http://").unwrap_or(&cfg.recovery_url);
+        let stripped = cfg
+            .recovery_url
+            .strip_prefix("http://")
+            .unwrap_or(&cfg.recovery_url);
         let parts: Vec<&str> = stripped.splitn(2, ':').collect();
         let host = parts[0];
         let port: u16 = parts
@@ -329,7 +340,10 @@ fn main() -> Result<()> {
     // ── Apply migration documents ────────────────────────────
     if pending.migration {
         for file in &cfg.migration_apply_files {
-            eprintln!("stalwart016-provision: applying migration {}", file.display());
+            eprintln!(
+                "stalwart016-provision: applying migration {}",
+                file.display()
+            );
             let result = recovery::apply_document(
                 &cfg.cli_bin,
                 &cfg.recovery_url,
@@ -408,9 +422,7 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        eprintln!(
-            "stalwart016-provision: generated registry plan already current; skipping"
-        );
+        eprintln!("stalwart016-provision: generated registry plan already current; skipping");
     }
 
     // ── Query objects for evidence ───────────────────────────
@@ -433,9 +445,7 @@ fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                eprintln!(
-                    "stalwart016-provision: warning — query {object_type} failed: {e}"
-                );
+                eprintln!("stalwart016-provision: warning — query {object_type} failed: {e}");
             }
         }
     }

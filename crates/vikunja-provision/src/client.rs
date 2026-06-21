@@ -10,7 +10,7 @@ use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use provenance_core::http::ensure_success as ok;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::{Method, StatusCode};

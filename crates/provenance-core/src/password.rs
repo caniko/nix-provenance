@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
 /// Read a password from `path`, trimming surrounding whitespace and rejecting
@@ -104,16 +104,22 @@ mod tests {
     fn unchanged_marker_skips_and_changed_secret_updates() {
         let dir = temp_path("markers");
         let store = PasswordMarkerStore::new(&dir);
-        assert!(store
-            .needs_update("rauthy:user@example.com", "one")
-            .unwrap());
+        assert!(
+            store
+                .needs_update("rauthy:user@example.com", "one")
+                .unwrap()
+        );
         store.commit("rauthy:user@example.com", "one").unwrap();
-        assert!(!store
-            .needs_update("rauthy:user@example.com", "one")
-            .unwrap());
-        assert!(store
-            .needs_update("rauthy:user@example.com", "two")
-            .unwrap());
+        assert!(
+            !store
+                .needs_update("rauthy:user@example.com", "one")
+                .unwrap()
+        );
+        assert!(
+            store
+                .needs_update("rauthy:user@example.com", "two")
+                .unwrap()
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }

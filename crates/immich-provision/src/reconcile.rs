@@ -1,7 +1,7 @@
-use anyhow::{bail, Result};
-use provenance_core::password::{read_password_file, PasswordMarkerStore};
+use anyhow::{Result, bail};
+use provenance_core::password::{PasswordMarkerStore, read_password_file};
 use provenance_core::reconcile::Summary;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::client::{ImmichClient, ImmichUser};
 use crate::state::{State, UserSpec};
@@ -102,38 +102,38 @@ pub fn build_create_user_request(
 pub fn build_update_user_request(existing: &ImmichUser, spec: &UserSpec) -> Map<String, Value> {
     let mut body = Map::new();
 
-    if let Some(name) = spec.name.as_deref() {
-        if existing.name != name {
-            body.insert("name".to_string(), json!(name));
-        }
+    if let Some(name) = spec.name.as_deref()
+        && existing.name != name
+    {
+        body.insert("name".to_string(), json!(name));
     }
-    if let Some(is_admin) = spec.is_admin {
-        if existing.is_admin != is_admin {
-            body.insert("isAdmin".to_string(), json!(is_admin));
-        }
+    if let Some(is_admin) = spec.is_admin
+        && existing.is_admin != is_admin
+    {
+        body.insert("isAdmin".to_string(), json!(is_admin));
     }
-    if let Some(storage_label) = &spec.storage_label {
-        if &existing.storage_label != storage_label {
-            body.insert("storageLabel".to_string(), json!(storage_label));
-        }
+    if let Some(storage_label) = &spec.storage_label
+        && &existing.storage_label != storage_label
+    {
+        body.insert("storageLabel".to_string(), json!(storage_label));
     }
-    if let Some(quota) = spec.quota_size_in_bytes {
-        if existing.quota_size_in_bytes != quota {
-            body.insert("quotaSizeInBytes".to_string(), json!(quota));
-        }
+    if let Some(quota) = spec.quota_size_in_bytes
+        && existing.quota_size_in_bytes != quota
+    {
+        body.insert("quotaSizeInBytes".to_string(), json!(quota));
     }
-    if let Some(avatar_color) = &spec.avatar_color {
-        if &existing.avatar_color != avatar_color {
-            body.insert("avatarColor".to_string(), json!(avatar_color));
-        }
+    if let Some(avatar_color) = &spec.avatar_color
+        && &existing.avatar_color != avatar_color
+    {
+        body.insert("avatarColor".to_string(), json!(avatar_color));
     }
-    if let Some(should_change_password) = spec.should_change_password {
-        if existing.should_change_password != should_change_password {
-            body.insert(
-                "shouldChangePassword".to_string(),
-                json!(should_change_password),
-            );
-        }
+    if let Some(should_change_password) = spec.should_change_password
+        && existing.should_change_password != should_change_password
+    {
+        body.insert(
+            "shouldChangePassword".to_string(),
+            json!(should_change_password),
+        );
     }
 
     body
@@ -325,11 +325,9 @@ mod tests {
             r#"{ "users": { "alice@example.com": { "present": false, "delete": { "force": true } } } }"#,
         )
         .unwrap();
-        assert!(ensure_delete_allowed(
-            "alice@example.com",
-            &state.users["alice@example.com"],
-            true
-        )
-        .is_ok());
+        assert!(
+            ensure_delete_allowed("alice@example.com", &state.users["alice@example.com"], true)
+                .is_ok()
+        );
     }
 }

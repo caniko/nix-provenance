@@ -6,10 +6,10 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const VAULT_LOCKED_MESSAGE: &str =
     "Bitwarden vault locked or session missing: run `bw unlock` and export `BW_SESSION`";
@@ -342,7 +342,7 @@ fn optional_string_field(value: &Value, field: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_input_with_provision, validate_password_source, BwLoginItem, UpsertInput};
+    use super::{BwLoginItem, UpsertInput, resolve_input_with_provision, validate_password_source};
 
     #[test]
     fn explicit_fields_win_over_json() {

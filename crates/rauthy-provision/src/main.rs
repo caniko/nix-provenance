@@ -18,9 +18,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
-use provenance_core::password::{read_password_file, PasswordMarkerStore};
+use provenance_core::password::{PasswordMarkerStore, read_password_file};
 use provenance_core::setops::{is_subset, opt_vec, same_set, union};
 use serde_json::Value;
 
@@ -1297,9 +1297,10 @@ mod tests {
         let linked = BTreeMap::from([("a-linked".to_string(), 1), ("z-linked".to_string(), 2)]);
 
         let err = select_canonical_provider(&matches, &linked).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("multiple duplicate upstream providers have linked users"));
+        assert!(
+            err.to_string()
+                .contains("multiple duplicate upstream providers have linked users")
+        );
     }
 
     #[test]
@@ -1335,15 +1336,21 @@ mod tests {
         let err = run_with_transient_api_key(&cli, &State::default()).unwrap_err();
         assert!(err.to_string().contains("requesting Rauthy roles"));
         let requests = requests.lock().unwrap();
-        assert!(requests
-            .iter()
-            .any(|r| r.starts_with("POST /auth/v1/api_keys ")));
-        assert!(requests
-            .iter()
-            .any(|r| r.starts_with("PUT /auth/v1/api_keys/rauthy-prov-transient/secret ")));
-        assert!(requests
-            .iter()
-            .any(|r| r.starts_with("DELETE /auth/v1/api_keys/rauthy-prov-transient ")));
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.starts_with("POST /auth/v1/api_keys "))
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.starts_with("PUT /auth/v1/api_keys/rauthy-prov-transient/secret "))
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.starts_with("DELETE /auth/v1/api_keys/rauthy-prov-transient "))
+        );
         fs::remove_file(state).unwrap();
     }
 
