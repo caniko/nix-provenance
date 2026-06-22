@@ -123,7 +123,7 @@
     )
     // {
       # System-independent pure-Nix helpers (see nix/lib/default.nix).
-      lib = import ./nix/lib/default.nix {inherit (nixpkgs) lib self;};
+      lib = import ./nix/lib/default.nix {lib = nixpkgs.lib; inherit self;};
 
       # One named NixOS module per tenant. Rauthy consumers should import both
       # `rauthyServer` (the server service) and `rauthy` (the provisioner)
