@@ -46,6 +46,7 @@
           crossTargets = [];
         };
         inherit (toolchain) rustToolchain craneLib;
+        cross = rs-harbor.lib.mkCross {inherit pkgs system;};
         src = craneLib.cleanCargoSource ./.;
 
         crates = import ./nix/packages.nix {
@@ -103,6 +104,13 @@
             cp -r docs/book "$out"
           '';
         };
+
+        atticAdapter = rs-harbor.lib.mkAdapter {
+          attic = {
+            endpoint = "https://attic.candee.baby";
+            cache = "canix";
+          };
+        };
       in {
         inherit packages;
 
@@ -114,8 +122,18 @@
           docs = docsPackage;
         };
 
-        devShells.default = craneLib.devShell {
+        devShells.default = rs-harbor.lib.mkDevShell {
+          inherit pkgs craneLib cross;
           packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook];
+          cargoConfig = rs-harbor.lib.mkCargoConfig {inherit pkgs;};
+          enableOsxcrossEnv = false;
+          enableWindowsEnv = false;
+        };
+
+        apps.push-cache = rs-harbor.lib.mkAtticPush {
+          inherit pkgs;
+          adapter = atticAdapter;
+          paths = builtins.attrValues packages;
         };
 
         formatter = pkgs.alejandra;

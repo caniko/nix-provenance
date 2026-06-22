@@ -3,3 +3,5 @@ docs/book/
 result
 result-*
 .direnv
+.cargo/config.toml*
+
