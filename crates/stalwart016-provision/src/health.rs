@@ -13,7 +13,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Result of the store health check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +92,14 @@ pub fn probe_store(
     }
 
     // Phase 2: table probe.
+    if !probe_table
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    {
+        bail!(
+            "probe_table contains invalid characters; use only alphanumeric, underscore, and dot"
+        );
+    }
     let query = format!("SELECT 1 FROM {probe_table} LIMIT 1");
     let status = Command::new(psql_binary)
         .arg("-h")
