@@ -36,7 +36,10 @@ pub fn reconcile(
                     None => false,
                 };
                 if password_changed {
-                    update.insert("password".to_string(), json!(password.as_deref().unwrap()));
+                    let pw = password
+                        .as_deref()
+                        .expect("password_changed guarantees password is Some");
+                    update.insert("password".to_string(), json!(pw));
                 }
                 if update.is_empty() {
                     summary.unchanged += 1;
