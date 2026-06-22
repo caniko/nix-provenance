@@ -347,10 +347,21 @@ impl OriginUrl {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ClaimMapInput {
-    #[serde(default = "default_claim_join_type")]
-    join_type: String,
+    #[serde(default)]
+    join_type: JoinType,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     values_by_group: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+enum JoinType {
+    #[serde(rename = "array")]
+    #[default]
+    Array,
+    #[serde(rename = "csv")]
+    Csv,
+    #[serde(rename = "ssv")]
+    Ssv,
 }
 
 impl ClaimMapInput {
@@ -361,12 +372,6 @@ impl ClaimMapInput {
         group_names: &BTreeSet<String>,
         errors: &mut Vec<String>,
     ) {
-        if !matches!(self.join_type.as_str(), "array" | "csv" | "ssv") {
-            errors.push(format!(
-                "oauth2 system '{system}' claimMap '{claim}' has invalid joinType '{}'",
-                self.join_type
-            ));
-        }
         if self.values_by_group.values().all(Vec::is_empty) {
             errors.push(format!(
                 "oauth2 system '{system}' claimMap '{claim}' has no values"
@@ -455,10 +460,6 @@ fn is_true(value: &bool) -> bool {
 
 fn is_false(value: &bool) -> bool {
     !*value
-}
-
-fn default_claim_join_type() -> String {
-    "array".to_string()
 }
 
 #[cfg(test)]
