@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "plan": {
+    "id": "cb3aa9f3-ec58-41eb-9eb2-40dd7741d05a",
+    "name": "Rauthy Bootstrap Generate Plan",
+    "flavor": "codex",
+    "worktype": None,
+    "created_at": 1780667984,
+    "phase_count": 8,
+    "wave_count": 8,
+    "max_chain_depth": 8,
+    "repo_spread": 9,
+    "routing_dist": {
+      "high": 1,
+      "low": 3,
+      "medium": 4
+    },
+    "shape_hash": "26856a9e18baccb00de17368c1d39d21da0679a5a5f30ea255dc254c06723c24"
+  },
+  "triggers": [
+    {
+      "name": "shared-file-contention",
+      "input_value": 3.0,
+      "threshold": 2.0,
+      "fired": true,
+      "section_added": "Shared-file lockstep"
+    },
+    {
+      "name": "external-repo-phases",
+      "input_value": 8.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": "External repo coordination"
+    },
+    {
+      "name": "convergence-point",
+      "input_value": 2.0,
+      "threshold": 3.0,
+      "fired": false,
+      "section_added": None
+    },
+    {
+      "name": "ownership-boundary-spread",
+      "input_value": 9.0,
+      "threshold": 2.0,
+      "fired": true,
+      "section_added": "PR sequencing & cross-owner coordination"
+    },
+    {
+      "name": "risk-concentration",
+      "input_value": 0.0,
+      "threshold": 2.0,
+      "fired": false,
+      "section_added": None
+    },
+    {
+      "name": "risk-late-in-plan",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": None
+    },
+    {
+      "name": "infrastructure-spof",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": None
+    },
+    {
+      "name": "revendor-phase",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": None
+    },
+    {
+      "name": "long-serial-chain",
+      "input_value": 8.0,
+      "threshold": 4.0,
+      "fired": true,
+      "section_added": "Serial-chain recovery"
+    },
+    {
+      "name": "mid-plan-rerouting",
+      "input_value": 8.0,
+      "threshold": 10.0,
+      "fired": false,
+      "section_added": None
+    },
+    {
+      "name": "trivial-phase-swamp",
+      "input_value": 7.0,
+      "threshold": 4.0,
+      "fired": true,
+      "section_added": "Cleanup batch"
+    },
+    {
+      "name": "no-integrated-verification",
+      "input_value": 1.0,
+      "threshold": 1.0,
+      "fired": true,
+      "section_added": None
+    },
+    {
+      "name": "routing-tier-inversion",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": None
+    },
+    {
+      "name": "mechanical-streak",
+      "input_value": 1.0,
+      "threshold": 3.0,
+      "fired": false,
+      "section_added": None
+    },
+    {
+      "name": "hidden-prerequisite",
+      "input_value": 0.0,
+      "threshold": 1.0,
+      "fired": false,
+      "section_added": None
+    }
+  ],
+  "phases": [
+    {
+      "ordinal": 1,
+      "slug": "prepare-upstream-base",
+      "routing_tier": "low",
+      "files": [
+        "No source files should be changed in this phase."
+      ]
+    },
+    {
+      "ordinal": 2,
+      "slug": "build-pr1-container-foundation",
+      "routing_tier": "medium",
+      "files": [
+        "Possibly `src/data/Cargo.toml",
+        "book/src/config/bootstrap.md",
+        "config.toml",
+        "src/data/src/migration/bootstrap/generated_secrets.rs` or similar new module",
+        "src/data/src/migration/bootstrap/mod.rs",
+        "src/data/src/rauthy_config.rs"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "slug": "add-pr1-client-user-generate",
+      "routing_tier": "medium",
+      "files": [
+        "Tests near bootstrap parsing or migration code",
+        "bootstrap/clients.json",
+        "bootstrap/users.json",
+        "src/data/src/migration/bootstrap/clients.rs",
+        "src/data/src/migration/bootstrap/types.rs",
+        "src/data/src/migration/bootstrap/users.rs"
+      ]
+    },
+    {
+      "ordinal": 4,
+      "slug": "add-pr1-cli-docs-tests",
+      "routing_tier": "medium",
+      "files": [
+        "CLI/bootstrap tests",
+        "book/src/config/bootstrap.md",
+        "book/src/config/cli.md",
+        "bootstrap/clients.json",
+        "bootstrap/users.json",
+        "src/bin/src/cli_args.rs",
+        "src/bin/src/main.rs",
+        "src/bin/src/utils/"
+      ]
+    },
+    {
+      "ordinal": 5,
+      "slug": "checkpoint-pr1-before-upload",
+      "routing_tier": "low",
+      "files": [
+        "No new source files should be changed except minor review-packet notes if explicitly needed."
+      ]
+    },
+    {
+      "ordinal": 6,
+      "slug": "build-pr2-api-key-generate-local",
+      "routing_tier": "high",
+      "files": [
+        "Tests near API-key entity/bootstrap logic",
+        "book/src/config/bootstrap.md",
+        "bootstrap/api_keys.json",
+        "src/data/src/entity/api_keys.rs",
+        "src/data/src/migration/bootstrap/api_key.rs",
+        "src/data/src/migration/bootstrap/types.rs"
+      ]
+    },
+    {
+      "ordinal": 7,
+      "slug": "checkpoint-pr2-before-upload",
+      "routing_tier": "low",
+      "files": [
+        "No new source changes should be made in this checkpoint except minor review-packet notes if explicitly needed."
+      ]
+    },
+    {
+      "ordinal": 8,
+      "slug": "prove-local-consumer-flow",
+      "routing_tier": "medium",
+      "files": [
+        "Possibly a local test/VM module",
+        "flake.nix",
+        "nix/checks.nix",
+        "nix/modules/idp/rauthy.nix",
+        "nix/modules/test/rauthy-eval.nix",
+        "root/hosts/thething/server/rauthy.nix"
+      ]
+    }
+  ],
+  "meta_heuristics_fired": [
+    "threshold-proximity"
+  ],
+  "tags": {
+    "flavor": "codex",
+    "risk": "mixed",
+    "scope": "cross-org"
+  },
+  "verify": None
+}
