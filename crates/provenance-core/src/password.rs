@@ -27,12 +27,13 @@ pub fn read_password_file(path: impl AsRef<Path>) -> Result<String> {
 /// Return a lowercase hex SHA-256 digest for `secret`.
 pub fn secret_digest(secret: &str) -> String {
     let digest = Sha256::digest(secret.as_bytes());
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
+    digest
+        .iter()
+        .fold(String::with_capacity(digest.len() * 2), |mut out, byte| {
+            use std::fmt::Write as _;
+            write!(out, "{byte:02x}").expect("write to String is infallible");
+            out
+        })
 }
 
 /// Persistent password marker store.

@@ -398,6 +398,15 @@ impl ClientSecretResponse {
 impl RauthyClient {
     pub fn new(base_url: &str, api_key: &str, accept_invalid_certs: bool) -> Result<Self> {
         let base = base_url.trim_end_matches('/');
+        if base.trim().is_empty() {
+            bail!("base_url must not be empty");
+        }
+        if api_key.trim().is_empty() {
+            bail!("api_key must not be empty");
+        }
+        if !api_key.contains('$') {
+            bail!("api_key must be in `<name>$<secret>` format (missing '$' separator)");
+        }
         let api = format!("{base}/auth/v1");
         let http = provenance_core::http::build_blocking_client(
             concat!("rauthy-provision/", env!("CARGO_PKG_VERSION")),
@@ -440,6 +449,9 @@ impl RauthyClient {
 
     /// Poll the unauthenticated health endpoint until the server is up.
     pub fn wait_healthy(&self, attempts: u32, delay: Duration) -> Result<()> {
+        if attempts == 0 {
+            bail!("attempts must be greater than zero");
+        }
         let mut last_err = None;
         for attempt in 1..=attempts {
             match self.http.get(format!("{}/health", self.api)).send() {
@@ -466,7 +478,9 @@ impl RauthyClient {
         if status.is_success() {
             return Ok(());
         }
-        let body = resp.text().unwrap_or_default();
+        let body = resp
+            .text()
+            .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
         match status {
             StatusCode::BAD_REQUEST => bail!(
                 "API key malformed ({status}) — the value must be a full Rauthy API key in \
@@ -498,7 +512,9 @@ impl RauthyClient {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
         ) {
             let status = resp.status();
-            let body = resp.text().unwrap_or_default();
+            let body = resp
+                .text()
+                .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
             bail!(
                 "{context} failed ({status}). Grant {missing_rights} to the Rauthy \
                  provisioning API key, then rerun: {body}"
@@ -528,7 +544,9 @@ impl RauthyClient {
                     StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
                 ) {
                     let status = resp.status();
-                    let body = resp.text().unwrap_or_default();
+                    let body = resp
+                        .text()
+                        .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
                     bail!(
                         "Rauthy API key manager lacks permission to update API keys ({status}). \
                          Grant ApiKeys update rights to the manager key, then rerun: {body}"
@@ -540,7 +558,9 @@ impl RauthyClient {
             }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
                 let status = resp.status();
-                let body = resp.text().unwrap_or_default();
+                let body = resp
+                    .text()
+                    .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
                 bail!(
                     "Rauthy API key manager lacks permission to create API keys ({status}). \
                      Grant ApiKeys create/update/delete rights to the manager key, then rerun: {body}"
@@ -564,7 +584,9 @@ impl RauthyClient {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
         ) {
             let status = resp.status();
-            let body = resp.text().unwrap_or_default();
+            let body = resp
+                .text()
+                .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
             bail!(
                 "Rauthy API key manager lacks permission to rotate API-key secrets ({status}). \
                  Grant ApiKeys update rights to the manager key, then rerun: {body}"
@@ -590,7 +612,9 @@ impl RauthyClient {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
         ) {
             let status = resp.status();
-            let body = resp.text().unwrap_or_default();
+            let body = resp
+                .text()
+                .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
             bail!(
                 "Rauthy API key manager lacks permission to delete API keys ({status}). \
                  Grant ApiKeys delete rights to the manager key, then rerun: {body}"
@@ -861,7 +885,9 @@ impl RauthyClient {
             .with_context(|| format!("rotating Rauthy client secret for {id}"))?;
         let status = resp.status();
         if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-            let body = resp.text().unwrap_or_default();
+            let body = resp
+                .text()
+                .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
             bail!(
                 "Rauthy API key lacks permission to rotate secret for client {id} ({status}). \
                  Grant Secrets update/read rights to the provisioning key, then rerun: {body}"
@@ -929,7 +955,9 @@ impl RauthyClient {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
         ) {
             let status = resp.status();
-            let body = resp.text().unwrap_or_default();
+            let body = resp
+                .text()
+                .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
             bail!(
                 "{context} failed ({status}). Grant Providers read/create/update/delete rights \
                  to the Rauthy provisioning API key, then rerun: {body}"

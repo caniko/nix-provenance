@@ -24,6 +24,14 @@ pub fn build_blocking_client(
     accept_invalid_certs: bool,
     timeout: Option<Duration>,
 ) -> Result<Client> {
+    if user_agent.trim().is_empty() {
+        bail!("user_agent must not be empty");
+    }
+    if let Some(d) = timeout
+        && d.is_zero()
+    {
+        bail!("timeout must be positive");
+    }
     let mut builder = Client::builder()
         .danger_accept_invalid_certs(accept_invalid_certs)
         .user_agent(user_agent);
@@ -45,7 +53,9 @@ pub fn ensure_success(resp: Response) -> Result<Response> {
     if status.is_success() {
         return Ok(resp);
     }
-    let body = resp.text().unwrap_or_default();
+    let body = resp
+        .text()
+        .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
     if status == StatusCode::UNAUTHORIZED {
         bail!("request was unauthorized ({status}); the credential was rejected: {body}");
     }
