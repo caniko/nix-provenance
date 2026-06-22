@@ -106,7 +106,7 @@ fn parse_apply_output(result: &ApplyResult) -> PlanResult {
     plan
 }
 
-/// Parse "N <word>" from a string, returning the count.
+/// Parse a count from a line like "42 tasks (0 failed)".
 /// Handles trailing parenthesized suffixes like "(0 failed)".
 fn parse_count_pair(s: &str, word: &str) -> Option<usize> {
     let s = s.trim();
