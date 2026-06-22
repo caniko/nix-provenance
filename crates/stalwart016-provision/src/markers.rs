@@ -37,12 +37,6 @@ pub struct RegistryMarker {
     pub generated_plan: String,
 }
 
-/// Check if a legacy marker exists (simple file-existence check).
-#[allow(dead_code)]
-pub fn has_legacy_marker(path: &Path) -> bool {
-    path.exists()
-}
-
 /// Read a migration marker. Returns `Ok(None)` if the file doesn't exist.
 pub fn read_migration_marker(path: &Path) -> Result<Option<MigrationMarker>> {
     let content = match fs::read_to_string(path) {

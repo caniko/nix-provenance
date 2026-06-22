@@ -52,12 +52,6 @@ impl RecoveryServer {
         Ok(Self { child })
     }
 
-    /// PID of the recovery server process.
-    #[allow(dead_code)]
-    pub fn pid(&self) -> u32 {
-        self.child.id()
-    }
-
     /// Wait for the recovery listener to be ready.
     ///
     /// Polls `stalwart-cli query <probe_object> --json` against the recovery

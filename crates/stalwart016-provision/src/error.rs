@@ -7,7 +7,6 @@ use thiserror::Error;
 /// Each variant maps to a distinct exit code so systemd and operators can
 /// distinguish transient failures (worth retrying) from fatal ones (need
 /// manual intervention).
-#[allow(dead_code)]
 #[derive(Error, Debug)]
 pub enum ProvisionError {
     #[error("recovery admin password file is missing or empty: {0}")]
@@ -38,36 +37,9 @@ pub enum ProvisionError {
     ApplyFailed { file: String, detail: String },
 
     #[error("store health check failed: probe table '{table}' unreachable in {database}")]
+    #[expect(dead_code, reason = "exit-code mapping reserved for future use")]
     StoreHealthCheck { table: String, database: String },
 
     #[error("stalwart-cli query failed for {object}: {detail}")]
     QueryFailed { object: String, detail: String },
-}
-
-/// Exit codes mapped to failure modes.
-///
-/// - 0: success
-/// - 1: generic failure
-/// - 2: transient (recovery timeout, apply failure — systemd should retry)
-/// - 3: fatal (missing backup sentinel, port conflict — operator must intervene)
-/// - 4: configuration error (unreadable files, etc.)
-impl ProvisionError {
-    /// Exit codes mapped to failure modes.
-    ///
-    /// - 0: success
-    /// - 1: generic failure
-    /// - 2: transient (recovery timeout, apply failure — systemd should retry)
-    /// - 3: fatal (missing backup sentinel, port conflict — operator must intervene)
-    /// - 4: configuration error (unreadable files, etc.)
-    #[allow(dead_code)]
-    pub fn exit_code(&self) -> i32 {
-        match self {
-            Self::RecoveryTimeout { .. } | Self::ApplyFailed { .. } => 2,
-            Self::MissingBackupSentinel(_) | Self::PortConflict => 3,
-            Self::MissingRecoveryPassword(_)
-            | Self::ApplyInputUnreadable { .. }
-            | Self::StoreHealthCheck { .. }
-            | Self::QueryFailed { .. } => 4,
-        }
-    }
 }

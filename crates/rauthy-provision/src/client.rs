@@ -188,7 +188,7 @@ pub struct ProviderResponse {
     pub auto_link: bool,
 }
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "response fields reserved for future callers")]
 #[derive(Debug, Deserialize)]
 pub struct ProviderLinkedUserResponse {
     pub id: String,
