@@ -2,10 +2,10 @@
 # OPPOSITE semantics (immich `group` FILTERS kanidm persons and keys by username;
 # rauthy `groups` are APPLIED as rauthy-side groups and keys by email), so they
 # are kept as two distinct namespaced functions — never merged behind a switch.
-{lib}: let
+{lib, self}: let
   immich = import ./immich.nix {inherit lib;};
   rauthy = import ./rauthy.nix {inherit lib;};
-  vikunja = import ./vikunja.nix {inherit lib;};
+  vikunja = import ./vikunja.nix {inherit lib self;};
   forgejo = import ./forgejo.nix {inherit lib;};
   stalwart = import ./stalwart.nix {inherit lib;};
   adapter = import ./adapter.nix {inherit lib;};

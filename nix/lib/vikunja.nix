@@ -1,4 +1,4 @@
-{lib}: {
+{lib, self}: {
   # Emits services.kanidm.provision.systems.oauth2.vikunja.
   # Vikunja team sync needs an object-array claim shaped like
   # [{name, oidcID}], and kanidm-provision can model array claim maps. The
@@ -81,4 +81,19 @@
         '';
       })
     ];
+
+  # Produce a NixOS module that enables declarative Vikunja team provisioning
+  # using the same API token used by vkc. Callers must provide the token path
+  # (typically from agenix decryption). The token must have teams and
+  # teams_members read/create/delete scopes.
+  mkProvisionToken = {
+    tokenFile,
+    botUsername ? "vikunja-provision",
+  }: {
+    imports = [self.nixosModules.vikunjaProvision];
+    services.vikunja.provision = {
+      enable = true;
+      inherit tokenFile botUsername;
+    };
+  };
 }
