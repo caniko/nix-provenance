@@ -238,15 +238,16 @@ fn membership_diff(desired: &[String], observed: &[String], bot_username: &str) 
 }
 
 fn without_bot(usernames: &[String], bot_username: &str) -> Vec<String> {
-    usernames
-        .iter()
-        .filter(|username| username.as_str() != bot_username)
-        .fold(Vec::new(), |mut out, username| {
-            if !out.contains(username) {
-                out.push(username.clone());
-            }
-            out
-        })
+    let mut out = Vec::with_capacity(usernames.len());
+    let mut seen = Vec::with_capacity(usernames.len());
+    for username in usernames {
+        if username.as_str() == bot_username || seen.contains(&username.as_str()) {
+            continue;
+        }
+        seen.push(username.as_str());
+        out.push(username.clone());
+    }
+    out
 }
 
 #[cfg(test)]

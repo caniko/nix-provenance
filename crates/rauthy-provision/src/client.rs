@@ -452,9 +452,10 @@ impl RauthyClient {
         if attempts == 0 {
             bail!("attempts must be greater than zero");
         }
+        let health_url = format!("{}/health", self.api);
         let mut last_err = None;
         for attempt in 1..=attempts {
-            match self.http.get(format!("{}/health", self.api)).send() {
+            match self.http.get(&health_url).send() {
                 Ok(resp) if resp.status().is_success() => return Ok(()),
                 Ok(resp) => last_err = Some(anyhow!("readiness probe returned {}", resp.status())),
                 Err(e) => last_err = Some(anyhow!("readiness probe failed: {e}")),
