@@ -55,4 +55,30 @@
         }
     )
     users;
+
+  # Produce Home Manager environment config for any Vikunja CLI client.
+  # url: Vikunja API base URL, e.g. "https://vikunja.example.com/api/v1"
+  # tokenFile: runtime path to an agenix-decrypted API token file (optional).
+  #            When set, shell init scripts export VIKUNJA_TOKEN from the file
+  #            at shell start — never baked into the Nix store.
+  # Returns an attrset compatible with HM `{config, ...}:` module imports.
+  mkClientEnv = {
+    url,
+    tokenFile ? null,
+  }:
+    lib.mkMerge [
+      {home.sessionVariables.VIKUNJA_URL = url;}
+      (lib.mkIf (tokenFile != null) {
+        programs.bash.initExtra = lib.mkAfter ''
+          if [ -f "${tokenFile}" ]; then
+            export VIKUNJA_TOKEN="$(cat "${tokenFile}")"
+          fi
+        '';
+        programs.nushell.envFile.text = lib.mkAfter ''
+          if ($"${tokenFile}" | path exists) {
+            $env.VIKUNJA_TOKEN = (open $"${tokenFile}" | str trim)
+          }
+        '';
+      })
+    ];
 }
