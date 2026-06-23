@@ -10,7 +10,7 @@
   presentOption = mkOption {
     type = types.bool;
     default = true;
-    description = "Whether this team should exist.";
+    description = "Whether this resource should exist.";
   };
 
   teamSubmodule = types.submodule {
@@ -34,13 +34,39 @@
     };
   };
 
+  webhookSubmodule = types.submodule {
+    options = {
+      present = presentOption;
+      url = mkOption {
+        type = types.str;
+        description = "Webhook target URL.";
+      };
+      events = mkOption {
+        type = types.listOf types.str;
+        default = ["task.created" "task.updated" "task.deleted" "task.assigned"];
+        description = "Vikunja events to subscribe to.";
+      };
+    };
+  };
+
   teamManifest =
     lib.mapAttrs (_: team: {
       inherit (team) present members admins description;
     })
     cfg.teams;
 
-  stateFile = pkgs.writeText "vikunja-provision-state.json" (builtins.toJSON {teams = teamManifest;});
+  webhookManifest =
+    lib.mapAttrs (_: wh: {
+      inherit (wh) present url events;
+    })
+    cfg.webhooks;
+
+  stateFile = pkgs.writeText "vikunja-provision-state.json" (
+    builtins.toJSON {
+      teams = teamManifest;
+      webhooks = webhookManifest;
+    }
+  );
 
   cliArgs =
     lib.escapeShellArgs
@@ -61,11 +87,12 @@
   provisionScript = pkgs.writeShellScript "vikunja-provision-start" ''
     set -eu
     test -s "$CREDENTIALS_DIRECTORY/vikunja-token"
-    exec ${lib.escapeShellArg (lib.getExe cfg.package)} ${cliArgs} --token-file "$CREDENTIALS_DIRECTORY/vikunja-token"
+    ${lib.escapeShellArg (lib.getExe cfg.package)} ${cliArgs} --token-file "$CREDENTIALS_DIRECTORY/vikunja-token" \
+      ${lib.optionalString (cfg.webhookSecretFile != null) "--webhook-secret-file ${cfg.webhookSecretFile}"}
   '';
 in {
   options.services.vikunja.provision = {
-    enable = mkEnableOption "declarative Vikunja team provisioning";
+    enable = mkEnableOption "declarative Vikunja team provisioning and webhook management";
 
     package = mkOption {
       type = types.package;
@@ -103,6 +130,12 @@ in {
       description = "Vikunja service-account username to exclude from membership reconciliation.";
     };
 
+    webhookSecretFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      description = "Runtime secret path containing the HMAC secret for webhook signature verification.";
+    };
+
     readyTimeoutSeconds = mkOption {
       type = types.ints.positive;
       default = 30;
@@ -138,6 +171,12 @@ in {
       default = {};
       description = "Vikunja teams to provision, keyed by team name.";
     };
+
+    webhooks = mkOption {
+      type = types.attrsOf webhookSubmodule;
+      default = {};
+      description = "Vikunja project webhooks to provision, keyed by project ID (as string).";
+    };
   };
 
   config = mkIf cfg.enable {
@@ -172,10 +211,21 @@ in {
             message = "services.vikunja.provision.teams.${name} must not include the botUsername in members or admins.";
           }
         ])
-        cfg.teams);
+        cfg.teams)
+      ++ lib.flatten (lib.mapAttrsToList (projectId: wh: [
+        {
+          assertion = !wh.present || projectId != "";
+          message = "services.vikunja.provision.webhooks must not contain an empty project ID when present = true.";
+        }
+        {
+          assertion = !wh.present || wh.url != "";
+          message = "services.vikunja.provision.webhooks.${projectId}.url is required when present = true.";
+        }
+      ])
+      cfg.webhooks);
 
     systemd.services.vikunja-provision = {
-      description = "Declaratively provision Vikunja teams";
+      description = "Declaratively provision Vikunja teams and webhooks";
       after = cfg.serviceAfter;
       requires = cfg.serviceAfter;
       wantedBy = ["multi-user.target"];

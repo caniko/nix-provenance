@@ -1,10 +1,10 @@
-//! Thin blocking HTTP client over Vikunja's `/api/v1` team API.
+//! Thin blocking HTTP client over Vikunja's `/api/v1` team and webhook API.
 //!
 //! Authentication is a long-lived scoped API token sent as
 //! `Authorization: Bearer <token>`. The token must cover the deployed
-//! instance's `teams` and `teams_members` route scopes. Derive exact scope
-//! strings from `GET /api/v1/routes` when minting the token; Vikunja scopes pin
-//! methods and paths.
+//! instance's `teams`, `teams_members`, and `webhooks` route scopes. Derive
+//! exact scope strings from `GET /api/v1/routes` when minting the token;
+//! Vikunja scopes pin methods and paths.
 
 use std::fmt;
 use std::thread::sleep;
@@ -247,4 +247,98 @@ impl VikunjaClient {
         )?;
         Ok(())
     }
+
+    // ------------------------------------------------------------------
+    // Webhook API
+    // ------------------------------------------------------------------
+
+    /// List all webhooks for a project.
+    pub fn list_webhooks(&self, project_id: i64) -> Result<Vec<WebhookSummary>> {
+        let resp = self.send_ok(
+            self.req(Method::GET, &format!("/projects/{project_id}/webhooks")),
+            format!("requesting Vikunja webhooks for project {project_id}"),
+        )?;
+        resp.json().context("decoding webhooks list")
+    }
+
+    /// Create a webhook for a project.
+    pub fn create_webhook(
+        &self,
+        project_id: i64,
+        url: &str,
+        events: &[String],
+        secret: Option<&str>,
+    ) -> Result<()> {
+        self.req(Method::PUT, &format!("/projects/{project_id}/webhooks"))
+            .json(&WebhookRequest { url, events, secret })
+            .send()
+            .with_context(|| format!("creating Vikunja webhook for project {project_id}"))
+            .and_then(|resp| {
+                let status = resp.status();
+                if status.is_success() {
+                    Ok(())
+                } else {
+                    let body = resp.text().unwrap_or_default();
+                    bail!("creating Vikunja webhook for project {project_id} returned {status}: {body}")
+                }
+            })
+    }
+
+    /// Update a webhook for a project.
+    pub fn update_webhook(
+        &self,
+        project_id: i64,
+        webhook_id: i64,
+        url: &str,
+        events: &[String],
+        secret: Option<&str>,
+    ) -> Result<()> {
+        self.req(
+            Method::POST,
+            &format!("/projects/{project_id}/webhooks/{webhook_id}"),
+        )
+        .json(&WebhookRequest { url, events, secret })
+        .send()
+        .with_context(|| format!("updating Vikunja webhook {webhook_id} for project {project_id}"))
+        .and_then(|resp| {
+            let status = resp.status();
+            if status.is_success() {
+                Ok(())
+            } else {
+                let body = resp.text().unwrap_or_default();
+                bail!("updating Vikunja webhook {webhook_id} for project {project_id} returned {status}: {body}")
+            }
+        })
+    }
+
+    /// Delete a webhook.
+    pub fn delete_webhook(&self, project_id: i64, webhook_id: i64) -> Result<()> {
+        self.send_write_ok(
+            self.req(
+                Method::DELETE,
+                &format!("/projects/{project_id}/webhooks/{webhook_id}"),
+            ),
+            &format!(
+                "deleting Vikunja webhook {webhook_id} from project {project_id}"
+            ),
+        )?;
+        Ok(())
+    }
+}
+
+/// A webhook as returned by the Vikunja API.
+#[derive(Debug, Deserialize)]
+pub struct WebhookSummary {
+    pub id: i64,
+    pub url: String,
+    #[serde(default)]
+    pub events: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WebhookRequest<'a> {
+    url: &'a str,
+    events: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret: Option<&'a str>,
 }

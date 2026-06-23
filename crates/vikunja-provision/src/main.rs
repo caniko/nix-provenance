@@ -1,8 +1,9 @@
-//! vikunja-provision -- declarative provisioning client for Vikunja teams.
+//! vikunja-provision -- declarative provisioning client for Vikunja teams and
+//! webhooks.
 //!
-//! Reads a JSON state file describing desired API-managed local Vikunja teams
-//! and memberships, then reconciles a running Vikunja instance over `/api/v1`
-//! with a long-lived scoped API token.
+//! Reads a JSON state file describing desired API-managed local Vikunja teams,
+//! memberships, and project webhooks, then reconciles a running Vikunja instance
+//! over `/api/v1` with a long-lived scoped API token.
 
 mod client;
 mod state;
@@ -16,13 +17,13 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use provenance_core::setops::{is_subset, same_set, union};
 
-use client::{AddMemberOutcome, TeamMember, VikunjaClient};
-use state::{State, TeamSpec};
+use client::{AddMemberOutcome, TeamMember, VikunjaClient, WebhookSummary};
+use state::{State, TeamSpec, WebhookSpec};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "vikunja-provision",
-    about = "Declaratively provision Vikunja teams and memberships",
+    about = "Declaratively provision Vikunja teams, memberships, and webhooks",
     version
 )]
 struct Cli {
@@ -47,6 +48,11 @@ struct Cli {
     /// Service-account username to exclude from desired and observed membership.
     #[arg(long)]
     bot_username: String,
+
+    /// File containing the HMAC secret for webhook creation. When provided,
+    /// created webhooks include a signature for verification.
+    #[arg(long)]
+    webhook_secret_file: Option<PathBuf>,
 
     /// Seconds to wait for Vikunja readiness before failing.
     #[arg(long, default_value_t = 30)]
@@ -81,6 +87,16 @@ fn main() -> Result<()> {
     let state: State = serde_json::from_str(&raw)
         .with_context(|| format!("parsing state file {}", cli.state.display()))?;
 
+    let webhook_secret = cli
+        .webhook_secret_file
+        .as_ref()
+        .map(|p| {
+            fs::read_to_string(p)
+                .with_context(|| format!("reading webhook secret file {}", p.display()))
+                .map(|s| s.trim().to_owned())
+        })
+        .transpose()?;
+
     let client = VikunjaClient::new(&cli.url, &token, cli.accept_invalid_certs)?;
     client
         .wait_ready(cli.ready_timeout, Duration::from_secs(1))
@@ -94,6 +110,8 @@ fn main() -> Result<()> {
         cli.allow_team_delete,
     )?;
 
+    reconcile_webhooks(&client, &state, webhook_secret.as_deref())?;
+
     log(format_args!("done"));
     Ok(())
 }
@@ -101,6 +119,10 @@ fn main() -> Result<()> {
 fn log(msg: Arguments<'_>) {
     eprintln!("[vikunja-provision] {msg}");
 }
+
+// ---------------------------------------------------------------------------
+// Team reconciliation
+// ---------------------------------------------------------------------------
 
 fn reconcile_teams(
     client: &VikunjaClient,
@@ -250,14 +272,143 @@ fn without_bot(usernames: &[String], bot_username: &str) -> Vec<String> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Webhook reconciliation
+// ---------------------------------------------------------------------------
+
+fn reconcile_webhooks(
+    client: &VikunjaClient,
+    state: &State,
+    webhook_secret: Option<&str>,
+) -> Result<()> {
+    for (project_id_str, spec) in &state.webhooks {
+        let project_id: i64 = match project_id_str.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                log(format_args!(
+                    "skip webhook for invalid project id {project_id_str}"
+                ));
+                continue;
+            }
+        };
+
+        let existing = client.list_webhooks(project_id)?;
+
+        match (spec.present, find_matching_webhook(&existing, spec)) {
+            (true, None) => {
+                log(format_args!(
+                    "create webhook for project {project_id}"
+                ));
+                client.create_webhook(project_id, &spec.url, &spec.events, webhook_secret)?;
+            }
+            (true, Some(hook)) => {
+                if webhook_drifted(hook, spec) {
+                    log(format_args!(
+                        "update webhook {} for project {project_id}",
+                        hook.id
+                    ));
+                    client.update_webhook(
+                        project_id,
+                        hook.id,
+                        &spec.url,
+                        &spec.events,
+                        webhook_secret,
+                    )?;
+                }
+            }
+            (false, Some(hook)) => {
+                log(format_args!(
+                    "delete webhook {} from project {project_id}",
+                    hook.id
+                ));
+                client.delete_webhook(project_id, hook.id)?;
+            }
+            (false, None) => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn find_matching_webhook<'a>(
+    existing: &'a [WebhookSummary],
+    spec: &WebhookSpec,
+) -> Option<&'a WebhookSummary> {
+    existing.iter().find(|hook| hook.url == spec.url)
+}
+
+fn webhook_drifted(hook: &WebhookSummary, spec: &WebhookSpec) -> bool {
+    hook.url != spec.url || !same_set(&hook.events, &spec.events)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use client::WebhookSummary;
 
     fn v(xs: &[&str]) -> Vec<String> {
         xs.iter().map(ToString::to_string).collect()
     }
 
+    fn hook(url: &str, events: &[&str]) -> WebhookSummary {
+        WebhookSummary {
+            id: 1,
+            url: url.to_owned(),
+            events: v(events),
+        }
+    }
+
+    fn spec(url: &str, events: &[&str]) -> WebhookSpec {
+        WebhookSpec {
+            present: true,
+            url: url.to_owned(),
+            events: v(events),
+        }
+    }
+
+    #[test]
+    fn webhook_match_found_by_url() {
+        let hooks = vec![hook("https://a.com/hook", &["task.created"])];
+        let s = spec("https://a.com/hook", &["task.created"]);
+        assert!(find_matching_webhook(&hooks, &s).is_some());
+    }
+
+    #[test]
+    fn webhook_match_missing_when_url_differs() {
+        let hooks = vec![hook("https://a.com/hook", &["task.created"])];
+        let s = spec("https://b.com/hook", &["task.created"]);
+        assert!(find_matching_webhook(&hooks, &s).is_none());
+    }
+
+    #[test]
+    fn webhook_drift_detected_on_url_change() {
+        let h = hook("https://old.com/hook", &["task.created"]);
+        let s = spec("https://new.com/hook", &["task.created"]);
+        assert!(webhook_drifted(&h, &s));
+    }
+
+    #[test]
+    fn webhook_drift_detected_on_event_change() {
+        let h = hook("https://a.com/hook", &["task.created"]);
+        let s = spec("https://a.com/hook", &["task.created", "task.updated"]);
+        assert!(webhook_drifted(&h, &s));
+    }
+
+    #[test]
+    fn webhook_no_drift_when_identical() {
+        let h = hook("https://a.com/hook", &["task.created", "task.updated"]);
+        let s = spec("https://a.com/hook", &["task.created", "task.updated"]);
+        assert!(!webhook_drifted(&h, &s));
+    }
+
+    #[test]
+    fn webhook_no_drift_with_unordered_events() {
+        let h = hook("https://a.com/hook", &["task.updated", "task.created"]);
+        let s = spec("https://a.com/hook", &["task.created", "task.updated"]);
+        assert!(!webhook_drifted(&h, &s));
+    }
+
+    // preserve existing team tests
     #[test]
     fn set_match_has_empty_deltas() {
         let diff = membership_diff(&v(&["alice", "bob"]), &v(&["alice", "bob"]), "bot");
