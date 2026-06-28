@@ -61,7 +61,7 @@ in {
     };
 
     passwordFile = mkOption {
-      type = types.nullOr types.path;
+      type = types.nullOr types.str;
       default = null;
       description = ''
         Path to a file containing the permanent plaintext password.
