@@ -62,7 +62,11 @@
           crates.packages
           // {
             docs = docsPackage;
-            site = docsPackage;
+            site = pkgs.runCommand "nix-provenance-site" {} ''
+              mkdir -p $out
+              cp -rL --no-preserve=mode ${docsPackage}/. $out/
+              printf '%s\n' "nix-provenance.tartanoglu.com" > $out/.domains
+            '';
             rauthy-vikunja-groups = pkgs.rauthy.overrideAttrs (old: {
               src = rauthy-src;
               cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
