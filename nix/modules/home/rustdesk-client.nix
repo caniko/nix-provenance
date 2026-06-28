@@ -27,7 +27,7 @@
     device_token=$(${pkgs.gnused}/bin/sed -n 's/^api_secret = "\([^"]*\)".*/\1/p' "$rd_config" 2>/dev/null || true)
     [ -n "$device_id" ] || { echo "device id not found in $rd_config"; exit 0; }
     [ -n "$device_token" ] || { echo "device token not found in $rd_config"; exit 0; }
-    resp=$(curl -s -o /dev/null -w "%{http_code}" \
+    resp=$(${pkgs.curl}/bin/curl -s -o /dev/null -w "%{http_code}" \
       -X POST "http://${cfg.rendezvousServer}:21114/api/devices/self/access-policy" \
       -H "Content-Type: application/json" \
       -d "{\"device_id\":\"$device_id\",\"device_token\":\"$device_token\",\"password\":\"$password\",\"unattended_enabled\":true}")
