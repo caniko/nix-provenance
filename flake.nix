@@ -16,6 +16,10 @@
       url = "git+https://github.com/caniko/rauthy?ref=feat/pr-b-api-key-generated";
       flake = false;
     };
+    plinth = {
+      url = "git+https://codeberg.org/caniko/plinth.git";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
@@ -26,6 +30,7 @@
     rust-overlay,
     crane,
     rauthy-src,
+    plinth,
     ...
   }:
     flake-utils.lib.eachDefaultSystem (
@@ -134,6 +139,10 @@
           inherit pkgs;
           adapter = atticAdapter;
           paths = builtins.attrValues packages;
+        };
+
+        apps.deploy-pages = plinth.lib.${system}.mkDeployPagesApp {
+          domain = "nix-provenance.tartanoglu.com";
         };
 
         formatter = pkgs.alejandra;
