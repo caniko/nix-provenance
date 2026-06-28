@@ -160,6 +160,10 @@
         default = {imports = [self.nixosModules.rauthy];};
       };
 
+      homeModules = {
+        rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
+      };
+
       overlays.default = final: _prev: let
         craneLib = crane.mkLib final;
         src = craneLib.cleanCargoSource ./.;
