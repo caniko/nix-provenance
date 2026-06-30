@@ -187,9 +187,7 @@ struct Pending {
 /// Determine migration and registry pending state from marker files.
 fn check_pending(cfg: &Config) -> Result<Pending> {
     let migration = if !cfg.migration_apply_files.is_empty() {
-        markers::read_migration_marker(&cfg.migration_marker)?
-            .map(|m| !m.migration_files.is_empty())
-            .unwrap_or(false)
+        markers::read_migration_marker(&cfg.migration_marker)?.is_none()
     } else {
         false
     };

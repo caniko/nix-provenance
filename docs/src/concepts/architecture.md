@@ -96,8 +96,8 @@ requiring SMTP such as Stalwart) and the `passwordFromFile` primitive
    - tag releases as `<name>-vX`.
 3. **Config-only / LDAP tenants:** add only the `nix/modules/<kind>/<name>.nix`
    wiring unless the upstream service also needs a packaged binary or overlay.
-   Stalwart 0.16 is the exception: it exposes `packages.<system>.stalwart`,
-   `packages.<system>.stalwart-cli`, `overlays.stalwart016`, and
-   `nixosModules.stalwart016` because nixpkgs' 0.15 TOML module is not
-   compatible with the 0.16 registry model.
+   Stalwart 0.16 is the exception: it exposes `nixosModules.stalwart016`
+   and `packages.<system>.stalwart016-provision` because nixpkgs' stock
+   service module is not compatible with the 0.16 registry model. The server
+   and CLI binaries come from nixpkgs.
 4. Update `REUSE.toml` with the new paths' SPDX and `README.md`'s tables.

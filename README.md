@@ -46,7 +46,7 @@ tenant taxonomy and the add-a-tenant checklist.
 
 ## Flake outputs
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart,stalwart-cli,docs,site}`
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart016-provision,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}` — `usersFromKanidmPersons`

@@ -54,8 +54,6 @@ in {
   rauthy-provision = packages.rauthy-provision;
   rauthy-state-render = packages.rauthy-state-render;
   vikunja-provision = packages.vikunja-provision;
-  stalwart = packages.stalwart;
-  stalwart-cli = packages.stalwart-cli;
   stalwart016-provision = packages.stalwart016-provision;
   docs = docs;
   site = docs;

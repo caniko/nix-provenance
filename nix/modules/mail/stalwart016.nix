@@ -9,8 +9,8 @@
   json = pkgs.formats.json {};
   system = pkgs.stdenv.hostPlatform.system;
 
-  defaultPackage = lib.attrByPath ["packages" system "stalwart"] pkgs.stalwart self;
-  defaultCliPackage = lib.attrByPath ["packages" system "stalwart-cli"] pkgs.stalwart-cli self;
+  defaultPackage = pkgs.stalwart_0_16;
+  defaultCliPackage = pkgs.stalwart-cli;
   defaultProvisionPackage = lib.attrByPath ["packages" system "stalwart016-provision"] pkgs.stalwart016-provision self;
 
   credentialPath = name: "/run/credentials/stalwart.service/${name}";
@@ -121,14 +121,14 @@ in {
     package = mkOption {
       type = types.package;
       default = defaultPackage;
-      defaultText = "self.packages.\${system}.stalwart";
-      description = "Stalwart 0.16.7 package used by the service.";
+      defaultText = "pkgs.stalwart_0_16";
+      description = "Stalwart 0.16 package used by the service.";
     };
 
     cliPackage = mkOption {
       type = types.package;
       default = defaultCliPackage;
-      defaultText = "self.packages.\${system}.stalwart-cli";
+      defaultText = "pkgs.stalwart-cli";
       description = "stalwart-cli package used for headless registry provisioning.";
     };
 

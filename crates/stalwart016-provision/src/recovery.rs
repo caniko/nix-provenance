@@ -194,6 +194,8 @@ pub fn query_object(
     let output = Command::new(cli_binary)
         .arg("query")
         .arg(object_type)
+        .arg("--fields")
+        .arg("name")
         .arg("--json")
         .arg("--url")
         .arg(url)
@@ -215,9 +217,31 @@ pub fn query_object(
         );
     }
 
-    serde_json::from_slice(&output.stdout).context(format!(
-        "parsing JSON from stalwart-cli query {object_type}"
-    ))
+    parse_query_output(object_type, &output.stdout)
+}
+
+fn parse_query_output(object_type: &str, stdout: &[u8]) -> Result<serde_json::Value> {
+    if let Ok(value) = serde_json::from_slice(stdout) {
+        return Ok(value);
+    }
+
+    let text = std::str::from_utf8(stdout).context(format!(
+        "parsing UTF-8 from stalwart-cli query {object_type}"
+    ))?;
+    let mut rows = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value = serde_json::from_str(trimmed).context(format!(
+            "parsing NDJSON line {} from stalwart-cli query {object_type}",
+            idx + 1
+        ))?;
+        rows.push(value);
+    }
+
+    Ok(serde_json::Value::Array(rows))
 }
 
 /// Write query output to a file for operational evidence.
@@ -230,4 +254,30 @@ pub fn write_query_output(
     fs::write(&path, serde_json::to_string_pretty(data)?)
         .context(format!("writing query output to {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_query_output;
+
+    #[test]
+    fn parses_single_json_document() {
+        let data = parse_query_output("Domain", br#"{"name":"example.test"}"#).unwrap();
+        assert_eq!(data["name"], "example.test");
+    }
+
+    #[test]
+    fn parses_query_ndjson_as_array() {
+        let data = parse_query_output(
+            "NetworkListener",
+            br#""smtp"
+{"name":"submission"}
+"#,
+        )
+        .unwrap();
+
+        let rows = data.as_array().unwrap();
+        assert_eq!(rows[0], "smtp");
+        assert_eq!(rows[1]["name"], "submission");
+    }
 }

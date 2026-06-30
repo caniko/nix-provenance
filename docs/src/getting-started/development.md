@@ -37,7 +37,7 @@ flake:
 ```sh
 nix build .#checks.x86_64-linux.stalwart-module-eval
 nix build .#checks.x86_64-linux.stalwart016-vmtest
-nix build .#packages.x86_64-linux.stalwart .#packages.x86_64-linux.stalwart-cli
+nix build .#packages.x86_64-linux.stalwart016-provision
 ```
 
 `stalwart-module-eval` validates the Kanidm LDAP registry object shape and

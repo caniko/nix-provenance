@@ -35,12 +35,10 @@
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
-        stalwartOverlay = import ./nix/overlays/stalwart-016.nix;
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
             (import rust-overlay)
-            stalwartOverlay
           ];
         };
         inherit (pkgs) lib;
@@ -92,7 +90,6 @@
                 popd
               '';
             });
-            inherit (pkgs) stalwart stalwart-cli;
           };
 
         docsPackage = pkgs.stdenv.mkDerivation {
@@ -225,9 +222,6 @@
         {
           inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision stalwart016-provision;
           rauthy-vikunja-groups = rauthyVikunjaGroups;
-        }
-        // (import ./nix/overlays/stalwart-016.nix final _prev);
-
-      overlays.stalwart016 = import ./nix/overlays/stalwart-016.nix;
+        };
     };
 }

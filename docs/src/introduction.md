@@ -39,7 +39,7 @@ mixed-license boundary that keeps the shared core permissive.
 
 ## Flake outputs
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart,stalwart-cli,docs,site}`
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart016-provision,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}`
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}`
 
