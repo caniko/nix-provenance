@@ -53,6 +53,7 @@
         src = craneLib.cleanCargoSource ./.;
 
         crates = import ./nix/packages.nix {
+          inherit pkgs;
           inherit lib;
           inherit craneLib src;
         };
@@ -131,7 +132,10 @@
         devShells.default = rs-harbor.lib.mkDevShell {
           inherit pkgs craneLib cross;
           packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook];
-          cargoConfig = rs-harbor.lib.mkCargoConfig {inherit pkgs;};
+          cargoConfig = rs-harbor.lib.mkCargoConfig {
+            inherit pkgs;
+            channel = "stable";
+          };
           enableOsxcrossEnv = false;
           enableWindowsEnv = false;
         };
@@ -167,6 +171,7 @@
         stalwart016 = import ./nix/modules/mail/stalwart016.nix {inherit self;};
         kanidmCredentials = import ./nix/modules/kanidm/credentials.nix {inherit self;};
         externalApp = import ./nix/modules/adapter/external-app.nix {inherit self;};
+        tuwunel = import ./nix/modules/config-only/tuwunel.nix {inherit self;};
         default = {imports = [self.nixosModules.rauthy];};
       };
 
@@ -178,6 +183,7 @@
         craneLib = crane.mkLib final;
         src = craneLib.cleanCargoSource ./.;
         crates = import ./nix/packages.nix {
+          pkgs = final;
           inherit (final) lib;
           inherit craneLib src;
         };
