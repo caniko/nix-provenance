@@ -1,0 +1,31 @@
+[package]
+name = "tuwunel-provision"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Declarative provisioning client for Tuwunel Matrix users with auto-bootstrap"
+license = "AGPL-3.0-only"
+repository.workspace = true
+homepage = "https://codeberg.org/caniko/nix-provenance"
+authors.workspace = true
+keywords = ["matrix", "tuwunel", "provisioning", "iam"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "tuwunel-provision"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+provenance-core = { path = "../provenance-core" }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+  "blocking",
+] }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

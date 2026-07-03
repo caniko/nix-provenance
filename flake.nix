@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     rs-harbor = {
-      url = "git+https://codeberg.org/caniko/rs-harbor.git";
+      url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # rust-overlay and crane are re-exported by rs-harbor; follow them through.
@@ -226,7 +226,7 @@
         });
       in
         {
-          inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision stalwart016-provision;
+          inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision stalwart016-provision tuwunel-provision;
           rauthy-vikunja-groups = rauthyVikunjaGroups;
         };
     };

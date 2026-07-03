@@ -8,6 +8,9 @@
   cfg = config.services.matrix-tuwunel;
   pcfg = cfg.provision;
   passwords = self.lib.passwords;
+  system = pkgs.stdenv.hostPlatform.system;
+
+  defaultProvisionPackage = lib.attrByPath ["packages" system "tuwunel-provision"] pkgs.tuwunel-provision self;
 
   userSubmodule = types.submodule {
     options = {
@@ -38,12 +41,20 @@ in {
   options.services.matrix-tuwunel.provision = {
     enable = mkEnableOption "declarative tuwunel user provisioning";
 
+    provisionPackage = mkOption {
+      type = types.package;
+      default = defaultProvisionPackage;
+      defaultText = "self.packages.\${system}.tuwunel-provision";
+      description = "tuwunel-provision binary for auto-bootstrap and user provisioning.";
+    };
+
     adminTokenFile = mkOption {
-      type = types.path;
+      type = types.str;
+      default = "/var/lib/tuwunel/admin-token";
       description = ''
         Runtime path to a Matrix access token with admin privileges.
-        Bootstrap: register the first user (admin) via Element, extract token,
-        store in agenix, then enable the provisioner.
+        On first run, the provisioner auto-bootstraps by registering the first
+        admin user via open registration and writes the token to this path.
       '';
     };
 
@@ -72,80 +83,12 @@ in {
       wantedBy = ["multi-user.target"];
       restartTriggers = [stateFile];
 
-      script = let
-        stateFileAbs = toString stateFile;
-        tokenFileAbs = toString pcfg.adminTokenFile;
-      in ''
-        set -eu
-        umask 077
-
-        token=$(tr -d '\n' < ${lib.escapeShellArg tokenFileAbs})
-        test -n "$token"
-
-        state=${lib.escapeShellArg stateFileAbs}
-        server_name=$(jq -r '.server_name' "$state")
-        port=$(jq -r '.port' "$state")
-        base_url="http://127.0.0.1:''${port}"
-
-        jq -c '.users | to_entries[]' "$state" | while IFS= read -r entry; do
-          username=$(echo "$entry" | jq -r '.key')
-          is_admin=$(echo "$entry" | jq -r '.value.admin // false')
-          display_name=$(echo "$entry" | jq -r '.value.display_name // ""')
-          cred_name=$(echo "$entry" | jq -r '.value.credential_name')
-          user_id="@''${username}:''${server_name}"
-
-          cred_path="/run/credentials/tuwunel-provision.service/''${cred_name}"
-          if [ ! -f "$cred_path" ]; then
-            echo "tuwunel-provision: credential ''${cred_name} not found — skipping ''${user_id}" >&2
-            continue
-          fi
-          password=$(tr -d '\n' < "$cred_path")
-
-          payload=$(jq -n \
-            --arg pw "$password" \
-            --argjson admin "$is_admin" \
-            --arg display "$display_name" \
-            '{password: $pw, admin: $admin, displayname: $display}')
-
-          http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST "''${base_url}/_synapse/admin/v2/users/''${user_id}" \
-            -H "Authorization: Bearer $token" \
-            -H "Content-Type: application/json" \
-            -d "$payload" 2>/dev/null || echo "000")
-
-          case "$http_code" in
-            200|201)
-              echo "tuwunel-provision: created/updated ''${user_id}"
-              ;;
-            404|405)
-              echo "tuwunel-provision: admin API unsupported, trying register endpoint for ''${user_id}"
-              curl -s -o /dev/null \
-                -X POST "''${base_url}/_matrix/client/v3/register" \
-                -H "Authorization: Bearer $token" \
-                -H "Content-Type: application/json" \
-                -d "$(jq -n \
-                  --arg user "$username" \
-                  --arg pw "$password" \
-                  --argjson admin "$is_admin" \
-                  '{username: $user, password: $pw, admin: $admin}')" \
-                && echo "tuwunel-provision: registered ''${user_id} via fallback" \
-                || echo "tuwunel-provision: fallback also failed for ''${user_id}" >&2
-              ;;
-            000)
-              echo "tuwunel-provision: tuwunel not reachable at ''${base_url}" >&2
-              exit 1
-              ;;
-            *)
-              echo "tuwunel-provision: admin API returned HTTP $http_code for ''${user_id}" >&2
-              ;;
-          esac
-        done
-      '';
-
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        ExecStart = "${lib.getExe pcfg.provisionPackage} --state ${stateFile} --admin-token-file ${pcfg.adminTokenFile} --credential-dir %d --marker-dir /var/lib/tuwunel/markers --ready-timeout 30";
         LoadCredential = passwords.userPasswordCredentials "tuwunel-provision" pcfg.users;
+        StateDirectory = "tuwunel";
         User = cfg.user;
         Group = cfg.group;
       };

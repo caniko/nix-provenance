@@ -4,6 +4,7 @@
 # TLS root of trust. `args` and `cargoArtifacts` are re-exported so the checks
 # reuse the exact same isolated deps (identical derivations dedup in the store).
 {
+  pkgs,
   lib,
   craneLib,
   src,
@@ -14,6 +15,7 @@
     inherit src pname;
     version = crateVersion pname;
     strictDeps = true;
+    nativeBuildInputs = [pkgs.clang pkgs.mold];
     cargoExtraArgs = "-p ${pname}";
     # Tests run as their own checks; keep the package build lean.
     doCheck = false;
@@ -26,6 +28,7 @@
     pname = pname;
     version = ver;
     strictDeps = true;
+    nativeBuildInputs = [pkgs.clang pkgs.mold];
     cargoExtraArgs = "-p ${pname}";
     doCheck = false;
   };
@@ -39,6 +42,7 @@
   # stalwart016-provision uses explicit version because crateNameFromCargoToml
   # may not resolve the cargoToml path across evaluation contexts.
   stalwartProvisionArgs = buildArgs "stalwart016-provision" "0.1.0";
+  tuwunelArgs = mkArgs "tuwunel-provision";
 
   immichDeps = craneLib.buildDepsOnly immichArgs;
   kanidmStateRenderDeps = craneLib.buildDepsOnly kanidmStateRenderArgs;
@@ -47,6 +51,7 @@
   vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
+  tuwunelDeps = craneLib.buildDepsOnly tuwunelArgs;
 in {
   args = {
     immich-provision = immichArgs;
@@ -56,6 +61,7 @@ in {
     vikunja-provision = vikunjaArgs;
     identity-cli = identityArgs;
     stalwart016-provision = stalwartProvisionArgs;
+    tuwunel-provision = tuwunelArgs;
   };
 
   cargoArtifacts = {
@@ -66,6 +72,7 @@ in {
     vikunja-provision = vikunjaDeps;
     identity-cli = identityDeps;
     stalwart016-provision = stalwartProvisionDeps;
+    tuwunel-provision = tuwunelDeps;
   };
 
   packages = {
@@ -136,6 +143,16 @@ in {
           description = "Recovery-mode provisioner for Stalwart Mail Server 0.16";
           mainProgram = "stalwart016-provision";
           license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    tuwunel-provision = craneLib.buildPackage (tuwunelArgs
+      // {
+        cargoArtifacts = tuwunelDeps;
+        meta = {
+          description = "Declarative provisioning client for Tuwunel Matrix users with auto-bootstrap";
+          mainProgram = "tuwunel-provision";
+          license = [lib.licenses.agpl3Only];
         };
       });
   };

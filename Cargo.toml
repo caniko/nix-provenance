@@ -9,6 +9,7 @@ members = [
   "crates/vikunja-provision",
   "crates/identity-cli",
   "crates/stalwart016-provision",
+  "crates/tuwunel-provision",
 ]
 
 # Shared package metadata. `version` is intentionally NOT inherited — each crate
