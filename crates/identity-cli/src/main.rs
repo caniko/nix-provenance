@@ -115,6 +115,22 @@ enum KanidmCommand {
         posix_from: String,
     },
 
+    /// Set the primary password only when the person has no primary credential.
+    SetInitialPrimaryPassword {
+        /// Target Kanidm account name.
+        account: String,
+
+        /// File containing the initial primary Kanidm password to set.
+        #[arg(long)]
+        primary_from: String,
+    },
+
+    /// Reconcile person SSH public keys by tag.
+    SshPublicKey {
+        #[command(subcommand)]
+        command: SshPublicKeyCommand,
+    },
+
     /// Extend a person with POSIX/unix account attributes.
     PosixExtend {
         /// Target Kanidm account name.
@@ -215,6 +231,31 @@ enum ServiceAccountCommand {
     Delete {
         /// Service account name.
         name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+#[cfg(feature = "kanidm")]
+enum SshPublicKeyCommand {
+    /// Ensure a tagged SSH public key exists with the declared value.
+    Ensure {
+        /// Target Kanidm account name.
+        account: String,
+
+        /// Kanidm SSH key tag.
+        tag: String,
+
+        /// OpenSSH public key text.
+        public_key: String,
+    },
+
+    /// Delete a tagged SSH public key if present.
+    Delete {
+        /// Target Kanidm account name.
+        account: String,
+
+        /// Kanidm SSH key tag.
+        tag: String,
     },
 }
 
@@ -345,6 +386,44 @@ async fn run_kanidm(args: KanidmArgs) -> Result<()> {
             identity_cli::kanidm::set_posix_password(&config, &account, &posix_from).await?;
             println!("posix_password_set={account}");
         }
+        KanidmCommand::SetInitialPrimaryPassword {
+            account,
+            primary_from,
+        } => {
+            let set = identity_cli::kanidm::set_initial_primary_password(
+                &config,
+                &account,
+                &primary_from,
+            )
+            .await?;
+            println!(
+                "initial_primary_password_{}={account}",
+                if set { "set" } else { "present" }
+            );
+        }
+        KanidmCommand::SshPublicKey { command } => match command {
+            SshPublicKeyCommand::Ensure {
+                account,
+                tag,
+                public_key,
+            } => {
+                let changed = identity_cli::kanidm::ensure_ssh_public_key(
+                    &config,
+                    &account,
+                    &tag,
+                    &public_key,
+                )
+                .await?;
+                println!(
+                    "ssh_public_key_{}={account}:{tag}",
+                    if changed { "changed" } else { "ok" }
+                );
+            }
+            SshPublicKeyCommand::Delete { account, tag } => {
+                identity_cli::kanidm::delete_ssh_public_key(&config, &account, &tag).await?;
+                println!("ssh_public_key_deleted={account}:{tag}");
+            }
+        },
         KanidmCommand::PosixExtend {
             account,
             gid_number,

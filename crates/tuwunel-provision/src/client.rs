@@ -74,9 +74,7 @@ impl TuwunelClient {
                 .send()
             {
                 Ok(resp) if resp.status().is_success() => return Ok(()),
-                Ok(resp) => {
-                    last_err = Some(anyhow!("readiness probe returned {}", resp.status()))
-                }
+                Ok(resp) => last_err = Some(anyhow!("readiness probe returned {}", resp.status())),
                 Err(e) => last_err = Some(anyhow!("readiness probe failed: {e}")),
             }
             if attempt < attempts {
@@ -106,6 +104,32 @@ impl TuwunelClient {
         }
     }
 
+    pub fn login_password(&self, localpart: &str, password: &str) -> Result<String> {
+        let body = serde_json::json!({
+            "type": "m.login.password",
+            "identifier": {
+                "type": "m.id.user",
+                "user": localpart,
+            },
+            "password": password,
+        });
+
+        let resp = self
+            .req_auth(Method::POST, "/_matrix/client/v3/login")
+            .json(&body)
+            .send()
+            .context("password login request failed")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let data: RegisterResponse = resp.json().context("decoding login response")?;
+            return Ok(data.access_token);
+        }
+
+        let body_text = resp.text().unwrap_or_default();
+        bail!("password login returned HTTP {status}: {body_text}");
+    }
+
     fn try_register(
         &self,
         localpart: &str,
@@ -133,13 +157,30 @@ impl TuwunelClient {
 
         let status = resp.status();
         if status.is_success() {
-            let data: RegisterResponse = resp
-                .json()
-                .context("decoding register response")?;
+            let data: RegisterResponse = resp.json().context("decoding register response")?;
             return Ok(data.access_token);
         }
 
         let body_text = resp.text().unwrap_or_default();
+        if status == StatusCode::BAD_REQUEST {
+            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body_text) {
+                if err.errcode.as_deref() == Some("M_USER_IN_USE") {
+                    return Err(anyhow!("user_in_use:{localpart}"));
+                }
+            }
+        }
+        if status == StatusCode::FORBIDDEN {
+            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body_text) {
+                if err.errcode.as_deref() == Some("M_FORBIDDEN")
+                    && err
+                        .error
+                        .as_deref()
+                        .is_some_and(|msg| msg.contains("Registration has been disabled"))
+                {
+                    return Err(anyhow!("registration_disabled"));
+                }
+            }
+        }
         if status == StatusCode::UNAUTHORIZED {
             if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body_text) {
                 if let Some(session) = err.session {
@@ -147,7 +188,9 @@ impl TuwunelClient {
                 }
             }
             if session.is_none() {
-                bail!("register returned 401 without a session — registration may be disabled: {body_text}");
+                bail!(
+                    "register returned 401 without a session — registration may be disabled: {body_text}"
+                );
             }
             bail!("register returned 401 during session completion: {body_text}");
         }
@@ -161,6 +204,7 @@ impl TuwunelClient {
         password: &str,
         admin: bool,
         display_name: Option<&str>,
+        public_registration_enabled: bool,
     ) -> Result<()> {
         let path = format!("/_synapse/admin/v2/users/{user_id}");
         let mut body = serde_json::json!({
@@ -183,18 +227,23 @@ impl TuwunelClient {
         }
 
         if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
-            eprintln!(
-                "tuwunel-provision: admin API returned {status} for {user_id} — \
-                 falling back to register endpoint"
+            if public_registration_enabled {
+                eprintln!(
+                    "tuwunel-provision: admin API returned {status} for {user_id} — \
+                     falling back to public registration inside bootstrap window"
+                );
+                return self.register_fallback(user_id, password, admin, display_name);
+            }
+
+            bail!(
+                "registration_required:{user_id}:admin API returned {status}; public registration \
+                 bootstrap is not enabled"
             );
-            return self.register_fallback(user_id, password, admin, display_name);
         }
 
         let body_text = resp.text().unwrap_or_default();
         if status == StatusCode::UNAUTHORIZED {
-            bail!(
-                "admin API returned 401 for {user_id} — the admin token has been rejected"
-            );
+            bail!("admin API returned 401 for {user_id} — the admin token has been rejected");
         }
         bail!("admin API returned {status} for {user_id}: {body_text}");
     }
@@ -279,6 +328,18 @@ fn extract_session_id(err: &anyhow::Error) -> Option<String> {
     None
 }
 
+fn is_user_in_use(err: &anyhow::Error) -> bool {
+    err.chain()
+        .map(|cause| format!("{cause}"))
+        .any(|msg| msg.starts_with("user_in_use:"))
+}
+
+pub fn registration_required(err: &anyhow::Error) -> bool {
+    err.chain()
+        .map(|cause| format!("{cause}"))
+        .any(|msg| msg.starts_with("registration_required:") || msg == "registration_disabled")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +379,25 @@ mod tests {
     fn extract_session_id_returns_none_for_unrelated_error() {
         let err = anyhow!("something else went wrong");
         assert_eq!(extract_session_id(&err), None);
+    }
+
+    #[test]
+    fn is_user_in_use_detects_sentinel_error() {
+        let err = anyhow!("user_in_use:can");
+        assert!(is_user_in_use(&err));
+    }
+
+    #[test]
+    fn registration_required_detects_disabled_registration() {
+        let err = anyhow!("registration_disabled");
+        assert!(registration_required(&err));
+    }
+
+    #[test]
+    fn registration_required_detects_missing_bootstrap_window() {
+        let err = anyhow!(
+            "registration_required:@alice:example.com:admin API returned 404; public registration bootstrap is not enabled"
+        );
+        assert!(registration_required(&err));
     }
 }

@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
-use provenance_core::password::{PasswordMarkerStore, read_password_file};
+use provenance_core::password::{PasswordMarkerStore, read_password_file, secret_digest};
 use provenance_core::setops::{is_subset, opt_vec, same_set, union};
 use serde_json::Value;
 
@@ -142,7 +142,7 @@ fn password_marker_store(cli: &Cli, state: &State) -> Result<PasswordMarkerStore
             None if state
                 .users
                 .values()
-                .any(|user| user.password_file.is_some()) =>
+                .any(|user| user.initial_password_file.is_some()) =>
             {
                 bail!("password markers require --password-marker-dir or STATE_DIRECTORY")
             }
@@ -363,11 +363,15 @@ fn reconcile_users(
         match (spec.present, current) {
             (true, None) => {
                 log(format_args!("create user {email}"));
+                let marker_id = format!("rauthy:{email}");
+                if spec.initial_password_file.is_some() {
+                    password_markers.mark_pending(&marker_id)?;
+                }
                 client.create_user(&new_user(email, spec))?;
                 if spec.preferred_username.is_some()
                     || has_declared_profile_fields(spec)
                     || !spec.attributes.is_empty()
-                    || spec.password_file.is_some()
+                    || spec.initial_password_file.is_some()
                 {
                     let user = client.get_user_by_email(email)?.ok_or_else(|| {
                         anyhow!("Rauthy user {email} was created but could not be read back")
@@ -375,7 +379,12 @@ fn reconcile_users(
                     reconcile_user_profile_fields(client, &user, spec)?;
                     reconcile_user_preferred_username(client, &user, spec)?;
                     reconcile_user_attributes_values(client, &user, spec)?;
-                    reconcile_user_password(client, &user, spec, password_markers)?;
+                    reconcile_user_initial_password_on_create(
+                        client,
+                        &user,
+                        spec,
+                        password_markers,
+                    )?;
                 }
                 // Email a set-password link only on first create (never on
                 // update), so at most one email is ever sent per user.
@@ -399,7 +408,7 @@ fn reconcile_users(
                 reconcile_user_profile_fields(client, &user, spec)?;
                 reconcile_user_preferred_username(client, &user, spec)?;
                 reconcile_user_attributes_values(client, &user, spec)?;
-                reconcile_user_password(client, &user, spec, password_markers)?;
+                reconcile_existing_user_initial_password(client, &user, spec, password_markers)?;
             }
             (false, Some(user)) if !no_auto_remove => {
                 log(format_args!("delete user {email}"));
@@ -412,32 +421,95 @@ fn reconcile_users(
 }
 
 fn validate_user_credential_strategy(email: &str, spec: &UserSpec) -> Result<()> {
-    if spec.send_password_email && spec.password_file.is_some() {
-        bail!("user {email} cannot set both send_password_email and password_file");
+    if spec.send_password_email && spec.initial_password_file.is_some() {
+        bail!("user {email} cannot set both send_password_email and initial_password_file");
     }
     Ok(())
 }
 
-fn reconcile_user_password(
+fn set_user_initial_password(
     client: &RauthyClient,
     user: &client::UserResponse,
     spec: &UserSpec,
     markers: &PasswordMarkerStore,
 ) -> Result<()> {
-    let Some(path) = spec.password_file.as_deref() else {
+    let Some(path) = spec.initial_password_file.as_deref() else {
         return Ok(());
     };
-    let password = read_password_file(path)
-        .with_context(|| format!("resolving password_file for Rauthy user {}", user.email))?;
+    let password = read_password_file(path).with_context(|| {
+        format!(
+            "resolving initial_password_file for Rauthy user {}",
+            user.email
+        )
+    })?;
     let marker_id = format!("rauthy:{}", user.email);
-    if !markers.needs_update(&marker_id, &password)? {
-        return Ok(());
-    }
-    log(format_args!("update user {} password", user.email));
+    log(format_args!(
+        "set initial password for new user {}",
+        user.email
+    ));
     let mut update = update_user(user, spec);
     update.password = Some(password.clone());
     client.update_user(&user.id, &update)?;
-    markers.commit(&marker_id, &password)
+    markers.commit(&marker_id, &password)?;
+    markers.clear_pending(&marker_id)
+}
+
+fn reconcile_user_initial_password_on_create(
+    client: &RauthyClient,
+    user: &client::UserResponse,
+    spec: &UserSpec,
+    markers: &PasswordMarkerStore,
+) -> Result<()> {
+    set_user_initial_password(client, user, spec, markers).map(|_| ())
+}
+
+fn reconcile_existing_user_initial_password(
+    client: &RauthyClient,
+    user: &client::UserResponse,
+    spec: &UserSpec,
+    markers: &PasswordMarkerStore,
+) -> Result<()> {
+    let Some(path) = spec.initial_password_file.as_deref() else {
+        return Ok(());
+    };
+    let password = read_password_file(path).with_context(|| {
+        format!(
+            "resolving initial_password_file for Rauthy user {}",
+            user.email
+        )
+    })?;
+    let marker_id = format!("rauthy:{}", user.email);
+    if markers.is_pending(&marker_id)? {
+        log(format_args!(
+            "complete pending initial password for existing user {}",
+            user.email
+        ));
+        let mut update = update_user(user, spec);
+        update.password = Some(password.clone());
+        client.update_user(&user.id, &update)?;
+        markers.commit(&marker_id, &password)?;
+        markers.clear_pending(&marker_id)?;
+        return Ok(());
+    }
+    let desired = secret_digest(&password);
+    match markers.current_digest(&marker_id)? {
+        None => {
+            eprintln!(
+                "[rauthy-provision] warning: user {} already exists; adopting initial_password_file marker without changing the existing password",
+                user.email
+            );
+            markers.commit(&marker_id, &password)?;
+        }
+        Some(current) if current != desired => {
+            eprintln!(
+                "[rauthy-provision] warning: initial_password_file changed for existing user {}; Rauthy passwords cannot be changed declaratively; adopting new marker without changing the existing password",
+                user.email
+            );
+            markers.commit(&marker_id, &password)?;
+        }
+        Some(_) => {}
+    }
+    Ok(())
 }
 
 fn new_user(email: &str, spec: &UserSpec) -> NewUserRequest {
@@ -1129,11 +1201,11 @@ mod tests {
     }
 
     #[test]
-    fn password_file_conflicts_with_set_password_email() {
+    fn initial_password_file_conflicts_with_set_password_email() {
         let s: UserSpec = serde_json::from_value(serde_json::json!({
             "send_password_email": true,
             "password_email_redirect_uri": "https://app.example.com/login",
-            "password_file": "/run/credentials/rauthy-provision.service/password-a"
+            "initial_password_file": "/run/credentials/rauthy-provision.service/password-a"
         }))
         .unwrap();
 

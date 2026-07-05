@@ -4,13 +4,15 @@ mod state;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::process::Command;
+use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use provenance_core::password::{PasswordMarkerStore, read_password_file};
 
-use client::TuwunelClient;
+use client::{TuwunelClient, registration_required};
 use state::State;
 
 #[derive(Parser, Debug)]
@@ -36,6 +38,26 @@ struct Cli {
     #[arg(long, default_value = "/var/lib/tuwunel/markers")]
     marker_dir: PathBuf,
 
+    /// Tuwunel config with public registration temporarily enabled.
+    #[arg(long)]
+    registration_bootstrap_open_config: Option<PathBuf>,
+
+    /// Tuwunel config with public registration restored to the declared closed state.
+    #[arg(long)]
+    registration_bootstrap_closed_config: Option<PathBuf>,
+
+    /// Mutable config path consumed by Tuwunel's SIGUSR2 reload command.
+    #[arg(long)]
+    registration_bootstrap_runtime_config: Option<PathBuf>,
+
+    /// systemctl binary used to signal tuwunel.service.
+    #[arg(long, default_value = "systemctl")]
+    systemctl: PathBuf,
+
+    /// systemd service to signal after writing the bootstrap runtime config.
+    #[arg(long, default_value = "tuwunel.service")]
+    tuwunel_service: String,
+
     /// Seconds to wait for Tuwunel readiness before failing.
     #[arg(long, default_value_t = 30)]
     ready_timeout: u32,
@@ -50,6 +72,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("parsing state file {}", cli.state.display()))?;
 
     let base_url = format!("http://127.0.0.1:{}", state.port);
+    let registration_bootstrap = RegistrationBootstrap::from_cli(&cli)?;
     let cred_dir = cli.credential_dir;
     let markers = PasswordMarkerStore::new(&cli.marker_dir);
 
@@ -60,7 +83,13 @@ fn main() -> Result<()> {
         .context("waiting for tuwunel to be ready")?;
 
     // Bootstrap: resolve or create the admin token.
-    let admin_token = bootstrap_admin_token(&state, &base_url, &cred_dir, &cli.admin_token_file)?;
+    let admin_token = bootstrap_admin_token(
+        &state,
+        &base_url,
+        &cred_dir,
+        &cli.admin_token_file,
+        registration_bootstrap.as_ref(),
+    )?;
 
     // Create authenticated client.
     let client = TuwunelClient::new(&base_url, &admin_token)?;
@@ -91,14 +120,37 @@ fn main() -> Result<()> {
             spec.admin, spec.display_name
         );
 
-        client
-            .create_or_update_user(
-                &user_id,
-                &password,
-                spec.admin,
-                spec.display_name.as_deref(),
-            )
-            .with_context(|| format!("provisioning {user_id}"))?;
+        let provision_result = client.create_or_update_user(
+            &user_id,
+            &password,
+            spec.admin,
+            spec.display_name.as_deref(),
+            false,
+        );
+
+        match provision_result {
+            Ok(()) => {}
+            Err(err) if registration_required(&err) => {
+                let bootstrap = registration_bootstrap.as_ref().with_context(|| {
+                    format!(
+                        "provisioning {user_id} requires public registration, but registration \
+                         bootstrap config paths were not supplied"
+                    )
+                })?;
+                bootstrap
+                    .with_registration_enabled(|| {
+                        client.create_or_update_user(
+                            &user_id,
+                            &password,
+                            spec.admin,
+                            spec.display_name.as_deref(),
+                            true,
+                        )
+                    })
+                    .with_context(|| format!("provisioning {user_id}"))?;
+            }
+            Err(err) => return Err(err).with_context(|| format!("provisioning {user_id}")),
+        }
 
         markers
             .commit(&marker_id, &password)
@@ -107,7 +159,134 @@ fn main() -> Result<()> {
         eprintln!("tuwunel-provision: {user_id} provisioned");
     }
 
+    refresh_admin_token(&state, &client, &cred_dir, &cli.admin_token_file)?;
+
     eprintln!("tuwunel-provision: done");
+    Ok(())
+}
+
+#[derive(Debug)]
+struct RegistrationBootstrap {
+    open_config: PathBuf,
+    closed_config: PathBuf,
+    runtime_config: PathBuf,
+    systemctl: PathBuf,
+    service: String,
+}
+
+impl RegistrationBootstrap {
+    fn from_cli(cli: &Cli) -> Result<Option<Self>> {
+        let provided = [
+            cli.registration_bootstrap_open_config.is_some(),
+            cli.registration_bootstrap_closed_config.is_some(),
+            cli.registration_bootstrap_runtime_config.is_some(),
+        ];
+        if provided.iter().all(|value| !value) {
+            return Ok(None);
+        }
+        if !provided.iter().all(|value| *value) {
+            anyhow::bail!(
+                "--registration-bootstrap-open-config, --registration-bootstrap-closed-config, \
+                 and --registration-bootstrap-runtime-config must be supplied together"
+            );
+        }
+
+        Ok(Some(Self {
+            open_config: cli.registration_bootstrap_open_config.clone().unwrap(),
+            closed_config: cli.registration_bootstrap_closed_config.clone().unwrap(),
+            runtime_config: cli.registration_bootstrap_runtime_config.clone().unwrap(),
+            systemctl: cli.systemctl.clone(),
+            service: cli.tuwunel_service.clone(),
+        }))
+    }
+
+    fn with_registration_enabled<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.reload_from(&self.open_config, "enable public registration")?;
+        let result = f();
+        let restore = self.reload_from(&self.closed_config, "disable public registration");
+
+        match (result, restore) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(_), Err(restore_err)) => Err(restore_err).context(
+                "provisioning succeeded, but restoring disabled registration failed; \
+                 manual intervention is required before leaving the host exposed",
+            ),
+            (Err(err), Err(restore_err)) => Err(err).context(format!(
+                "provisioning failed, and restoring disabled registration also failed: {restore_err:#}"
+            )),
+        }
+    }
+
+    fn reload_from(&self, source: &PathBuf, reason: &str) -> Result<()> {
+        let contents = fs::read(source)
+            .with_context(|| format!("reading tuwunel {reason} config {}", source.display()))?;
+        atomic_write_0644(&self.runtime_config, &contents).with_context(|| {
+            format!(
+                "writing tuwunel runtime bootstrap config {}",
+                self.runtime_config.display()
+            )
+        })?;
+
+        eprintln!(
+            "tuwunel-provision: {reason} via {} and SIGUSR2 to {}",
+            self.runtime_config.display(),
+            self.service
+        );
+        let status = Command::new(&self.systemctl)
+            .arg("kill")
+            .arg("--signal=SIGUSR2")
+            .arg("--kill-who=main")
+            .arg(&self.service)
+            .status()
+            .with_context(|| format!("running {}", self.systemctl.display()))?;
+        if !status.success() {
+            anyhow::bail!(
+                "{} kill command failed with status {status}",
+                self.systemctl.display()
+            );
+        }
+
+        // Tuwunel runs admin_signal_execute asynchronously after SIGUSR2.
+        sleep(Duration::from_millis(750));
+        Ok(())
+    }
+}
+
+fn refresh_admin_token(
+    state: &State,
+    client: &TuwunelClient,
+    cred_dir: &PathBuf,
+    admin_token_file: &PathBuf,
+) -> Result<()> {
+    let Some(localpart) = state.admin_token_user.as_deref() else {
+        return Ok(());
+    };
+
+    let spec = state
+        .users
+        .get(localpart)
+        .with_context(|| format!("admin_token_user '{localpart}' is not present in users"))?;
+    if !spec.admin {
+        anyhow::bail!("admin_token_user '{localpart}' must reference a user with admin: true");
+    }
+
+    let cred_path = cred_dir.join(&spec.credential_name);
+    let password = read_password_file(&cred_path).with_context(|| {
+        format!(
+            "reading admin token user '{localpart}' password from {}",
+            cred_path.display()
+        )
+    })?;
+
+    let token = client
+        .login_password(localpart, &password)
+        .with_context(|| format!("logging in admin token user '{localpart}'"))?;
+    write_token_file(admin_token_file, &token)?;
+    eprintln!(
+        "tuwunel-provision: admin token refreshed from {localpart} at {}",
+        admin_token_file.display()
+    );
     Ok(())
 }
 
@@ -116,24 +295,24 @@ fn bootstrap_admin_token(
     base_url: &str,
     cred_dir: &PathBuf,
     admin_token_file: &PathBuf,
+    registration_bootstrap: Option<&RegistrationBootstrap>,
 ) -> Result<String> {
     // If the token file already has content, use it.
     if let Ok(token) = read_password_file(admin_token_file) {
-        eprintln!("tuwunel-provision: admin token already present at {}", admin_token_file.display());
+        eprintln!(
+            "tuwunel-provision: admin token already present at {}",
+            admin_token_file.display()
+        );
         return Ok(token);
     }
 
-    eprintln!(
-        "tuwunel-provision: no admin token found — bootstrapping first admin user"
-    );
+    eprintln!("tuwunel-provision: no admin token found — bootstrapping first admin user");
 
     let (username, spec) = state
         .users
         .iter()
         .find(|(_, spec)| spec.admin)
-        .context(
-            "no user with admin: true in state — cannot auto-bootstrap admin token",
-        )?;
+        .context("no user with admin: true in state — cannot auto-bootstrap admin token")?;
 
     let cred_path = cred_dir.join(&spec.credential_name);
     let password = read_password_file(&cred_path).with_context(|| {
@@ -147,9 +326,24 @@ fn bootstrap_admin_token(
     let user_id = format!("@{username}:{}", state.server_name);
     eprintln!("tuwunel-provision: registering admin user {user_id}");
 
-    let token = client
-        .register_admin(&user_id, &password)
-        .with_context(|| format!("registering admin user {user_id}"))?;
+    let register = || {
+        client
+            .register_admin(&user_id, &password)
+            .with_context(|| format!("registering admin user {user_id}"))
+    };
+    let token = match register() {
+        Ok(token) => token,
+        Err(err) if registration_required(&err) => {
+            let bootstrap = registration_bootstrap.with_context(|| {
+                format!(
+                    "registering admin user {user_id} requires public registration, but \
+                     registration bootstrap config paths were not supplied"
+                )
+            })?;
+            bootstrap.with_registration_enabled(register)?
+        }
+        Err(err) => return Err(err),
+    };
 
     // Write token atomically with 0600 permissions.
     write_token_file(admin_token_file, &token)?;
@@ -161,10 +355,19 @@ fn bootstrap_admin_token(
     Ok(token)
 }
 
+fn atomic_write_0644(path: &PathBuf, contents: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, contents).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("setting permissions on {}", tmp.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
 fn write_token_file(path: &PathBuf, token: &str) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, token)
-        .with_context(|| format!("writing admin token to {}", tmp.display()))?;
+    fs::write(&tmp, token).with_context(|| format!("writing admin token to {}", tmp.display()))?;
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))
         .with_context(|| format!("setting permissions on {}", tmp.display()))?;
     fs::rename(&tmp, path)

@@ -6,6 +6,7 @@
 }: let
   inherit (lib) mkEnableOption mkIf mkOption types;
   cfg = config.services.vikunja.provision;
+  webhookSecretCredential = "vikunja-webhook-secret";
 
   presentOption = mkOption {
     type = types.bool;
@@ -43,7 +44,8 @@
       };
       events = mkOption {
         type = types.listOf types.str;
-        default = ["task.created" "task.updated" "task.deleted" "task.assigned"];
+        default = self.lib.vikunja.webhookEvents.taskLifecycle;
+        defaultText = lib.literalExpression "self.lib.vikunja.webhookEvents.taskLifecycle";
         description = "Vikunja events to subscribe to.";
       };
     };
@@ -87,8 +89,11 @@
   provisionScript = pkgs.writeShellScript "vikunja-provision-start" ''
     set -eu
     test -s "$CREDENTIALS_DIRECTORY/vikunja-token"
+    ${lib.optionalString (cfg.webhookSecretFile != null) ''
+      test -s "$CREDENTIALS_DIRECTORY/${webhookSecretCredential}"
+    ''}
     ${lib.escapeShellArg (lib.getExe cfg.package)} ${cliArgs} --token-file "$CREDENTIALS_DIRECTORY/vikunja-token" \
-      ${lib.optionalString (cfg.webhookSecretFile != null) "--webhook-secret-file ${cfg.webhookSecretFile}"}
+      ${lib.optionalString (cfg.webhookSecretFile != null) "--webhook-secret-file \"$CREDENTIALS_DIRECTORY/${webhookSecretCredential}\""}
   '';
 in {
   options.services.vikunja.provision = {
@@ -213,16 +218,16 @@ in {
         ])
         cfg.teams)
       ++ lib.flatten (lib.mapAttrsToList (projectId: wh: [
-        {
-          assertion = !wh.present || projectId != "";
-          message = "services.vikunja.provision.webhooks must not contain an empty project ID when present = true.";
-        }
-        {
-          assertion = !wh.present || wh.url != "";
-          message = "services.vikunja.provision.webhooks.${projectId}.url is required when present = true.";
-        }
-      ])
-      cfg.webhooks);
+          {
+            assertion = !wh.present || projectId != "";
+            message = "services.vikunja.provision.webhooks must not contain an empty project ID when present = true.";
+          }
+          {
+            assertion = !wh.present || wh.url != "";
+            message = "services.vikunja.provision.webhooks.${projectId}.url is required when present = true.";
+          }
+        ])
+        cfg.webhooks);
 
     systemd.services.vikunja-provision = {
       description = "Declaratively provision Vikunja teams and webhooks";
@@ -233,7 +238,9 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        LoadCredential = ["vikunja-token:${cfg.tokenFile}"];
+        LoadCredential =
+          ["vikunja-token:${cfg.tokenFile}"]
+          ++ lib.optional (cfg.webhookSecretFile != null) "${webhookSecretCredential}:${cfg.webhookSecretFile}";
         ExecStart = provisionScript;
         DynamicUser = true;
         User = "vikunja";

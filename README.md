@@ -68,8 +68,9 @@ strategy:
   Rauthy emails a one-time set-password link to. **Requires SMTP (e.g. relaying
   through Stalwart) on the Rauthy host.** Rauthy-backend only.
 - `adapter.passwordFromFile { passwordFile; }` — a native Rauthy user whose
-  password is reconciled from a runtime password file such as an agenix secret.
-  Rauthy-backend only.
+  initial password is loaded from a runtime password file such as an agenix
+  secret. Rauthy owns the password after account creation; later declarative
+  changes warn and update only the marker hash. Rauthy-backend only.
 
 ```nix
 services.provenance.externalApps.pink-raven = {

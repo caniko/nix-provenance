@@ -44,6 +44,7 @@
   stalwart016VmTest = import ./modules/test/stalwart016-vmtest.nix {inherit pkgs self system;};
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
+  tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
 
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in {
@@ -275,14 +276,20 @@ in {
   vikunja-provision-module-eval = let
     svc = vikunjaProvisionEval.config.systemd.services.vikunja-provision;
     serviceConfig = builtins.toJSON svc.serviceConfig;
+    defaultWebhookEvents = builtins.toJSON vikunjaProvisionEval.config.services.vikunja.provision.webhooks."10".events;
   in
     runCommand "vikunja-provision-module-eval" {} ''
       test -n ${lib.escapeShellArg serviceConfig}
       test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
       test ${lib.escapeShellArg (toString svc.serviceConfig.RemainAfterExit)} = 1
       printf '%s\n' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.LoadCredential)} | grep -q 'vikunja-token:/run/secrets/vikunja-provision-token'
+      printf '%s\n' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.LoadCredential)} | grep -q 'vikunja-webhook-secret:/run/secrets/vikunja-webhook-secret'
       printf '%s\n' ${lib.escapeShellArg (builtins.toJSON svc.after)} | grep -q 'vikunja.service'
       test -x ${svc.serviceConfig.ExecStart}
+      grep -q -- '--webhook-secret-file "$CREDENTIALS_DIRECTORY/vikunja-webhook-secret"' ${svc.serviceConfig.ExecStart}
+      test ${lib.escapeShellArg defaultWebhookEvents} = ${lib.escapeShellArg (builtins.toJSON self.lib.vikunja.webhookEvents.taskLifecycle)}
+      printf '%s\n' ${lib.escapeShellArg defaultWebhookEvents} | grep -q 'task.assignee.created'
+      ! printf '%s\n' ${lib.escapeShellArg defaultWebhookEvents} | grep -q 'task.assigned'
       touch $out
     '';
 
@@ -337,13 +344,51 @@ in {
       test -x ${svc.serviceConfig.ExecStart}
       script=$(cat ${svc.serviceConfig.ExecStart})
       printf '%s' "$script" | grep -q 'set-ldap-unix-bind true'
-      printf '%s' "$script" | grep -q 'provision can --primary-from'
+      printf '%s' "$script" | grep -q 'set-initial-primary-password can --primary-from'
+      printf '%s' "$script" | grep -q 'ssh-public-key ensure can hm-identity'
       printf '%s' "$script" | grep -q 'set-posix-password noreply'
       printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/primary-can' \
-        || { echo "kanidm-credentials: primary password LoadCredential missing" >&2; exit 1; }
+        || { echo "kanidm-credentials: initial primary password LoadCredential missing" >&2; exit 1; }
       printf '%s' "$script" | grep -q 'service-account create stalwart-ldap'
       printf '%s' "$script" | grep -q 'group-add-members idm_people_pii_read stalwart-ldap'
       printf '%s' "$script" | grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token'
+      touch $out
+    '';
+
+  tuwunel-module-eval = let
+    svc = tuwunelEval.config.systemd.services.tuwunel;
+    provisionSvc = tuwunelEval.config.systemd.services.tuwunel-provision;
+    serviceConfig = builtins.toJSON svc.serviceConfig;
+    settings = builtins.toJSON tuwunelEval.config.services.matrix-tuwunel.settings.global.identity_provider.kanidm;
+    provisionConfig = builtins.toJSON provisionSvc.serviceConfig;
+  in
+    runCommand "tuwunel-module-eval" {} ''
+      settings=${lib.escapeShellArg settings}
+      service=${lib.escapeShellArg serviceConfig}
+      provision=${lib.escapeShellArg provisionConfig}
+      printf '%s' "$settings" | grep -q '"client_id":"matrix"' \
+        || { echo "tuwunel: OIDC client_id missing" >&2; exit 1; }
+      printf '%s' "$settings" | grep -q '"issuer_url":"https://auth.example.com/oauth2/openid/matrix"' \
+        || { echo "tuwunel: OIDC issuer_url missing" >&2; exit 1; }
+      printf '%s' "$settings" | grep -q '"callback_url":"https://matrix.example.com/_matrix/client/unstable/login/sso/callback/matrix"' \
+        || { echo "tuwunel: OIDC callback_url missing" >&2; exit 1; }
+      printf '%s' "$settings" | grep -q '"userid_claims":\["preferred_username"\]' \
+        || { echo "tuwunel: OIDC userid_claims missing" >&2; exit 1; }
+      printf '%s' "$settings" | grep -q '"unique_id_fallbacks":false' \
+        || { echo "tuwunel: unique_id_fallbacks false missing" >&2; exit 1; }
+      printf '%s' "$settings" | grep -q '/run/credentials/tuwunel.service/password-oidc-kanidm-' \
+        || { echo "tuwunel: OIDC client_secret_file must point at runtime credential" >&2; exit 1; }
+      printf '%s' "$service" | grep -q '/run/agenix/matrix-oidc-client-secret' \
+        || { echo "tuwunel: OIDC LoadCredential source missing" >&2; exit 1; }
+      if printf '%s' "$settings" | grep -q '/run/agenix/matrix-oidc-client-secret'; then
+        echo "tuwunel: rendered settings must not contain agenix source path" >&2
+        exit 1
+      fi
+      printf '%s' "$provision" | grep -q '/run/agenix/matrix-admin-password' \
+        || { echo "tuwunel: matrix-admin password LoadCredential missing" >&2; exit 1; }
+      state_file=$(printf '%s' ${lib.escapeShellArg provisionSvc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*tuwunel-provision-state.json')
+      grep -q '"admin_token_user":"matrix-admin"' "$state_file" \
+        || { echo "tuwunel: admin_token_user missing from provision state" >&2; exit 1; }
       touch $out
     '';
 
@@ -372,6 +417,10 @@ in {
         || { echo "adapter: no emailed (passwordInitByEmail) rauthy user rendered" >&2; exit 1; }
       printf '%s' "$rendered_state" | grep -q '/run/credentials/rauthy-provision.service/password-bot' \
         || { echo "adapter: passwordFromFile did not render runtime password path" >&2; exit 1; }
+      printf '%s' "$rendered_state" | grep -q '"initial_password_file"' \
+        || { echo "adapter: passwordFromFile did not render initial_password_file" >&2; exit 1; }
+      ! printf '%s' "$rendered_state" | grep -q '"password_file"' \
+        || { echo "adapter: passwordFromFile rendered obsolete password_file" >&2; exit 1; }
       printf '%s' "$service" | grep -q '/run/agenix/pink-raven-bot-password' \
         || { echo "adapter: passwordFromFile LoadCredential source missing" >&2; exit 1; }
       printf '%s' "$rendered_state" | grep -q '"post_logout_redirect_uris":\["https://raven.tartanoglu.com/"\]' \

@@ -31,6 +31,23 @@
 
   sa = cfg.serviceAccount;
   posixNames = lib.attrNames cfg.posixAccounts;
+  validSshTag = tag: builtins.match "[A-Za-z0-9_.@:-]+" tag != null;
+  invalidSshTags =
+    lib.concatLists (
+      lib.mapAttrsToList (
+        name: acct:
+          map (tag: "${name}.${tag}") (
+            lib.filter (tag: !(validSshTag tag)) (lib.attrNames acct.sshPublicKeys)
+          )
+      )
+      cfg.posixAccounts
+    );
+
+  desiredSshTagsFile = name: acct:
+    pkgs.writeText "kanidm-${name}-ssh-tags" (
+      lib.concatStringsSep "\n" (lib.attrNames acct.sshPublicKeys)
+      + lib.optionalString (acct.sshPublicKeys != {}) "\n"
+    );
 
   # systemd LoadCredential entries: idm_admin always; admin when the domain
   # toggle is managed; one per posix account.
@@ -38,11 +55,11 @@
     ["idm-admin:${cfg.idmAdminPasswordFile}"]
     ++ lib.optional (cfg.adminPasswordFile != null) "admin:${cfg.adminPasswordFile}"
     ++ lib.mapAttrsToList (name: acct: "posix-${name}:${acct.passwordFile}") cfg.posixAccounts
-    ++ lib.mapAttrsToList (name: acct: "primary-${name}:${acct.primaryPasswordFile}") (lib.filterAttrs (_: acct: acct.primaryPasswordFile != null) cfg.posixAccounts);
+    ++ lib.mapAttrsToList (name: acct: "initial-${name}:${acct.initialPasswordFile}") (lib.filterAttrs (_: acct: acct.initialPasswordFile != null) cfg.posixAccounts);
 
   reconcile = pkgs.writeShellApplication {
     name = "kanidm-credentials-reconcile";
-    runtimeInputs = [pkgs.coreutils pkgs.curl pkgs.openldap cfg.package];
+    runtimeInputs = [pkgs.coreutils pkgs.curl pkgs.gnugrep pkgs.openldap cfg.package];
     text = ''
       cred="$CREDENTIALS_DIRECTORY"
       url=${lib.escapeShellArg cfg.instanceUrl}
@@ -91,29 +108,60 @@
       # the others). The reconcile still exits non-zero if any failed.
       rc=0
       marker_dir="$STATE_DIRECTORY/password-markers"
+      ssh_marker_dir="$STATE_DIRECTORY/ssh-key-tags"
       mkdir -p "$marker_dir"
+      mkdir -p "$ssh_marker_dir"
       ${lib.concatMapStringsSep "\n" (name: ''
-          ${lib.optionalString (cfg.posixAccounts.${name}.primaryPasswordFile != null) ''
-            primary_hash="$(sha256sum "$cred/primary-${name}" | cut -d ' ' -f1)"
-            primary_marker="$marker_dir/primary-${builtins.substring 0 16 (builtins.hashString "sha256" name)}.sha256"
-            if [ ! -s "$primary_marker" ] || [ "$(cat "$primary_marker")" != "$primary_hash" ]; then
-              if idm provision ${lib.escapeShellArg name} --primary-from "$cred/primary-${name}" --posix-from "$cred/posix-${name}" >/dev/null; then
-                printf '%s\n' "$primary_hash" > "$primary_marker"
+          ${lib.optionalString (cfg.posixAccounts.${name}.initialPasswordFile != null) ''
+            initial_hash="$(sha256sum "$cred/initial-${name}" | cut -d ' ' -f1)"
+            initial_marker="$marker_dir/initial-${builtins.substring 0 16 (builtins.hashString "sha256" name)}.sha256"
+            if [ ! -s "$initial_marker" ] || [ "$(cat "$initial_marker")" != "$initial_hash" ]; then
+              if initial_output="$(idm set-initial-primary-password ${lib.escapeShellArg name} --primary-from "$cred/initial-${name}" 2>&1)"; then
+                if printf '%s\n' "$initial_output" | grep -q '^initial_primary_password_present='; then
+                  if [ ! -s "$initial_marker" ]; then
+                    echo "kanidm-credentials: warning: ${name} already has a primary credential; adopting initialPasswordFile marker without changing Kanidm credentials" >&2
+                  else
+                    echo "kanidm-credentials: warning: initialPasswordFile changed for ${name}; existing Kanidm primary credentials cannot be changed declaratively" >&2
+                  fi
+                fi
+                printf '%s\n' "$initial_hash" > "$initial_marker"
               else
-                echo "kanidm-credentials: failed to provision primary/POSIX credentials for ${name}" >&2
+                printf '%s\n' "$initial_output" >&2
+                echo "kanidm-credentials: failed to set/adopt initial primary credential for ${name}" >&2
                 rc=1
               fi
-            elif ! idm set-posix-password ${lib.escapeShellArg name} --posix-from "$cred/posix-${name}" >/dev/null; then
-              echo "kanidm-credentials: failed to set POSIX password for ${name}" >&2
-              rc=1
             fi
           ''}
-          ${lib.optionalString (cfg.posixAccounts.${name}.primaryPasswordFile == null) ''
-            if ! idm set-posix-password ${lib.escapeShellArg name} --posix-from "$cred/posix-${name}" >/dev/null; then
-              echo "kanidm-credentials: failed to set POSIX password for ${name}" >&2
+          if ! idm set-posix-password ${lib.escapeShellArg name} --posix-from "$cred/posix-${name}" >/dev/null; then
+            echo "kanidm-credentials: failed to set POSIX password for ${name}" >&2
+            rc=1
+          fi
+
+          desired_tags=${lib.escapeShellArg (desiredSshTagsFile name cfg.posixAccounts.${name})}
+          owned_tags="$ssh_marker_dir/${builtins.substring 0 16 (builtins.hashString "sha256" name)}.tags"
+          touch "$owned_tags"
+          ssh_ok=1
+          ${lib.concatStringsSep "\n" (lib.mapAttrsToList (tag: publicKey: ''
+            if ! idm ssh-public-key ensure ${lib.escapeShellArg name} ${lib.escapeShellArg tag} ${lib.escapeShellArg publicKey} >/dev/null; then
+              echo "kanidm-credentials: failed to ensure SSH public key ${tag} for ${name}" >&2
               rc=1
+              ssh_ok=0
             fi
-          ''}
+          '')
+          cfg.posixAccounts.${name}.sshPublicKeys)}
+          while IFS= read -r old_tag; do
+            [ -n "$old_tag" ] || continue
+            if ! grep -Fxq -- "$old_tag" "$desired_tags"; then
+              if ! idm ssh-public-key delete ${lib.escapeShellArg name} "$old_tag" >/dev/null; then
+                echo "kanidm-credentials: failed to delete previously owned SSH public key $old_tag for ${name}" >&2
+                rc=1
+                ssh_ok=0
+              fi
+            fi
+          done < "$owned_tags"
+          if [ "$ssh_ok" = 1 ]; then
+            cp "$desired_tags" "$owned_tags"
+          fi
         '')
         posixNames}
       exit "$rc"
@@ -192,13 +240,23 @@ in {
           type = types.path;
           description = "File whose contents become the account's POSIX password.";
         };
-        options.primaryPasswordFile = mkOption {
+        options.initialPasswordFile = mkOption {
           type = types.nullOr types.path;
           default = null;
           description = ''
             Optional file whose contents become the account's primary Kanidm
-            password via `identity-cli kanidm provision`. This also reasserts
-            passwordFile as the POSIX password in the same credential update.
+            password only when the account has no primary credential yet. For
+            existing credentialed users, the service records the declared hash
+            and warns instead of changing Kanidm credentials.
+          '';
+        };
+        options.sshPublicKeys = mkOption {
+          type = types.attrsOf types.str;
+          default = {};
+          description = ''
+            Tagged OpenSSH public keys to register on the Kanidm person. This
+            module owns only tags it has previously declared, preserving manual
+            or unrelated Kanidm SSH keys.
           '';
         };
       });
@@ -254,6 +312,10 @@ in {
       {
         assertion = (cfg.serviceAccount != null) -> (cfg.ldapUrl != "");
         message = "services.kanidm-credentials.serviceAccount requires ldapUrl (used to self-test the minted token).";
+      }
+      {
+        assertion = invalidSshTags == [];
+        message = "services.kanidm-credentials.posixAccounts.*.sshPublicKeys tags must match [A-Za-z0-9_.@:-]+; invalid tags: ${lib.concatStringsSep ", " invalidSshTags}";
       }
     ];
 

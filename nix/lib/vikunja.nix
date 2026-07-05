@@ -1,4 +1,11 @@
-{lib, self}: {
+{
+  lib,
+  self,
+}: {
+  webhookEvents = {
+    taskLifecycle = ["task.created" "task.updated" "task.deleted" "task.assignee.created"];
+  };
+
   # Emits services.kanidm.provision.systems.oauth2.vikunja.
   # Vikunja team sync needs an object-array claim shaped like
   # [{name, oidcID}], and kanidm-provision can model array claim maps. The

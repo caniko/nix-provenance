@@ -244,7 +244,7 @@ struct UserInput {
     #[serde(default)]
     password_email_redirect_uri: Option<String>,
     #[serde(default)]
-    password_file: Option<String>,
+    initial_password_file: Option<String>,
 }
 
 impl UserInput {
@@ -254,9 +254,9 @@ impl UserInput {
                 "user '{email}' sets sendPasswordEmail but no passwordEmailRedirectUri"
             ));
         }
-        if self.send_password_email && self.password_file.is_some() {
+        if self.send_password_email && self.initial_password_file.is_some() {
             errors.push(format!(
-                "user '{email}' cannot set both sendPasswordEmail and passwordFile"
+                "user '{email}' cannot set both sendPasswordEmail and initialPasswordFile"
             ));
         }
         if let Some(expires) = self.user_expires
@@ -288,7 +288,7 @@ impl UserInput {
             attributes: self.attributes,
             send_password_email: self.send_password_email,
             password_email_redirect_uri: self.password_email_redirect_uri,
-            password_file: self.password_file,
+            initial_password_file: self.initial_password_file,
         }
     }
 }

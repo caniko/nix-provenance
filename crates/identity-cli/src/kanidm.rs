@@ -169,6 +169,118 @@ pub async fn set_posix_password(
         .kanidm_context(format!("setting POSIX password for {account}"))
 }
 
+/// Set a person's primary credential only when no primary credential exists.
+///
+/// Returns `true` when the password was set, and `false` when Kanidm already
+/// reports an existing credential. Existing credentials are intentionally left
+/// untouched so passkey/TOTP enrollment remains authoritative in Kanidm.
+pub async fn set_initial_primary_password(
+    config: &ClientConfig,
+    account: &str,
+    primary_password_file: &str,
+) -> Result<bool> {
+    let password = read_secret_file(primary_password_file).with_context(|| {
+        format!("reading initial primary password file {primary_password_file}")
+    })?;
+    let client = authenticated_client(config).await?;
+    let status = client
+        .idm_person_account_get_credential_status(account)
+        .await;
+
+    match status {
+        Ok(status) if !status.creds.is_empty() => return Ok(false),
+        Ok(_) => {}
+        Err(kanidm_client::ClientError::EmptyResponse) => {}
+        Err(err) => return Err(anyhow!("reading credential status for {account}: {err:?}")),
+    }
+
+    client
+        .idm_person_account_primary_credential_set_password(account, &password)
+        .await
+        .kanidm_context(format!("setting initial primary password for {account}"))?;
+    Ok(true)
+}
+
+/// Ensure a person's tagged SSH public key matches the declared OpenSSH key.
+pub async fn ensure_ssh_public_key(
+    config: &ClientConfig,
+    account: &str,
+    tag: &str,
+    public_key: &str,
+) -> Result<bool> {
+    validate_ssh_tag(tag)?;
+    let desired = ssh_public_key_material(public_key)
+        .with_context(|| format!("parsing declared SSH public key {tag} for {account}"))?;
+    let client = authenticated_client(config).await?;
+    let existing = client
+        .idm_account_get_ssh_pubkey(account, tag)
+        .await
+        .kanidm_context(format!("reading SSH public key {tag} for {account}"))?;
+    if let Some(existing) = existing.as_deref() {
+        let existing = ssh_public_key_material(existing)
+            .with_context(|| format!("parsing existing SSH public key {tag} for {account}"))?;
+        if existing == desired {
+            return Ok(false);
+        }
+    }
+    if existing.is_some() {
+        client
+            .idm_person_account_delete_ssh_pubkey(account, tag)
+            .await
+            .kanidm_context(format!("replacing SSH public key {tag} for {account}"))?;
+    }
+    client
+        .idm_person_account_post_ssh_pubkey(account, tag, public_key)
+        .await
+        .kanidm_context(format!("adding SSH public key {tag} for {account}"))?;
+    Ok(true)
+}
+
+/// Delete a person's tagged SSH public key.
+pub async fn delete_ssh_public_key(config: &ClientConfig, account: &str, tag: &str) -> Result<()> {
+    validate_ssh_tag(tag)?;
+    let client = authenticated_client(config).await?;
+    let existing = client
+        .idm_account_get_ssh_pubkey(account, tag)
+        .await
+        .kanidm_context(format!("reading SSH public key {tag} for {account}"))?;
+    if existing.is_none() {
+        return Ok(());
+    }
+    client
+        .idm_person_account_delete_ssh_pubkey(account, tag)
+        .await
+        .kanidm_context(format!("deleting SSH public key {tag} for {account}"))
+}
+
+fn validate_ssh_tag(tag: &str) -> Result<()> {
+    if tag.is_empty()
+        || !tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@' | ':'))
+    {
+        bail!("SSH public key tag must match [A-Za-z0-9_.@:-]+, got {tag:?}");
+    }
+    Ok(())
+}
+
+fn ssh_public_key_material(key: &str) -> Result<String> {
+    let mut tokens = key.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if is_ssh_key_type(token) {
+            let material = tokens
+                .next()
+                .ok_or_else(|| anyhow!("OpenSSH public key is missing key material"))?;
+            return Ok(format!("{token} {material}"));
+        }
+    }
+    bail!("OpenSSH public key is missing a supported key type");
+}
+
+fn is_ssh_key_type(token: &str) -> bool {
+    token.starts_with("ssh-") || token.starts_with("ecdsa-") || token.starts_with("sk-")
+}
+
 /// Extend a person with POSIX (unix) account attributes.
 pub async fn extend_posix_account(
     config: &ClientConfig,
@@ -479,5 +591,37 @@ trait KanidmResultExt<T> {
 impl<T> KanidmResultExt<T> for std::result::Result<T, kanidm_client::ClientError> {
     fn kanidm_context(self, context: impl Display) -> Result<T> {
         self.map_err(|err| anyhow!("{context}: {err:?}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssh_public_key_material_ignores_comment() {
+        assert_eq!(
+            ssh_public_key_material("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA test@example").unwrap(),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA"
+        );
+    }
+
+    #[test]
+    fn ssh_public_key_material_skips_options() {
+        assert_eq!(
+            ssh_public_key_material(
+                r#"from="10.0.0.1" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA test@example"#
+            )
+            .unwrap(),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA"
+        );
+    }
+
+    #[test]
+    fn ssh_tag_validation_rejects_shell_metacharacters() {
+        validate_ssh_tag("hm-identity").unwrap();
+        assert!(validate_ssh_tag("").is_err());
+        assert!(validate_ssh_tag("hm identity").is_err());
+        assert!(validate_ssh_tag("hm;identity").is_err());
     }
 }

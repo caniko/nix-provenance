@@ -218,7 +218,7 @@
           when sendPasswordEmail is true.
         '';
       };
-      passwordFile = passwords.passwordFileOption;
+      initialPasswordFile = passwords.passwordFileOption;
     };
   };
 
@@ -584,8 +584,8 @@
       // optionalAttrs (u.passwordEmailRedirectUri != null) {
         password_email_redirect_uri = u.passwordEmailRedirectUri;
       }
-      // optionalAttrs (u.passwordFile != null) {
-        password_file = passwords.userPasswordRuntimePath "rauthy-provision" name;
+      // optionalAttrs (u.initialPasswordFile != null) {
+        initial_password_file = passwords.userPasswordRuntimePath "rauthy-provision" name;
       })
     cfg.users;
     clients =
@@ -973,8 +973,8 @@ in {
                   message = "services.rauthy.provision.users.${name}.passwordEmailRedirectUri is required when sendPasswordEmail = true.";
                 }
                 {
-                  assertion = !(user.sendPasswordEmail && user.passwordFile != null);
-                  message = "services.rauthy.provision.users.${name} cannot set both sendPasswordEmail and passwordFile.";
+                  assertion = !(user.sendPasswordEmail && user.initialPasswordFile != null);
+                  message = "services.rauthy.provision.users.${name} cannot set both sendPasswordEmail and initialPasswordFile.";
                 }
               ])
               cfg.users)

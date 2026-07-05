@@ -67,7 +67,7 @@ users are created passwordless unless `sendPasswordEmail = true` or
 | `attributes` | `attributes` | Custom Rauthy user attribute values, rendered as JSON |
 | `sendPasswordEmail` | `send_password_email` | On creation only, request Rauthy's set-password email flow |
 | `passwordEmailRedirectUri` | `password_email_redirect_uri` | Required when `sendPasswordEmail = true` |
-| `passwordFile` | `password_file` | Runtime file containing the native Rauthy password; mutually exclusive with `sendPasswordEmail` |
+| `initialPasswordFile` | `initial_password_file` | Runtime file containing the native Rauthy password applied only when creating a new user; mutually exclusive with `sendPasswordEmail` |
 
 Unset nullable profile fields are unmanaged and are omitted from rendered state.
 Use the matching `clear*` option only when you want the reconciler to send an
@@ -87,7 +87,7 @@ must bind against Kanidm rather than compare local app passwords.
 ## External App Adapter
 
 `lib.adapter.passwordFromFile { passwordFile; }` maps a backend-agnostic
-external app user to `services.rauthy.provision.users.<email>.passwordFile`.
+external app user to `services.rauthy.provision.users.<email>.initialPasswordFile`.
 It is valid only on the Rauthy backend. The Kanidm backend currently creates
 Kanidm persons but does not own primary credential initialization through the
 adapter.

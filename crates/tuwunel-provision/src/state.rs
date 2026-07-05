@@ -7,6 +7,7 @@ use serde::Deserialize;
 pub struct State {
     pub server_name: String,
     pub port: u16,
+    pub admin_token_user: Option<String>,
     pub users: BTreeMap<String, UserSpec>,
 }
 
@@ -25,11 +26,12 @@ mod tests {
     #[test]
     fn parses_minimal_state() {
         let s: State = serde_json::from_str(
-            r#"{"server_name":"example.com","port":6167,"users":{}}"#,
+            r#"{"server_name":"example.com","port":6167,"admin_token_user":null,"users":{}}"#,
         )
         .unwrap();
         assert_eq!(s.server_name, "example.com");
         assert_eq!(s.port, 6167);
+        assert!(s.admin_token_user.is_none());
         assert!(s.users.is_empty());
     }
 
@@ -39,6 +41,7 @@ mod tests {
             r#"{
                 "server_name": "matrix.tartanoglu.com",
                 "port": 6167,
+                "admin_token_user": "can",
                 "users": {
                     "can": {
                         "admin": true,
@@ -49,12 +52,10 @@ mod tests {
             }"#,
         )
         .unwrap();
+        assert_eq!(s.admin_token_user.as_deref(), Some("can"));
         let can = &s.users["can"];
         assert!(can.admin);
-        assert_eq!(
-            can.display_name.as_deref(),
-            Some("Can H. Tartanoglu")
-        );
+        assert_eq!(can.display_name.as_deref(), Some("Can H. Tartanoglu"));
         assert_eq!(can.credential_name, "password-can-abc123");
     }
 
@@ -64,6 +65,7 @@ mod tests {
             r#"{
                 "server_name": "example.com",
                 "port": 6167,
+                "admin_token_user": null,
                 "users": {
                     "bot": {
                         "admin": false,

@@ -25,8 +25,8 @@ in {
   inherit credentialName;
 
   userPasswordCredentials = unit: users:
-    lib.mapAttrsToList (key: user: "${credentialName key}:${toString user.passwordFile}")
-    (lib.filterAttrs (_: user: (user.passwordFile or null) != null) users);
+    lib.mapAttrsToList (key: user: "${credentialName key}:${toString (user.passwordFile or user.initialPasswordFile)}")
+    (lib.filterAttrs (_: user: (user.passwordFile or user.initialPasswordFile or null) != null) users);
 
   userPasswordRuntimePath = unit: key: "/run/credentials/${unit}.service/${credentialName key}";
 }

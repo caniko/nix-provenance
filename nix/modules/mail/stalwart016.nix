@@ -41,6 +41,7 @@
     migration_marker_file = cfg.provision.migrationMarkerFile;
     registry_marker_file = cfg.provision.registryMarkerFile;
     legacy_marker_file = cfg.provision.markerFile;
+    assume_migration_applied = cfg.provision.assumeMigrationApplied;
     generated_plan_file = toString generatedPlanFile;
     migration_apply_files = map toString migrationApplyFiles;
     stalwart_binary = lib.getExe cfg.package;
@@ -330,6 +331,20 @@ in {
           backup must exist first" floor as a hard precondition rather than a
           procedural runbook step. The migration's backup.sh writes this sentinel
           only after a passing verify-restore. Leave null for non-migration hosts.
+        '';
+      };
+
+      assumeMigrationApplied = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          When true, skip re-applying migrationApplyFiles and write the migration
+          marker immediately. Use this on the first deploy of the stalwart016
+          provisioner to a host whose database already contains the migrated data
+          (e.g. a host that went through the 0.15→0.16 cutover before the
+          provisioner existed). After one successful start, the marker is written
+          and subsequent starts skip migration normally — set this option back to
+          false (or remove it) on the next deploy.
         '';
       };
 

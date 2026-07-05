@@ -103,6 +103,9 @@ struct Config {
     require_verified_backup_sentinel: Option<PathBuf>,
 
     #[serde(default)]
+    assume_migration_applied: bool,
+
+    #[serde(default)]
     store_health_check: bool,
     #[serde(default = "default_probe_table")]
     probe_table: String,
@@ -233,6 +236,26 @@ fn main() -> Result<()> {
 
     // ── Check pending ────────────────────────────────────────
     let mut pending = check_pending(&cfg)?;
+
+    // ── Assume migration applied ─────────────────────────────
+    if pending.migration && cfg.assume_migration_applied {
+        eprintln!(
+            "stalwart016-provision: assume_migration_applied=true — \
+             skipping migration apply, writing marker"
+        );
+        markers::write_migration_marker(
+            &cfg.migration_marker,
+            &markers::MigrationMarker {
+                completed_at: Utc::now().to_rfc3339(),
+                migration_files: vec!["assumed".into()],
+            },
+        )?;
+        pending.migration = false;
+        eprintln!(
+            "stalwart016-provision: wrote assumed-migration marker to {}",
+            cfg.migration_marker.display()
+        );
+    }
 
     // ── Store health check ───────────────────────────────────
     if !pending.migration

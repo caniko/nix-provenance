@@ -318,9 +318,7 @@ impl VikunjaClient {
                 Method::DELETE,
                 &format!("/projects/{project_id}/webhooks/{webhook_id}"),
             ),
-            &format!(
-                "deleting Vikunja webhook {webhook_id} from project {project_id}"
-            ),
+            &format!("deleting Vikunja webhook {webhook_id} from project {project_id}"),
         )?;
         Ok(())
     }
@@ -330,6 +328,7 @@ impl VikunjaClient {
 #[derive(Debug, Deserialize)]
 pub struct WebhookSummary {
     pub id: i64,
+    #[serde(rename = "target_url")]
     pub url: String,
     #[serde(default)]
     pub events: Vec<String>,
@@ -337,8 +336,76 @@ pub struct WebhookSummary {
 
 #[derive(Debug, Serialize)]
 struct WebhookRequest<'a> {
+    #[serde(rename = "target_url")]
     url: &'a str,
     events: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
     secret: Option<&'a str>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn webhook_request_serializes_target_url_events_and_secret() {
+        let events = vec!["task.created".to_string(), "task.updated".to_string()];
+        let request = WebhookRequest {
+            url: "https://team.tartanoglu.com/webhook",
+            events: &events,
+            secret: Some("shared-secret"),
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "target_url": "https://team.tartanoglu.com/webhook",
+                "events": ["task.created", "task.updated"],
+                "secret": "shared-secret",
+            })
+        );
+        assert!(
+            value["target_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://")
+        );
+    }
+
+    #[test]
+    fn webhook_request_omits_absent_secret() {
+        let events = vec!["task.deleted".to_string()];
+        let request = WebhookRequest {
+            url: "https://team.tartanoglu.com/webhook",
+            events: &events,
+            secret: None,
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "target_url": "https://team.tartanoglu.com/webhook",
+                "events": ["task.deleted"],
+            })
+        );
+    }
+
+    #[test]
+    fn webhook_summary_deserializes_target_url() {
+        let summary: WebhookSummary = serde_json::from_value(json!({
+            "id": 10,
+            "target_url": "https://team.tartanoglu.com/webhook",
+            "events": ["task.created"],
+        }))
+        .unwrap();
+
+        assert_eq!(summary.id, 10);
+        assert_eq!(summary.url, "https://team.tartanoglu.com/webhook");
+        assert_eq!(summary.events, ["task.created"]);
+    }
 }

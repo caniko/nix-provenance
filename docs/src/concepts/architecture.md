@@ -68,7 +68,8 @@ here. It is pure-Nix wiring on top of `services.rauthy.provision` /
 `services.kanidm.provision`; it owns no reconciler. The reusable
 `passwordInitByEmail` credential primitive (Rauthy's emailed set-password flow,
 requiring SMTP such as Stalwart) and the `passwordFromFile` primitive
-(Rauthy-native password from an agenix-style file) live here. See
+(Rauthy-native initial password from an agenix-style file, create-time only)
+live here. See
 [Third-party External Apps](../guides/external-apps.md).
 
 ## Shared code

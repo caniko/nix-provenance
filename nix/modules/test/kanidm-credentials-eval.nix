@@ -15,7 +15,8 @@
     posixAccounts = {
       can = {
         passwordFile = "/run/agenix/posix-can";
-        primaryPasswordFile = "/run/agenix/primary-can";
+        initialPasswordFile = "/run/agenix/primary-can";
+        sshPublicKeys.hm-identity = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey can@example";
       };
       noreply.passwordFile = "/run/agenix/posix-noreply";
     };

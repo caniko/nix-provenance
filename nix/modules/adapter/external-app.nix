@@ -47,6 +47,15 @@
         example = "Eric Firley";
         description = "Human display name. Split best-effort into given/family at creation only.";
       };
+      manageProfile = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether this app integration owns kanidm person profile fields such as
+          displayName and mailAddresses. Set false for users already declared by
+          the host identity baseline when the app only needs group membership.
+        '';
+      };
       credential = mkOption {
         type = types.attrs;
         example = lib.literalExpression "self.lib.adapter.passwordInitByEmail {}";

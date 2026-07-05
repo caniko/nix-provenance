@@ -67,8 +67,10 @@ in rec {
     inherit redirectUri;
   };
 
-  # External/native: the user's Rauthy password is managed from a runtime
-  # password file, typically an agenix secret path.
+  # External/native: the user's Rauthy password is initialized from a runtime
+  # password file, typically an agenix secret path. Rauthy owns the password
+  # after account creation; later declarative changes warn and update only the
+  # marker hash.
   passwordFromFile = {passwordFile}: {
     method = "passwordFromFile";
     inherit passwordFile;
@@ -146,7 +148,7 @@ in rec {
               passwordEmailRedirectUri = redirect;
             }
             // lib.optionalAttrs filePassword {
-              passwordFile = cred.passwordFile;
+              initialPasswordFile = cred.passwordFile;
             })
     )
     users;
@@ -200,12 +202,15 @@ in rec {
       name: u:
         if !isKanidmLogin u.credential
         then throw "adapter.kanidmPersons: user '${name}' must use adapter.kanidmLogin on the kanidm backend (passwordInitByEmail and passwordFromFile are rauthy-only flows)."
-        else {
-          present = u.present or true;
-          displayName = u.displayName or name;
-          mailAddresses = lib.optional ((u.email or null) != null) u.email;
-          groups = lib.unique ([group] ++ (u.groups or []));
-        }
+        else
+          {
+            groups = lib.unique ([group] ++ (u.groups or []));
+          }
+          // lib.optionalAttrs (u.manageProfile or true) {
+            present = u.present or true;
+            displayName = u.displayName or name;
+            mailAddresses = lib.optional ((u.email or null) != null) u.email;
+          }
     )
     users;
 }

@@ -21,7 +21,7 @@ uniform, backend-agnostic user schema.
 | | `kanidm` | the app federates with kanidm directly (internal services). |
 | **per-user credential** | `kanidmLogin` | the user already has a kanidm identity. Federated; nothing emailed or stored here. |
 | | `passwordInitByEmail` | a native Rauthy user Rauthy emails a one-time set-password link to. **Rauthy backend only.** |
-| | `passwordFromFile` | a native Rauthy user whose password is reconciled from a runtime file such as an agenix secret. **Rauthy backend only.** |
+| | `passwordFromFile` | a native Rauthy user whose initial password is loaded from a runtime file such as an agenix secret. Rauthy owns the password after creation. **Rauthy backend only.** |
 
 `passwordInitByEmail` **requires a mail or SMTP server (for example Stalwart)
 reachable from the Rauthy host**. Rauthy drives its `request_reset` flow once
@@ -37,8 +37,10 @@ module:
 - `adapter.kanidmLogin`: credential descriptor (constant)
 - `adapter.passwordInitByEmail { redirectUri ? null; }`: credential descriptor
 - `adapter.passwordFromFile { passwordFile; }`: credential descriptor for a
-  native Rauthy password loaded from a runtime file such as
-  `config.age.secrets.<name>.path`
+  native Rauthy initial password loaded from a runtime file such as
+  `config.age.secrets.<name>.path`. It renders to Rauthy's
+  `initialPasswordFile`, so later password-file changes warn and update only
+  the marker hash for existing users.
 - `adapter.rauthyUsers { users, loginUrl ? null, language ? "en", commonGroups ? []; }`:
   renders `services.rauthy.provision.users`. `commonGroups` is applied to every
   user (on top of each user's own `groups`)

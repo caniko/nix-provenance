@@ -19,7 +19,7 @@ reconciler — it is pure-Nix wiring that writes `services.rauthy.provision` /
 | | `kanidm` | the app federates with kanidm directly (internal services). |
 | **per-user credential** | `kanidmLogin` | the user already has a kanidm identity. Federated; nothing emailed or stored here. |
 | | `passwordInitByEmail` | a native Rauthy user Rauthy emails a one-time set-password link to. **Rauthy backend only.** |
-| | `passwordFromFile` | a native Rauthy user whose password is reconciled from a runtime file such as an agenix secret. **Rauthy backend only.** |
+| | `passwordFromFile` | a native Rauthy user whose initial password is loaded from a runtime file such as an agenix secret. Rauthy owns the password after creation. **Rauthy backend only.** |
 
 `passwordInitByEmail` **requires a mail/SMTP server (e.g. Stalwart) reachable
 from the Rauthy host** — Rauthy drives its `request_reset` flow once at user
@@ -36,13 +36,15 @@ module:
 - `adapter.passwordInitByEmail { redirectUri ? null; }` — credential descriptor.
   `redirectUri` defaults to the app `loginUrl` when used through the module.
 - `adapter.passwordFromFile { passwordFile; }` — credential descriptor for a
-  native Rauthy password loaded from a runtime file such as
-  `config.age.secrets.<name>.path`.
+  native Rauthy initial password loaded from a runtime file such as
+  `config.age.secrets.<name>.path`. It renders to Rauthy's
+  `initialPasswordFile`, so later password-file changes warn and update only
+  the marker hash for existing users.
 - `adapter.rauthyUsers { users, loginUrl ? null, language ? "en"; }` →
   a `services.rauthy.provision.users` attrset (keyed by email). `kanidmLogin`
   users are passwordless/federated; `passwordInitByEmail` users carry
   `sendPasswordEmail = true` + the redirect; `passwordFromFile` users carry
-  `passwordFile`.
+  `initialPasswordFile`.
 - `adapter.rauthyGroupsOf users` → the distinct rauthy group names referenced.
 - `adapter.kanidmOAuth2System { originUrl, group, … }` → a generic
   `services.kanidm.provision.systems.oauth2.<name>` attrset (the federation

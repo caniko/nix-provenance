@@ -59,6 +59,16 @@ impl PasswordMarkerStore {
         }
     }
 
+    /// Return the stored marker digest for `id`, or `None` when no marker has
+    /// been recorded.
+    pub fn current_digest(&self, id: &str) -> Result<Option<String>> {
+        match fs::read_to_string(self.marker_path(id)) {
+            Ok(current) => Ok(Some(current.trim().to_owned())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err).with_context(|| format!("reading password marker for {id}")),
+        }
+    }
+
     /// Record that `secret` was successfully applied for `id`.
     pub fn commit(&self, id: &str, secret: &str) -> Result<()> {
         fs::create_dir_all(&self.dir).with_context(|| {
@@ -68,8 +78,43 @@ impl PasswordMarkerStore {
             .with_context(|| format!("writing password marker for {id}"))
     }
 
+    /// Mark that an initial password must still be applied for `id`.
+    pub fn mark_pending(&self, id: &str) -> Result<()> {
+        fs::create_dir_all(&self.dir).with_context(|| {
+            format!("creating password marker directory {}", self.dir.display())
+        })?;
+        fs::write(self.pending_path(id), b"pending\n")
+            .with_context(|| format!("writing pending password marker for {id}"))
+    }
+
+    /// Clear a pending initial-password marker for `id`, if one exists.
+    pub fn clear_pending(&self, id: &str) -> Result<()> {
+        match fs::remove_file(self.pending_path(id)) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => {
+                Err(err).with_context(|| format!("removing pending password marker for {id}"))
+            }
+        }
+    }
+
+    /// Return true when an initial password is marked pending for `id`.
+    pub fn is_pending(&self, id: &str) -> Result<bool> {
+        match fs::metadata(self.pending_path(id)) {
+            Ok(meta) => Ok(meta.is_file()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => {
+                Err(err).with_context(|| format!("reading pending password marker for {id}"))
+            }
+        }
+    }
+
     fn marker_path(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{}.sha256", marker_filename(id)))
+    }
+
+    fn pending_path(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{}.pending", marker_filename(id)))
     }
 }
 
@@ -121,6 +166,19 @@ mod tests {
                 .needs_update("rauthy:user@example.com", "two")
                 .unwrap()
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pending_marker_round_trips_and_clear_is_idempotent() {
+        let dir = temp_path("pending-markers");
+        let store = PasswordMarkerStore::new(&dir);
+        assert!(!store.is_pending("rauthy:user@example.com").unwrap());
+        store.mark_pending("rauthy:user@example.com").unwrap();
+        assert!(store.is_pending("rauthy:user@example.com").unwrap());
+        store.clear_pending("rauthy:user@example.com").unwrap();
+        assert!(!store.is_pending("rauthy:user@example.com").unwrap());
+        store.clear_pending("rauthy:user@example.com").unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 }

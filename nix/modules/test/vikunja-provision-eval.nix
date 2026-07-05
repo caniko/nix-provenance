@@ -12,11 +12,15 @@
     provision = {
       enable = true;
       tokenFile = "/run/secrets/vikunja-provision-token";
+      webhookSecretFile = "/run/secrets/vikunja-webhook-secret";
       botUsername = "vikunja-provision";
       teams.ops = {
         description = "Operations";
         members = ["alice"];
         admins = ["can"];
+      };
+      webhooks."10" = {
+        url = "https://vikunja-bot.example.com/webhook";
       };
     };
   };
