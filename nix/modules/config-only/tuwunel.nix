@@ -32,6 +32,30 @@
     };
   };
 
+  roomSubmodule = types.submodule {
+    options = {
+      alias = mkOption {
+        type = types.str;
+        description = "Canonical Matrix room alias, for example #canix-alerts:matrix.example.com.";
+      };
+      name = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional human-readable Matrix room name.";
+      };
+      topic = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional Matrix room topic.";
+      };
+      invite = mkOption {
+        type = types.listOf types.str;
+        default = [];
+        description = "Matrix user IDs to invite to the room.";
+      };
+    };
+  };
+
   oidcProviderSubmodule = types.submodule {
     options = {
       brand = mkOption {
@@ -101,6 +125,7 @@
       display_name = user.displayName;
       credential_name = passwords.credentialName name;
     }) pcfg.users;
+    rooms = pcfg.rooms;
   });
   registrationBootstrapClosedConfig = toml.generate "tuwunel-provision-registration-closed.toml" {
     global = cfg.settings.global;
@@ -141,6 +166,12 @@ in {
         Matrix users to provision, keyed by localpart
         (username without @ or server name).
       '';
+    };
+
+    rooms = mkOption {
+      type = types.attrsOf roomSubmodule;
+      default = {};
+      description = "Matrix rooms to create and invite service accounts into.";
     };
 
     adminTokenUser = mkOption {

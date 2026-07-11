@@ -57,24 +57,43 @@ index 0000000..dabc77b
 +  }
 +}
 diff --git a/server/src/dtos/user.dto.ts b/server/src/dtos/user.dto.ts
-index ebd0018..70075fa 100644
+index 8d35c08..a1142cb 100644
 --- a/server/src/dtos/user.dto.ts
 +++ b/server/src/dtos/user.dto.ts
-@@ -94,9 +94,10 @@ export class UserAdminCreateDto {
-   @Transform(toEmail)
-   email!: string;
--
--  @ApiProperty({ description: 'User password' })
+@@ -77,13 +77,16 @@ export class UserAdminSearchDto extends createZodDto(UserAdminSearchSchema) {}
+ export const UserAdminCreateSchema = z
+   .object({
+     email: toEmail.describe('User email'),
+-    password: z.string().describe('User password'),
++    password: z
++      .string()
++      .optional()
++      .describe('User password. Optional when OAuth is enabled'),
+     name: z.string().describe('User name'),
+     avatarColor: UserAvatarColorSchema.nullish(),
+     pinCode: z.string().regex(pinCodeRegex).nullable().optional().describe('PIN code').meta({ example: '123456' }),
+     storageLabel: z.string().pipe(sanitizeFilename).nullish().describe('Storage label'),
+     quotaSizeInBytes: z.int().min(0).nullish().describe('Storage quota in bytes'),
+     shouldChangePassword: z.boolean().optional().describe('Require password change on next login'),
+     notify: z.boolean().optional().describe('Send notification email'),
+     isAdmin: z.boolean().optional().describe('Grant admin privileges'),
+   })
+diff --git a/server/src/dtos/user.dto.spec.ts b/server/src/dtos/user.dto.spec.ts
+index e119920..aa4f694 100644
+--- a/server/src/dtos/user.dto.spec.ts
++++ b/server/src/dtos/user.dto.spec.ts
+@@ -27,5 +27,11 @@ describe('create user DTO', () => {
+     });
+     expect(result.success).toBe(true);
 +
-+  @ApiPropertyOptional({ description: 'User password. Optional when OAuth is enabled.' })
-+  @Optional()
-   @IsString()
--  password!: string;
-+  password?: string;
--
-+
-   @ApiProperty({ description: 'User name' })
-   @IsNotEmpty()
++    const passwordlessResult = UserAdminCreateSchema.safeParse({
++      email: 'oauth@email.com',
++      name: 'OAuth User',
++    });
++    expect(passwordlessResult.success).toBe(true);
+   });
+ 
+   it('validates invalid email type', () => {
 diff --git a/server/src/services/cli.service.spec.ts b/server/src/services/cli.service.spec.ts
 index 347d9ee..c47f154 100644
 --- a/server/src/services/cli.service.spec.ts

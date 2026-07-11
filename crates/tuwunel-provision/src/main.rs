@@ -161,6 +161,38 @@ fn main() -> Result<()> {
 
     refresh_admin_token(&state, &client, &cred_dir, &cli.admin_token_file)?;
 
+    for (name, room) in &state.rooms {
+        let room_id = match client
+            .resolve_room_alias(&room.alias)
+            .with_context(|| format!("resolving Matrix room {name} alias {}", room.alias))?
+        {
+            Some(room_id) => {
+                eprintln!("tuwunel-provision: room {name} already exists as {room_id}");
+                room_id
+            }
+            None => {
+                eprintln!(
+                    "tuwunel-provision: creating room {name} alias {}",
+                    room.alias
+                );
+                client
+                    .create_room(
+                        &room.alias,
+                        room.name.as_deref(),
+                        room.topic.as_deref(),
+                        &room.invite,
+                    )
+                    .with_context(|| format!("creating Matrix room {name}"))?
+            }
+        };
+
+        for user_id in &room.invite {
+            client
+                .invite_user_to_room(&room_id, user_id)
+                .with_context(|| format!("inviting {user_id} to Matrix room {name}"))?;
+        }
+    }
+
     eprintln!("tuwunel-provision: done");
     Ok(())
 }

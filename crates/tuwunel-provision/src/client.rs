@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::{Method, StatusCode};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub struct TuwunelClient {
     http: Client,
@@ -36,6 +36,24 @@ struct ErrorResponse {
     errcode: Option<String>,
     error: Option<String>,
     session: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateRoomResponse {
+    room_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateRoomRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    room_alias_name: Option<&'a str>,
+    visibility: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    invite: Vec<&'a str>,
 }
 
 impl TuwunelClient {
@@ -305,6 +323,86 @@ impl TuwunelClient {
         let body_text = resp.text().unwrap_or_default();
         bail!("display name API returned {status} for {user_id}: {body_text}");
     }
+
+    pub fn resolve_room_alias(&self, alias: &str) -> Result<Option<String>> {
+        let path = format!(
+            "/_matrix/client/v3/directory/room/{}",
+            percent_encode(alias)
+        );
+        let resp = self
+            .req_auth(Method::GET, &path)
+            .send()
+            .with_context(|| format!("resolving room alias {alias}"))?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let body: serde_json::Value = resp.json().context("decoding room alias response")?;
+            let room_id = body
+                .get("room_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    anyhow!("room alias response for {alias} did not include room_id")
+                })?;
+            return Ok(Some(room_id.to_owned()));
+        }
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let body_text = resp.text().unwrap_or_default();
+        bail!("room alias lookup returned {status} for {alias}: {body_text}");
+    }
+
+    pub fn create_room(
+        &self,
+        alias: &str,
+        name: Option<&str>,
+        topic: Option<&str>,
+        invite: &[String],
+    ) -> Result<String> {
+        let alias_localpart = alias_localpart(alias)?;
+        let body = CreateRoomRequest {
+            room_alias_name: Some(alias_localpart),
+            visibility: "private",
+            name,
+            topic,
+            invite: invite.iter().map(String::as_str).collect(),
+        };
+
+        let resp = self
+            .req_auth(Method::POST, "/_matrix/client/v3/createRoom")
+            .json(&body)
+            .send()
+            .with_context(|| format!("creating room {alias}"))?;
+        let status = resp.status();
+        if status.is_success() {
+            let data: CreateRoomResponse = resp.json().context("decoding createRoom response")?;
+            return Ok(data.room_id);
+        }
+        let body_text = resp.text().unwrap_or_default();
+        bail!("createRoom returned {status} for {alias}: {body_text}");
+    }
+
+    pub fn invite_user_to_room(&self, room_id: &str, user_id: &str) -> Result<()> {
+        let path = format!(
+            "/_matrix/client/v3/rooms/{}/invite",
+            percent_encode(room_id)
+        );
+        let body = serde_json::json!({ "user_id": user_id });
+        let resp = self
+            .req_auth(Method::POST, &path)
+            .json(&body)
+            .send()
+            .with_context(|| format!("inviting {user_id} to {room_id}"))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body_text = resp.text().unwrap_or_default();
+        if status == StatusCode::FORBIDDEN && body_text.contains("already") {
+            return Ok(());
+        }
+        bail!("room invite returned {status} for {user_id} in {room_id}: {body_text}");
+    }
 }
 
 fn build_client(user_agent: &str) -> Result<Client> {
@@ -328,10 +426,37 @@ fn extract_session_id(err: &anyhow::Error) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 fn is_user_in_use(err: &anyhow::Error) -> bool {
     err.chain()
         .map(|cause| format!("{cause}"))
         .any(|msg| msg.starts_with("user_in_use:"))
+}
+
+fn alias_localpart(alias: &str) -> Result<&str> {
+    let Some(rest) = alias.strip_prefix('#') else {
+        bail!("Matrix room alias must start with '#': {alias}");
+    };
+    let Some((localpart, _server)) = rest.split_once(':') else {
+        bail!("Matrix room alias must include a server name: {alias}");
+    };
+    if localpart.is_empty() {
+        bail!("Matrix room alias localpart is empty: {alias}");
+    }
+    Ok(localpart)
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 pub fn registration_required(err: &anyhow::Error) -> bool {
@@ -379,6 +504,23 @@ mod tests {
     fn extract_session_id_returns_none_for_unrelated_error() {
         let err = anyhow!("something else went wrong");
         assert_eq!(extract_session_id(&err), None);
+    }
+
+    #[test]
+    fn parses_alias_localpart() {
+        assert_eq!(
+            alias_localpart("#canix-alerts:matrix.tartanoglu.com").unwrap(),
+            "canix-alerts"
+        );
+    }
+
+    #[test]
+    fn percent_encodes_matrix_identifiers() {
+        assert_eq!(
+            percent_encode("#canix-alerts:matrix.tartanoglu.com"),
+            "%23canix-alerts%3Amatrix.tartanoglu.com"
+        );
+        assert_eq!(percent_encode("!room:id"), "%21room%3Aid");
     }
 
     #[test]

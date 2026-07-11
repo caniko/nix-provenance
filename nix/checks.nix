@@ -389,6 +389,10 @@ in {
       state_file=$(printf '%s' ${lib.escapeShellArg provisionSvc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*tuwunel-provision-state.json')
       grep -q '"admin_token_user":"matrix-admin"' "$state_file" \
         || { echo "tuwunel: admin_token_user missing from provision state" >&2; exit 1; }
+      grep -q '"alias":"#canix-alerts:matrix.example.com"' "$state_file" \
+        || { echo "tuwunel: Matrix alert room missing from provision state" >&2; exit 1; }
+      grep -q '"@matrix-alerts:matrix.example.com"' "$state_file" \
+        || { echo "tuwunel: Matrix alert room invite missing from provision state" >&2; exit 1; }
       touch $out
     '';
 

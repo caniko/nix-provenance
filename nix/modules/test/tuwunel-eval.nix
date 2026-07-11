@@ -19,6 +19,17 @@
         passwordFile = "/run/agenix/matrix-admin-password";
         displayName = "Matrix Provisioning Admin";
       };
+      users.matrix-alerts = {
+        admin = false;
+        passwordFile = "/run/agenix/matrix-alerts-password";
+        displayName = "Canix Alerts";
+      };
+      rooms.alerts = {
+        alias = "#canix-alerts:matrix.example.com";
+        name = "canix-alerts";
+        topic = "Canix fleet alerts";
+        invite = ["@matrix-alerts:matrix.example.com"];
+      };
       oidcProviders.kanidm = {
         brand = "kanidm";
         clientId = "matrix";
