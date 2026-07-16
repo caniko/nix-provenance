@@ -13,6 +13,7 @@
       exit 0
     '';
     configurePostgres = true;
+    dynamicUser = false;
     environmentFile = "/run/secrets/rauthy-env";
     environmentFiles = ["/run/rauthy/generated.env"];
     settings = {

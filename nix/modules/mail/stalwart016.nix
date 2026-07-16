@@ -495,7 +495,6 @@ in {
 
     services.postgresql = mkIf postgres.createLocally {
       enable = true;
-      enableTCPIP = true;
       ensureDatabases = [postgres.database];
       ensureUsers = [
         {

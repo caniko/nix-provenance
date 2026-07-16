@@ -139,22 +139,24 @@ in {
     serviceConfig = builtins.toJSON svc.serviceConfig;
     environment = builtins.toJSON svc.environment;
   in
-    runCommand "rauthy-server-module-eval" {} ''
-      test -n ${lib.escapeShellArg serviceConfig}
-      env=${lib.escapeShellArg environment}
-      exec_start=${lib.escapeShellArg svc.serviceConfig.ExecStart}
-      printf '%s' "$exec_start" | grep -q -- 'serve --config-file' \
-        || { echo "rauthy server: ExecStart must run the Rauthy server with generated config" >&2; exit 1; }
-      test -f ${rauthyServerEval.config.services.rauthy.configFile} \
-        || { echo "rauthy server: generated configFile option must point to a TOML file" >&2; exit 1; }
-      printf '%s' "$env" | grep -q 'PG_HOST' \
-        || { echo "rauthy server: PostgreSQL environment missing when configurePostgres is enabled" >&2; exit 1; }
-      printf '%s' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.EnvironmentFile)} | grep -q '/run/secrets/rauthy-env' \
-        || { echo "rauthy server: primary environmentFile missing" >&2; exit 1; }
-      printf '%s' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.EnvironmentFile)} | grep -q '/run/rauthy/generated.env' \
-        || { echo "rauthy server: extra environmentFiles missing" >&2; exit 1; }
-      touch $out
-    '';
+    assert svc.serviceConfig.DynamicUser == false;
+    assert svc.serviceConfig.User == "rauthy";
+      runCommand "rauthy-server-module-eval" {} ''
+        test -n ${lib.escapeShellArg serviceConfig}
+        env=${lib.escapeShellArg environment}
+        exec_start=${lib.escapeShellArg svc.serviceConfig.ExecStart}
+        printf '%s' "$exec_start" | grep -q -- 'serve --config-file' \
+          || { echo "rauthy server: ExecStart must run the Rauthy server with generated config" >&2; exit 1; }
+        test -f ${rauthyServerEval.config.services.rauthy.configFile} \
+          || { echo "rauthy server: generated configFile option must point to a TOML file" >&2; exit 1; }
+        printf '%s' "$env" | grep -q 'PG_HOST' \
+          || { echo "rauthy server: PostgreSQL environment missing when configurePostgres is enabled" >&2; exit 1; }
+        printf '%s' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.EnvironmentFile)} | grep -q '/run/secrets/rauthy-env' \
+          || { echo "rauthy server: primary environmentFile missing" >&2; exit 1; }
+        printf '%s' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.EnvironmentFile)} | grep -q '/run/rauthy/generated.env' \
+          || { echo "rauthy server: extra environmentFiles missing" >&2; exit 1; }
+        touch $out
+      '';
 
   rauthy-module-eval = let
     svc = rauthyEval.config.systemd.services.rauthy-provision;

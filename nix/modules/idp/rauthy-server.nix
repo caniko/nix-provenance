@@ -91,6 +91,14 @@ in {
         Whether to use PostgreSQL instead of Hiqlite.
       '';
     };
+    dynamicUser = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Run Rauthy as a transient DynamicUser. Set this to false when the
+        service needs a stable system identity for local PostgreSQL peer auth.
+      '';
+    };
 
     smtp = {
       rootCA = lib.mkOption {
@@ -168,7 +176,9 @@ in {
       ];
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} serve --config-file ${settings}";
-        DynamicUser = true;
+        DynamicUser = cfg.dynamicUser;
+        User = lib.mkIf (!cfg.dynamicUser) "rauthy";
+        Group = lib.mkIf (!cfg.dynamicUser) "rauthy";
         StateDirectory = "rauthy";
         WorkingDirectory = "%S/rauthy";
         RuntimeDirectory = lib.mkIf cfg.enableUnixSocket "rauthy";
@@ -225,6 +235,12 @@ in {
         UMask = "0077";
       };
     };
+
+    users.users.rauthy = lib.mkIf (!cfg.dynamicUser) {
+      isSystemUser = true;
+      group = "rauthy";
+    };
+    users.groups.rauthy = lib.mkIf (!cfg.dynamicUser) {};
   };
 
   meta.maintainers = with lib.maintainers; [
