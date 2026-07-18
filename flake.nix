@@ -58,8 +58,25 @@
           inherit lib;
           inherit craneLib src;
         };
+        identityCrossPackageSet =
+          if system == "x86_64-linux"
+          then
+            rs-harbor.lib.mkCrossPackages {
+              inherit pkgs craneLib cross;
+              pname = "identity-cli";
+              commonArgs = crates.args.identity-cli;
+              targets = ["aarch64-linux"];
+              toolchainArgs = {
+                channel = "stable";
+                extensions = ["rust-src" "rustfmt" "clippy"];
+              };
+            }
+          else {};
         packages =
           crates.packages
+          // lib.optionalAttrs (system == "x86_64-linux") {
+            "identity-cli-aarch64-linux" = identityCrossPackageSet."identity-cli-aarch64-linux";
+          }
           // {
             docs = docsPackage;
             site = pkgs.runCommand "nix-provenance-site" {} ''
@@ -127,6 +144,7 @@
           inherit lib;
           inherit packages;
           inherit (crates) args cargoArtifacts;
+          inherit identityCrossPackageSet;
           docs = docsPackage;
         };
 
@@ -179,6 +197,12 @@
       homeModules = {
         rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
       };
+
+      # Crossbow consumers build this package on Atlas and select it through
+      # the namespaced crossPackages interface rather than falling back to a
+      # native package derivation with a target linker.
+      crossPackages.x86_64-linux.aarch64-linux.identity-cli =
+        self.packages.x86_64-linux."identity-cli-aarch64-linux";
 
       overlays.default = final: _prev: let
         craneLib = crane.mkLib final;

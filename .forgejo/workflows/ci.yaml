@@ -11,27 +11,17 @@ concurrency:
 
 jobs:
   flake-check:
-    runs-on: atlas
+    runs-on: atlas-nix-trusted
     steps:
       - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: https://github.com/cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b # v27
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            substituters = https://attic.candee.baby/canix https://cache.nixos.org
-            trusted-public-keys = canix:lPzPzKrmYqW5Rxa5r0uQWvCqD3S5nx0h2eCy7XD5JM8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
       - run: nix flake check --keep-going --print-build-logs
 
   push-cache:
     needs: [flake-check]
     if: ${{ github.ref == 'refs/heads/trunk' }}
-    runs-on: atlas
+    runs-on: atlas-nix-trusted
     steps:
       - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: https://github.com/cachix/install-nix-action@ba0dd844c9180cbf77aa72a116d6fbc515d0e87b # v27
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
       - run: nix run .#push-cache
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}

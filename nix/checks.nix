@@ -12,6 +12,7 @@
   packages,
   args,
   cargoArtifacts,
+  identityCrossPackageSet,
   docs,
 }: let
   inherit (pkgs) runCommand;
@@ -164,7 +165,7 @@ in {
     restartTriggers = builtins.toJSON svc.restartTriggers;
     clients = builtins.toJSON rauthyEval.config.services.rauthy.provision.clients;
     users = builtins.toJSON rauthyEval.config.services.rauthy.provision.users;
-    renderedState = builtins.readFile (builtins.head svc.restartTriggers);
+    renderedStateFile = toString (builtins.head svc.restartTriggers);
     scopes = builtins.toJSON rauthyEval.config.services.rauthy.provision.scopes;
     userAttrs = builtins.toJSON rauthyEval.config.services.rauthy.provision.userAttributes;
   in
@@ -172,7 +173,7 @@ in {
       test -n ${lib.escapeShellArg serviceConfig}
       clients=${lib.escapeShellArg clients}
       users=${lib.escapeShellArg users}
-      rendered_state=${lib.escapeShellArg renderedState}
+      rendered_state=$(cat ${lib.escapeShellArg renderedStateFile})
       scopes=${lib.escapeShellArg scopes}
       attrs=${lib.escapeShellArg userAttrs}
       triggers=${lib.escapeShellArg restartTriggers}
@@ -404,14 +405,14 @@ in {
   adapter-module-eval = let
     svc = adapterEval.config.systemd.services.rauthy-provision;
     serviceConfig = builtins.toJSON svc.serviceConfig;
-    renderedState = builtins.readFile (builtins.head svc.restartTriggers);
+    renderedStateFile = toString (builtins.head svc.restartTriggers);
     rauthyUsers = builtins.toJSON adapterEval.config.services.rauthy.provision.users;
     kanidmOauth2 = builtins.toJSON adapterEval.config.services.kanidm.provision.systems.oauth2;
     kanidmPersons = builtins.toJSON adapterEval.config.services.kanidm.provision.persons;
   in
     runCommand "adapter-module-eval" {} ''
       users=${lib.escapeShellArg rauthyUsers}
-      rendered_state=${lib.escapeShellArg renderedState}
+      rendered_state=$(cat ${lib.escapeShellArg renderedStateFile})
       oauth2=${lib.escapeShellArg kanidmOauth2}
       persons=${lib.escapeShellArg kanidmPersons}
       service=${lib.escapeShellArg serviceConfig}
@@ -489,4 +490,9 @@ in {
       fi
       touch $out
     '';
+}
+// lib.optionalAttrs (system == "x86_64-linux") {
+  # Keep the target package in the ordinary flake check graph so a future
+  # change cannot silently reintroduce host objects into the target linker.
+  identity-cli-aarch64-linux = identityCrossPackageSet."identity-cli-aarch64-linux";
 }
