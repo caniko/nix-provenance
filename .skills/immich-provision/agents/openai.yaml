@@ -1,0 +1,7 @@
+interface:
+  display_name: "Immich Provision"
+  short_description: "Declarative Immich identity provisioning"
+  default_prompt: "Use $immich-provision to work on declarative Immich/Kanidm identity provisioning."
+
+policy:
+  allow_implicit_invocation: true
