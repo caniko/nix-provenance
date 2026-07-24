@@ -1,5 +1,11 @@
 # nix-provenance
 
+<!-- simit:badges:start -->
+
+[![CI](https://img.shields.io/badge/CI-managed+extra-2088ff)](.forgejo/workflows/ci.yaml) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](docs) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/identity-cli)
+
+<!-- simit:badges:end -->
+
 Declarative identity & OIDC provisioning for NixOS, Kanidm, and Rauthy — a DRY
 monorepo of reconcilers and NixOS modules.
 
@@ -46,13 +52,45 @@ tenant taxonomy and the add-a-tenant checklist.
 
 ## Flake outputs
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart016-provision,docs,site}`
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart016-provision,forgejo-cli,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}` — `usersFromKanidmPersons`
   for Immich/Rauthy, service-specific `kanidmOAuth2System` helpers for Immich,
   Vikunja, and Forgejo, Stalwart's kanidm LDAP helpers, and `adapter` — the
   backend-agnostic primitives third-party flakes use (see below)
+- `homeModules.fj` — installs the separate `forgejo-cli` package and provides
+  `nix-provenance.fj.enable`.
+
+Enable the CLI in Home Manager, then add a CodeFloe application token
+interactively:
+
+```nix
+imports = [ inputs.nix-provenance.homeModules.fj ];
+nix-provenance.fj.enable = true;
+```
+
+```console
+$ fj -H codefloe.com auth add-token
+username: can
+application token: …
+```
+
+The token remains in fj's per-user credential store; it is not placed in the
+Nix store, agenix, or Home Manager configuration.
+
+For a token already managed by agenix, let the module register it after the
+agenix user service is ready. The token is read from the transient agenix path
+and passed to fj over stdin; no persistent Home Manager token file is created:
+
+```nix
+nix-provenance.fj.applicationToken = {
+  enable = true;
+  host = "codefloe.com";
+  username = "can";
+  tokenFile = config.age.secrets.can-codefloe-token.path;
+};
+```
 
 ## Third-party adapter (`lib.adapter` / `nixosModules.externalApp`)
 
