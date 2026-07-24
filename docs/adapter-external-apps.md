@@ -42,7 +42,8 @@ module:
   the marker hash for existing users.
 - `adapter.rauthyUsers { users, loginUrl ? null, language ? "en"; }` →
   a `services.rauthy.provision.users` attrset (keyed by email). `kanidmLogin`
-  users are passwordless/federated; `passwordInitByEmail` users carry
+  users are passwordless/federated and carry
+  `requiredAuthProvider = "kanidm"`; `passwordInitByEmail` users carry
   `sendPasswordEmail = true` + the redirect; `passwordFromFile` users carry
   `initialPasswordFile`.
 - `adapter.rauthyGroupsOf users` → the distinct rauthy group names referenced.
@@ -168,3 +169,8 @@ ships the reusable surface and the eval-gated worked example
   enabled) by importing the rauthy module on the same host.
 - **Two apps keying the same email.** Rauthy keys users by email, so two apps
   declaring the same address is a real Nix merge conflict (loud) — intentional.
+- **Kanidm-derived users with local credential drift.** `kanidmLogin` users are
+  checked during reconciliation for password/passkey state and provider
+  linkage. The current Rauthy API cannot remove those credentials or block a
+  later reset/passkey flow, so drift fails provisioning and requires manual
+  remediation in Rauthy before retrying.

@@ -240,6 +240,8 @@ struct UserInput {
     #[serde(default)]
     attributes: BTreeMap<String, Value>,
     #[serde(default)]
+    required_auth_provider: Option<String>,
+    #[serde(default)]
     send_password_email: bool,
     #[serde(default)]
     password_email_redirect_uri: Option<String>,
@@ -257,6 +259,20 @@ impl UserInput {
         if self.send_password_email && self.initial_password_file.is_some() {
             errors.push(format!(
                 "user '{email}' cannot set both sendPasswordEmail and initialPasswordFile"
+            ));
+        }
+        if self
+            .required_auth_provider
+            .as_deref()
+            .is_some_and(|provider| provider.trim().is_empty())
+        {
+            errors.push(format!("user '{email}' has an empty requiredAuthProvider"));
+        }
+        if self.required_auth_provider.is_some()
+            && (self.send_password_email || self.initial_password_file.is_some())
+        {
+            errors.push(format!(
+                "user '{email}' with requiredAuthProvider cannot use sendPasswordEmail or initialPasswordFile"
             ));
         }
         if let Some(expires) = self.user_expires
@@ -286,6 +302,7 @@ impl UserInput {
             groups: self.groups,
             preferred_username: self.preferred_username.map(Some),
             attributes: self.attributes,
+            required_auth_provider: self.required_auth_provider,
             send_password_email: self.send_password_email,
             password_email_redirect_uri: self.password_email_redirect_uri,
             initial_password_file: self.initial_password_file,
@@ -589,6 +606,7 @@ mod tests {
           "givenName": "Can",
           "familyName": "Tartanoglu",
           "preferredUsername": "can",
+          "requiredAuthProvider": "kanidm",
           "groups": ["internal", "vikunja-users"],
           "attributes": {
             "vikunja_groups": [{"name": "pink-raven", "oidcID": "pink-raven"}]
@@ -625,6 +643,10 @@ mod tests {
             "pink-raven"
         );
         assert_eq!(
+            json["users"]["can@example.com"]["required_auth_provider"],
+            "kanidm"
+        );
+        assert_eq!(
             json["users"]["external@example.com"]["password_email_redirect_uri"],
             "https://app.example.com/login"
         );
@@ -638,6 +660,23 @@ mod tests {
         .unwrap();
         let err = input.render().unwrap_err().to_string();
         assert!(err.contains("passwordEmailRedirectUri"));
+    }
+
+    #[test]
+    fn validates_required_provider_credential_conflicts() {
+        let input: RenderInput = serde_json::from_str(
+            r#"{
+              "users": {
+                "kanidm@example.com": {
+                  "requiredAuthProvider": "kanidm",
+                  "initialPasswordFile": "/run/credentials/rauthy-provision.service/password"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let err = input.render().unwrap_err().to_string();
+        assert!(err.contains("requiredAuthProvider"));
     }
 
     #[test]

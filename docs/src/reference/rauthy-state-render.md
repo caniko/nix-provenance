@@ -82,6 +82,7 @@ this model before calling the renderer.
       "attributes": {
         "vikunja_groups": [{ "name": "team-a", "oidcID": "team-a" }]
       },
+      "requiredAuthProvider": "kanidm",
       "sendPasswordEmail": false
     },
     "external@example.com": {
@@ -101,5 +102,8 @@ this model before calling the renderer.
 Validation currently rejects empty entity keys, public clients without PKCE,
 public clients with generated secret files, password-email users without a
 redirect URI, users that set both `sendPasswordEmail` and `initialPasswordFile`,
+users that set `requiredAuthProvider` alongside a local credential strategy,
 non-positive user expiry timestamps, and upstream providers that select
-client-secret authentication without a secret file.
+client-secret authentication without a secret file. `requiredAuthProvider` is
+audited by `rauthy-provision` during reconciliation; it does not change
+Rauthy's runtime authentication policy.

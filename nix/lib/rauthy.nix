@@ -5,7 +5,8 @@
   # deployment can stay the single source of truth for internal humans and feed
   # rauthy-provision without duplicating account data. Each kanidm person
   # becomes a passwordless Rauthy user that auto-links to the kanidm upstream
-  # OIDC provider on first login.
+  # OIDC provider on first login and is checked against that provider during
+  # reconciliation.
   #
   # Names are split best-effort from the kanidm `displayName` and applied at
   # creation only; Rauthy refreshes them from the kanidm profile claims on
@@ -57,6 +58,7 @@
           familyName = family;
           inherit language roles;
           groups = lib.unique (groups ++ personGroups);
+          requiredAuthProvider = "kanidm";
         }
     )
     persons;

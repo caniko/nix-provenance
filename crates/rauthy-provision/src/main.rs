@@ -241,8 +241,14 @@ fn reconcile(
     reconcile_roles(client, state, no_auto_remove)?;
     reconcile_user_attributes(client, state, no_auto_remove)?;
     reconcile_scopes(client, state, no_auto_remove)?;
-    reconcile_providers(client, state, no_auto_remove)?;
-    reconcile_users(client, state, no_auto_remove, &password_markers)?;
+    let provider_bindings = reconcile_providers(client, state, no_auto_remove)?;
+    reconcile_users(
+        client,
+        state,
+        no_auto_remove,
+        &password_markers,
+        &provider_bindings,
+    )?;
     reconcile_clients(client, state, no_auto_remove)?;
 
     log(format_args!("done"));
@@ -356,6 +362,7 @@ fn reconcile_users(
     state: &State,
     no_auto_remove: bool,
     password_markers: &PasswordMarkerStore,
+    provider_bindings: &BTreeMap<String, String>,
 ) -> Result<()> {
     for (email, spec) in &state.users {
         validate_user_credential_strategy(email, spec)?;
@@ -372,6 +379,7 @@ fn reconcile_users(
                     || has_declared_profile_fields(spec)
                     || !spec.attributes.is_empty()
                     || spec.initial_password_file.is_some()
+                    || spec.required_auth_provider.is_some()
                 {
                     let user = client.get_user_by_email(email)?.ok_or_else(|| {
                         anyhow!("Rauthy user {email} was created but could not be read back")
@@ -386,6 +394,13 @@ fn reconcile_users(
                         password_markers,
                     )?;
                 }
+                audit_required_auth_provider_after_reconcile(
+                    client,
+                    email,
+                    spec,
+                    state,
+                    provider_bindings,
+                )?;
                 // Email a set-password link only on first create (never on
                 // update), so at most one email is ever sent per user.
                 if spec.send_password_email {
@@ -409,6 +424,13 @@ fn reconcile_users(
                 reconcile_user_preferred_username(client, &user, spec)?;
                 reconcile_user_attributes_values(client, &user, spec)?;
                 reconcile_existing_user_initial_password(client, &user, spec, password_markers)?;
+                audit_required_auth_provider_after_reconcile(
+                    client,
+                    email,
+                    spec,
+                    state,
+                    provider_bindings,
+                )?;
             }
             (false, Some(user)) if !no_auto_remove => {
                 log(format_args!("delete user {email}"));
@@ -424,7 +446,120 @@ fn validate_user_credential_strategy(email: &str, spec: &UserSpec) -> Result<()>
     if spec.send_password_email && spec.initial_password_file.is_some() {
         bail!("user {email} cannot set both send_password_email and initial_password_file");
     }
+    if spec
+        .required_auth_provider
+        .as_deref()
+        .is_some_and(|provider| provider.trim().is_empty())
+    {
+        bail!("user {email} has an empty required_auth_provider");
+    }
+    if spec.required_auth_provider.is_some()
+        && (spec.send_password_email || spec.initial_password_file.is_some())
+    {
+        bail!(
+            "user {email} with required_auth_provider cannot use send_password_email or initial_password_file"
+        );
+    }
     Ok(())
+}
+
+fn audit_required_auth_provider_after_reconcile(
+    client: &RauthyClient,
+    email: &str,
+    spec: &UserSpec,
+    state: &State,
+    provider_bindings: &BTreeMap<String, String>,
+) -> Result<()> {
+    let Some(required_provider) = spec.required_auth_provider.as_deref() else {
+        return Ok(());
+    };
+    let provider_spec = state.providers.get(required_provider).ok_or_else(|| {
+        anyhow!(
+            "user {email} requires upstream provider {required_provider}, but it is not declared"
+        )
+    })?;
+    if !provider_spec.present {
+        bail!(
+            "user {email} requires upstream provider {required_provider}, but it is declared present = false"
+        );
+    }
+    if !provider_spec.enabled {
+        bail!("user {email} requires upstream provider {required_provider}, but it is disabled");
+    }
+    if !provider_spec.auto_link {
+        bail!(
+            "user {email} requires upstream provider {required_provider}, but auto_link is disabled"
+        );
+    }
+    let canonical_provider = provider_bindings.get(required_provider).ok_or_else(|| {
+        anyhow!(
+            "user {email} requires upstream provider {required_provider}, but no canonical Rauthy provider was reconciled"
+        )
+    })?;
+    let user = client
+        .get_user_by_email(email)?
+        .ok_or_else(|| anyhow!("Rauthy user {email} disappeared during reconciliation"))?;
+
+    let awaiting_first_login =
+        validate_required_auth_provider_user(email, required_provider, canonical_provider, &user)?;
+    if awaiting_first_login {
+        log(format_args!(
+            "Rauthy user {email} has no local credential and is awaiting first login through provider {required_provider}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_required_auth_provider_user(
+    email: &str,
+    required_provider: &str,
+    canonical_provider: &str,
+    user: &client::UserResponse,
+) -> Result<bool> {
+    if user.webauthn_user_id.is_some() {
+        bail!(
+            "Rauthy user {email} requires provider {required_provider}, but a WebAuthn credential is present; remove it in Rauthy before retrying"
+        );
+    }
+
+    match user.account_type.as_ref() {
+        Some(client::AccountType::New) => {
+            if user.auth_provider_id.is_some() || user.federation_uid.is_some() {
+                bail!(
+                    "Rauthy user {email} reports a new account with existing federation metadata; refusing to assume it is unlinked"
+                );
+            }
+            Ok(true)
+        }
+        Some(client::AccountType::Federated) => {
+            match user.auth_provider_id.as_deref() {
+                Some(actual) if actual == canonical_provider => {
+                    if user.federation_uid.is_none() {
+                        bail!(
+                            "Rauthy user {email} is linked to provider {required_provider} without a federation UID"
+                        );
+                    }
+                }
+                Some(actual) => {
+                    bail!(
+                        "Rauthy user {email} is linked to provider {actual}, expected {required_provider} ({canonical_provider})"
+                    )
+                }
+                None => {
+                    bail!(
+                        "Rauthy user {email} reports a federated account without a provider link; refusing to assume it is safe"
+                    )
+                }
+            }
+            Ok(false)
+        }
+        Some(account_type) => bail!(
+            "Rauthy user {email} requires provider {required_provider}, but has local credential state {account_type:?}; remove the password/passkey in Rauthy before retrying"
+        ),
+        None => bail!(
+            "Rauthy user {email} requires provider {required_provider}, but the server did not return account_type; refusing to assume it is passwordless"
+        ),
+    }
 }
 
 fn set_user_initial_password(
@@ -765,9 +900,13 @@ fn user_attribute_drifted(
         || cur.user_editable != spec.user_editable
 }
 
-fn reconcile_providers(client: &RauthyClient, state: &State, no_auto_remove: bool) -> Result<()> {
+fn reconcile_providers(
+    client: &RauthyClient,
+    state: &State,
+    no_auto_remove: bool,
+) -> Result<BTreeMap<String, String>> {
     if state.providers.is_empty() {
-        return Ok(());
+        return Ok(BTreeMap::new());
     }
     let existing = client.list_providers()?;
     for (id, spec) in &state.providers {
@@ -814,7 +953,19 @@ fn reconcile_providers(client: &RauthyClient, state: &State, no_auto_remove: boo
             _ => {}
         }
     }
-    Ok(())
+    let existing = client.list_providers()?;
+    let mut bindings = BTreeMap::new();
+    for (id, spec) in &state.providers {
+        if !spec.present {
+            continue;
+        }
+        let matches = matching_providers(&existing, id, spec);
+        let linked = provider_link_counts(client, &matches)?;
+        let canonical = select_canonical_provider(&matches, &linked)
+            .with_context(|| format!("resolving canonical upstream provider {id}"))?;
+        bindings.insert(id.clone(), canonical.id.clone());
+    }
+    Ok(bindings)
 }
 
 fn matching_providers<'a>(
@@ -1146,6 +1297,10 @@ mod tests {
             email_verified: false,
             user_expires: None,
             user_values: client::UserValuesResponse::default(),
+            account_type: None,
+            webauthn_user_id: None,
+            auth_provider_id: None,
+            federation_uid: None,
         }
     }
 
@@ -1211,6 +1366,79 @@ mod tests {
 
         let err = validate_user_credential_strategy("a@example.com", &s).unwrap_err();
         assert!(err.to_string().contains("cannot set both"));
+    }
+
+    #[test]
+    fn required_auth_provider_conflicts_with_local_credential_strategy() {
+        let s: UserSpec = serde_json::from_value(serde_json::json!({
+            "required_auth_provider": "kanidm",
+            "initial_password_file": "/run/credentials/rauthy-provision.service/password-a"
+        }))
+        .unwrap();
+
+        let err = validate_user_credential_strategy("a@example.com", &s).unwrap_err();
+        assert!(err.to_string().contains("required_auth_provider"));
+    }
+
+    #[test]
+    fn required_auth_provider_rejects_local_passwords() {
+        let mut current = user(&[], None);
+        current.account_type = Some(client::AccountType::Password);
+
+        let err = validate_required_auth_provider_user(
+            "a@example.com",
+            "kanidm",
+            "provider-id",
+            &current,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("local credential state"));
+    }
+
+    #[test]
+    fn required_auth_provider_rejects_wrong_federated_provider() {
+        let mut current = user(&[], None);
+        current.account_type = Some(client::AccountType::Federated);
+        current.auth_provider_id = Some("other-provider".into());
+        current.federation_uid = Some("federated-user".into());
+
+        let err = validate_required_auth_provider_user(
+            "a@example.com",
+            "kanidm",
+            "provider-id",
+            &current,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("expected kanidm"));
+    }
+
+    #[test]
+    fn required_auth_provider_accepts_unlinked_and_linked_users() {
+        let mut new_user = user(&[], None);
+        new_user.account_type = Some(client::AccountType::New);
+        assert!(
+            validate_required_auth_provider_user(
+                "a@example.com",
+                "kanidm",
+                "provider-id",
+                &new_user,
+            )
+            .unwrap()
+        );
+
+        let mut federated_user = user(&[], None);
+        federated_user.account_type = Some(client::AccountType::Federated);
+        federated_user.auth_provider_id = Some("provider-id".into());
+        federated_user.federation_uid = Some("federated-user".into());
+        assert!(
+            !validate_required_auth_provider_user(
+                "a@example.com",
+                "kanidm",
+                "provider-id",
+                &federated_user,
+            )
+            .unwrap()
+        );
     }
 
     fn empty_state_file(name: &str) -> PathBuf {

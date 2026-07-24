@@ -87,7 +87,8 @@ in rec {
   # ---- rauthy backend -------------------------------------------------------
 
   # Turn a uniform user set into a `services.rauthy.provision.users` attrset
-  # (keyed by primary email). `kanidmLogin` users are passwordless/federated;
+  # (keyed by primary email). `kanidmLogin` users are passwordless/federated and
+  # carry the reconciliation-time required upstream provider marker;
   # `passwordInitByEmail` users carry sendPasswordEmail + the redirect.
   #
   #   rauthyUsers {
@@ -142,6 +143,9 @@ in rec {
               inherit language;
               roles = u.roles or [];
               groups = lib.unique (commonGroups ++ (u.groups or []));
+            }
+            // lib.optionalAttrs (isKanidmLogin cred) {
+              requiredAuthProvider = "kanidm";
             }
             // lib.optionalAttrs emailed {
               sendPasswordEmail = true;

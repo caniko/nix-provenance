@@ -154,6 +154,12 @@ pub struct UserSpec {
     pub preferred_username: Option<Option<String>>,
     #[serde(default)]
     pub attributes: BTreeMap<String, Value>,
+    /// Rauthy provider key that must own this user's federated login. This is
+    /// audited during reconciliation; the current Rauthy API has no per-user
+    /// runtime enforcement switch.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_auth_provider: Option<String>,
     /// On user CREATION only, ask Rauthy to email the user a set-password link
     /// (Rauthy's `request_reset` flow). A no-op when the user already exists, so
     /// at most one email is ever sent per user. Use for external users who have
@@ -293,6 +299,19 @@ mod tests {
         assert!(u.preferred_username.is_none());
         assert!(u.user_expires.is_none());
         assert!(u.initial_password_file.is_none());
+        assert!(u.required_auth_provider.is_none());
+    }
+
+    #[test]
+    fn parses_required_auth_provider() {
+        let s: State = serde_json::from_str(
+            r#"{ "users": { "a@example.com": { "required_auth_provider": "kanidm" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.users["a@example.com"].required_auth_provider.as_deref(),
+            Some("kanidm")
+        );
     }
 
     #[test]

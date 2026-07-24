@@ -198,6 +198,15 @@
         default = {};
         description = "Custom Rauthy user attribute values, rendered as JSON.";
       };
+      requiredAuthProvider = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Reconciliation-time assertion that this user must authenticate
+          through the named Rauthy upstream provider. This does not change
+          Rauthy's runtime login policy; it rejects local credential drift.
+        '';
+      };
       sendPasswordEmail = mkOption {
         type = types.bool;
         default = false;
@@ -517,6 +526,9 @@
           attributes
           ;
         send_password_email = u.sendPasswordEmail;
+      }
+      // optionalAttrs (u.requiredAuthProvider != null) {
+        required_auth_provider = u.requiredAuthProvider;
       }
       // optionalAttrs (u.givenName != null || u.clearGivenName) {
         given_name =
@@ -975,6 +987,13 @@ in {
                 {
                   assertion = !(user.sendPasswordEmail && user.initialPasswordFile != null);
                   message = "services.rauthy.provision.users.${name} cannot set both sendPasswordEmail and initialPasswordFile.";
+                }
+                {
+                  assertion =
+                    user.requiredAuthProvider
+                    == null
+                    || (!user.sendPasswordEmail && user.initialPasswordFile == null);
+                  message = "services.rauthy.provision.users.${name} with requiredAuthProvider cannot use sendPasswordEmail or initialPasswordFile.";
                 }
               ])
               cfg.users)

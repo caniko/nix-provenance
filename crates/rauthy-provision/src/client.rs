@@ -115,6 +115,17 @@ pub struct UserValuesResponse {
     pub tz: Option<String>,
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountType {
+    New,
+    Password,
+    Passkey,
+    Federated,
+    FederatedPasskey,
+    FederatedPassword,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UserResponse {
     pub id: String,
@@ -137,6 +148,16 @@ pub struct UserResponse {
     pub user_expires: Option<i64>,
     #[serde(default)]
     pub user_values: UserValuesResponse,
+    /// Rauthy versions before account metadata was exposed omit this field;
+    /// strict provider checks deliberately fail closed when it is absent.
+    #[serde(default)]
+    pub account_type: Option<AccountType>,
+    #[serde(default)]
+    pub webauthn_user_id: Option<String>,
+    #[serde(default)]
+    pub auth_provider_id: Option<String>,
+    #[serde(default)]
+    pub federation_uid: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
