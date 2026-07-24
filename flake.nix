@@ -21,6 +21,12 @@
       url = "git+https://codeberg.org/caniko/plinth.git";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    forgejo-cli = {
+      # Keep the CLI as a separate capability owner; nix-provenance only
+      # exposes its package and Home Manager integration.
+      url = "git+https://codeberg.org/caniko/forgejo-cli.git?ref=main";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
@@ -32,6 +38,7 @@
     crane,
     rauthy-src,
     plinth,
+    forgejo-cli,
     ...
   }:
     flake-utils.lib.eachDefaultSystem (
@@ -109,6 +116,7 @@
                 popd
               '';
             });
+            forgejo-cli = forgejo-cli.packages.${system}.forgejo-cli;
           };
 
         docsPackage = pkgs.stdenv.mkDerivation {
@@ -196,6 +204,7 @@
 
       homeModules = {
         rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
+        fj = import ./nix/modules/home/fj.nix {inherit self;};
       };
 
       # Crossbow consumers build this package on Atlas and select it through
@@ -252,6 +261,7 @@
       in
         {
           inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision stalwart016-provision tuwunel-provision;
+          forgejo-cli = forgejo-cli.packages.${final.stdenv.hostPlatform.system}.forgejo-cli;
           rauthy-vikunja-groups = rauthyVikunjaGroups;
         };
     };
