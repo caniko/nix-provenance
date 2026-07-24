@@ -13,11 +13,17 @@
     if tokenCfg.tokenFile == null
     then ""
     else tokenCfg.tokenFile;
+  tokenFileShell = let
+    runtimePrefix = "\${XDG_RUNTIME_DIR}";
+  in
+    if lib.hasPrefix runtimePrefix tokenFile
+    then "\"$XDG_RUNTIME_DIR\"${lib.escapeShellArg (lib.removePrefix runtimePrefix tokenFile)}"
+    else lib.escapeShellArg tokenFile;
   applicationTokenScript = pkgs.writeShellApplication {
     name = "nix-provenance-fj-application-token";
     runtimeInputs = [pkgs.coreutils];
     text = ''
-      token_file=${lib.escapeShellArg tokenFile}
+      token_file=${tokenFileShell}
       test -s "$token_file" || {
         echo "fj: application token file is missing or empty: $token_file" >&2
         exit 1
