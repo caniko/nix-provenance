@@ -14,6 +14,14 @@
       tokenFile = "/run/secrets/vikunja-provision-token";
       webhookSecretFile = "/run/secrets/vikunja-webhook-secret";
       botUsername = "vikunja-provision";
+      projects.cl_gaming = {
+        description = "Hermes Regicide queue";
+      };
+      labels = {
+        AI = {};
+        hermes = {};
+        regicide = {};
+      };
       teams.ops = {
         description = "Operations";
         members = ["alice"];

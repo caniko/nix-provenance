@@ -2,7 +2,8 @@
 //!
 //! Authentication is a long-lived scoped API token sent as
 //! `Authorization: Bearer <token>`. The token must cover the deployed
-//! instance's `teams`, `teams_members`, and `webhooks` route scopes. Derive
+//! instance's `teams`, `teams_members`, `projects`, `labels`, and `webhooks`
+//! route scopes. Derive
 //! exact scope strings from `GET /api/v1/routes` when minting the token;
 //! Vikunja scopes pin methods and paths.
 
@@ -10,11 +11,13 @@ use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use provenance_core::http::ensure_success as ok;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
+
+const PAGINATION_TOTAL_PAGES: &str = "x-pagination-total-pages";
 
 pub struct VikunjaClient {
     http: Client,
@@ -59,6 +62,30 @@ pub struct TeamRequest<'a> {
     pub description: Option<&'a str>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ProjectSummary {
+    pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectRequest<'a> {
+    title: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LabelSummary {
+    pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LabelRequest<'a> {
+    title: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hex_color: Option<&'a str>,
+}
+
 #[derive(Debug, Serialize)]
 struct MemberRequest<'a> {
     username: &'a str,
@@ -99,6 +126,68 @@ impl VikunjaClient {
         self.http
             .request(method, format!("{}{path}", self.api))
             .header(reqwest::header::AUTHORIZATION, &self.auth)
+    }
+
+    fn total_pages(resp: &Response) -> u64 {
+        resp.headers()
+            .get(PAGINATION_TOTAL_PAGES)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1)
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<ProjectSummary>> {
+        let mut projects = Vec::new();
+        let mut page = 1;
+        loop {
+            let path = format!("/projects?page={page}&per_page=100");
+            let resp = self.send_ok(self.req(Method::GET, &path), "requesting Vikunja projects")?;
+            let total_pages = Self::total_pages(&resp);
+            projects.extend(
+                resp.json::<Vec<ProjectSummary>>()
+                    .context("decoding projects list")?,
+            );
+            if page >= total_pages {
+                return Ok(projects);
+            }
+            page += 1;
+        }
+    }
+
+    pub fn create_project(&self, title: &str, description: Option<&str>) -> Result<()> {
+        self.send_write_ok(
+            self.req(Method::PUT, "/projects")
+                .json(&ProjectRequest { title, description }),
+            &format!("creating Vikunja project {title}"),
+        )?;
+        Ok(())
+    }
+
+    pub fn list_labels(&self) -> Result<Vec<LabelSummary>> {
+        let mut labels = Vec::new();
+        let mut page = 1;
+        loop {
+            let path = format!("/labels?page={page}&per_page=100");
+            let resp = self.send_ok(self.req(Method::GET, &path), "requesting Vikunja labels")?;
+            let total_pages = Self::total_pages(&resp);
+            labels.extend(
+                resp.json::<Vec<LabelSummary>>()
+                    .context("decoding Vikunja labels list")?,
+            );
+            if page >= total_pages {
+                return Ok(labels);
+            }
+            page += 1;
+        }
+    }
+
+    pub fn create_label(&self, title: &str, hex_color: Option<&str>) -> Result<()> {
+        self.send_write_ok(
+            self.req(Method::PUT, "/labels")
+                .json(&LabelRequest { title, hex_color }),
+            &format!("creating Vikunja label {title}"),
+        )?;
+        Ok(())
     }
 
     fn send_ok(&self, req: RequestBuilder, context: impl Into<String>) -> Result<Response> {
@@ -367,12 +456,10 @@ mod tests {
                 "secret": "shared-secret",
             })
         );
-        assert!(
-            value["target_url"]
-                .as_str()
-                .unwrap()
-                .starts_with("https://")
-        );
+        assert!(value["target_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://"));
     }
 
     #[test]

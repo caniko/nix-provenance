@@ -1,5 +1,5 @@
 //! vikunja-provision -- declarative provisioning client for Vikunja teams and
-//! webhooks.
+//! projects, labels, teams, and webhooks.
 //!
 //! Reads a JSON state file describing desired API-managed local Vikunja teams,
 //! memberships, and project webhooks, then reconciles a running Vikunja instance
@@ -23,7 +23,7 @@ use state::{State, TeamSpec, WebhookSpec};
 #[derive(Parser, Debug)]
 #[command(
     name = "vikunja-provision",
-    about = "Declaratively provision Vikunja teams, memberships, and webhooks",
+    about = "Declaratively provision Vikunja projects, labels, teams, memberships, and webhooks",
     version
 )]
 struct Cli {
@@ -102,6 +102,8 @@ fn main() -> Result<()> {
         .wait_ready(cli.ready_timeout, Duration::from_secs(1))
         .context("waiting for vikunja to be ready")?;
 
+    reconcile_projects(&client, &state)?;
+    reconcile_labels(&client, &state)?;
     reconcile_teams(
         &client,
         &state,
@@ -118,6 +120,54 @@ fn main() -> Result<()> {
 
 fn log(msg: Arguments<'_>) {
     eprintln!("[vikunja-provision] {msg}");
+}
+
+// ---------------------------------------------------------------------------
+// Project and label reconciliation
+// ---------------------------------------------------------------------------
+
+fn reconcile_projects(client: &VikunjaClient, state: &State) -> Result<()> {
+    let existing = client.list_projects()?;
+    for (title, spec) in &state.projects {
+        if !spec.present {
+            continue;
+        }
+        let matches: Vec<_> = existing
+            .iter()
+            .filter(|project| project.title == *title)
+            .collect();
+        match matches.as_slice() {
+            [] => {
+                log(format_args!("create project {title}"));
+                client.create_project(title, spec.description.as_deref())?;
+            }
+            [_] => {}
+            _ => anyhow::bail!("Vikunja project {title} is ambiguous"),
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_labels(client: &VikunjaClient, state: &State) -> Result<()> {
+    let existing = client.list_labels()?;
+    for (title, spec) in &state.labels {
+        if !spec.present {
+            continue;
+        }
+        let matches: Vec<_> = existing
+            .iter()
+            .filter(|label| label.title == *title)
+            .collect();
+        match matches.as_slice() {
+            [] => {
+                log(format_args!("create label {title}"));
+                client.create_label(title, spec.hex_color.as_deref())?;
+            }
+            [_] => {}
+            _ => anyhow::bail!("Vikunja label {title} is ambiguous"),
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -296,9 +346,7 @@ fn reconcile_webhooks(
 
         match (spec.present, find_matching_webhook(&existing, spec)) {
             (true, None) => {
-                log(format_args!(
-                    "create webhook for project {project_id}"
-                ));
+                log(format_args!("create webhook for project {project_id}"));
                 client.create_webhook(project_id, &spec.url, &spec.events, webhook_secret)?;
             }
             (true, Some(hook)) => {
