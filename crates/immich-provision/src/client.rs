@@ -63,50 +63,58 @@ impl ImmichClient {
     }
 
     pub fn system_config(&self) -> Result<SystemConfig> {
-        self.auth(self.client.get(self.url("/system-config")))
+        let resp = self
+            .auth(self.client.get(self.url("/system-config")))
             .send()
-            .context("requesting Immich system config")?
-            .json_ok("Immich system config")
+            .context("requesting Immich system config")?;
+        Ok(provenance_core::http::json_ok(
+            resp,
+            "Immich system config",
+        )?)
     }
 
     pub fn list_users(&self) -> Result<Vec<ImmichUser>> {
-        self.auth(
-            self.client
-                .get(self.url("/admin/users"))
-                .query(&[("withDeleted", "false")]),
-        )
-        .send()
-        .context("requesting Immich users")?
-        .json_ok("Immich users")
+        let resp = self
+            .auth(
+                self.client
+                    .get(self.url("/admin/users"))
+                    .query(&[("withDeleted", "false")]),
+            )
+            .send()
+            .context("requesting Immich users")?;
+        Ok(provenance_core::http::json_ok(resp, "Immich users")?)
     }
 
     pub fn create_user(&self, body: &Map<String, Value>) -> Result<ImmichUser> {
-        self.auth(self.client.post(self.url("/admin/users")).json(body))
+        let resp = self
+            .auth(self.client.post(self.url("/admin/users")).json(body))
             .send()
-            .context("creating Immich user")?
-            .json_ok("created Immich user")
+            .context("creating Immich user")?;
+        Ok(provenance_core::http::json_ok(resp, "created Immich user")?)
     }
 
     pub fn update_user(&self, id: &str, body: &Map<String, Value>) -> Result<ImmichUser> {
-        self.auth(
-            self.client
-                .put(self.url(&format!("/admin/users/{id}")))
-                .json(body),
-        )
-        .send()
-        .with_context(|| format!("updating Immich user {id}"))?
-        .json_ok("updated Immich user")
+        let resp = self
+            .auth(
+                self.client
+                    .put(self.url(&format!("/admin/users/{id}")))
+                    .json(body),
+            )
+            .send()
+            .with_context(|| format!("updating Immich user {id}"))?;
+        Ok(provenance_core::http::json_ok(resp, "updated Immich user")?)
     }
 
     pub fn delete_user(&self, id: &str, force: bool) -> Result<ImmichUser> {
-        self.auth(
-            self.client
-                .delete(self.url(&format!("/admin/users/{id}")))
-                .json(&json!({ "force": force })),
-        )
-        .send()
-        .with_context(|| format!("deleting Immich user {id}"))?
-        .json_ok("deleted Immich user")
+        let resp = self
+            .auth(
+                self.client
+                    .delete(self.url(&format!("/admin/users/{id}")))
+                    .json(&json!({ "force": force })),
+            )
+            .send()
+            .with_context(|| format!("deleting Immich user {id}"))?;
+        Ok(provenance_core::http::json_ok(resp, "deleted Immich user")?)
     }
 
     fn auth(&self, req: RequestBuilder) -> RequestBuilder {
@@ -115,18 +123,6 @@ impl ImmichClient {
 
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.api_base, path)
-    }
-}
-
-trait ResponseExt {
-    fn json_ok<T: serde::de::DeserializeOwned>(self, context: &str) -> Result<T>;
-}
-
-impl ResponseExt for reqwest::blocking::Response {
-    fn json_ok<T: serde::de::DeserializeOwned>(self, context: &str) -> Result<T> {
-        // Ergonomic `.json_ok(...)` call sites are preserved; the status/decode
-        // logic itself lives in the shared, permissive provenance-core.
-        provenance_core::http::json_ok(self, context)
     }
 }
 

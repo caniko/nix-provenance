@@ -51,6 +51,28 @@
     };
   };
 
+  projectSubmodule = types.submodule {
+    options = {
+      present = presentOption;
+      description = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Project description used when the project is created.";
+      };
+    };
+  };
+
+  labelSubmodule = types.submodule {
+    options = {
+      present = presentOption;
+      hexColor = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Optional label color used when the label is created.";
+      };
+    };
+  };
+
   teamManifest =
     lib.mapAttrs (_: team: {
       inherit (team) present members admins description;
@@ -63,8 +85,23 @@
     })
     cfg.webhooks;
 
+  projectManifest =
+    lib.mapAttrs (_: project: {
+      inherit (project) present description;
+    })
+    cfg.projects;
+
+  labelManifest =
+    lib.mapAttrs (_: label: {
+      inherit (label) present;
+      hex_color = label.hexColor;
+    })
+    cfg.labels;
+
   stateFile = pkgs.writeText "vikunja-provision-state.json" (
     builtins.toJSON {
+      labels = labelManifest;
+      projects = projectManifest;
       teams = teamManifest;
       webhooks = webhookManifest;
     }
@@ -182,6 +219,18 @@ in {
       default = {};
       description = "Vikunja project webhooks to provision, keyed by project ID (as string).";
     };
+
+    projects = mkOption {
+      type = types.attrsOf projectSubmodule;
+      default = {};
+      description = "Vikunja projects to ensure, keyed by stable project title.";
+    };
+
+    labels = mkOption {
+      type = types.attrsOf labelSubmodule;
+      default = {};
+      description = "Vikunja labels to ensure, keyed by stable label title.";
+    };
   };
 
   config = mkIf cfg.enable {
@@ -227,10 +276,24 @@ in {
             message = "services.vikunja.provision.webhooks.${projectId}.url is required when present = true.";
           }
         ])
-        cfg.webhooks);
+        cfg.webhooks)
+      ++ lib.flatten (lib.mapAttrsToList (name: project: [
+        {
+          assertion = !project.present || name != "";
+          message = "services.vikunja.provision.projects must not contain an empty title when present = true.";
+        }
+      ])
+      cfg.projects)
+      ++ lib.flatten (lib.mapAttrsToList (name: label: [
+        {
+          assertion = !label.present || name != "";
+          message = "services.vikunja.provision.labels must not contain an empty title when present = true.";
+        }
+      ])
+      cfg.labels);
 
     systemd.services.vikunja-provision = {
-      description = "Declaratively provision Vikunja teams and webhooks";
+      description = "Declaratively provision Vikunja projects, labels, teams, and webhooks";
       after = cfg.serviceAfter;
       requires = cfg.serviceAfter;
       wantedBy = ["multi-user.target"];

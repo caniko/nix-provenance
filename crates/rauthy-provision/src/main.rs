@@ -105,6 +105,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("reading state file {}", cli.state.display()))?;
     let state: State = serde_json::from_str(&raw)
         .with_context(|| format!("parsing state file {}", cli.state.display()))?;
+    validate_state(&state)?;
 
     if cli.transient_api_key {
         run_with_transient_api_key(&cli, &state)
@@ -118,6 +119,41 @@ fn main() -> Result<()> {
         )?;
         run_with_api_key(&cli, &state, &api_key)
     }
+}
+
+/// Validate all cross-entity and credential-strategy invariants before the
+/// first readiness probe or other network request.
+fn validate_state(state: &State) -> Result<()> {
+    for (email, spec) in &state.users {
+        validate_user_credential_strategy(email, spec)?;
+        if let Some(provider) = spec.required_auth_provider.as_deref()
+            && !state.providers.contains_key(provider)
+        {
+            bail!("user {email} requires upstream provider {provider}, but it is not declared");
+        }
+    }
+    for (id, spec) in &state.clients {
+        if spec.generated_secret_file.is_some() && !spec.confidential {
+            bail!(
+                "client {id} sets generated_secret_file but is not confidential; \
+                 Rauthy only has client secrets for confidential clients"
+            );
+        }
+        if !spec.confidential && !spec.enable_pkce {
+            bail!("public client {id} must enable PKCE");
+        }
+    }
+    for (id, spec) in &state.providers {
+        if spec.client_secret_basic && spec.client_secret_post {
+            bail!("provider {id} cannot enable both client_secret_basic and client_secret_post");
+        }
+        if (spec.client_secret_basic || spec.client_secret_post)
+            && spec.client_secret_file.is_none()
+        {
+            bail!("provider {id} enables client-secret auth but has no client_secret_file");
+        }
+    }
+    Ok(())
 }
 
 fn run_with_api_key(cli: &Cli, state: &State, api_key: &str) -> Result<()> {
@@ -365,7 +401,6 @@ fn reconcile_users(
     provider_bindings: &BTreeMap<String, String>,
 ) -> Result<()> {
     for (email, spec) in &state.users {
-        validate_user_credential_strategy(email, spec)?;
         let current = client.get_user_by_email(email)?;
         match (spec.present, current) {
             (true, None) => {
@@ -586,7 +621,8 @@ fn set_user_initial_password(
     update.password = Some(password.clone());
     client.update_user(&user.id, &update)?;
     markers.commit(&marker_id, &password)?;
-    markers.clear_pending(&marker_id)
+    markers.clear_pending(&marker_id)?;
+    Ok(())
 }
 
 fn reconcile_user_initial_password_on_create(
@@ -988,8 +1024,8 @@ fn provider_link_counts(
 ) -> Result<BTreeMap<String, usize>> {
     let mut linked = BTreeMap::new();
     for provider in providers {
-        let users = client.provider_linked_users(&provider.id)?;
-        linked.insert(provider.id.clone(), users.len());
+        let users = client.provider_linked_user_count(&provider.id)?;
+        linked.insert(provider.id.clone(), users);
     }
     Ok(linked)
 }
@@ -1353,6 +1389,42 @@ mod tests {
             "groups": groups,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn validate_state_rejects_public_clients_without_pkce() {
+        let state: State = serde_json::from_value(serde_json::json!({
+            "clients": {
+                "public": { "confidential": false, "enable_pkce": false }
+            }
+        }))
+        .unwrap();
+
+        let err = validate_state(&state).unwrap_err();
+        assert!(err.to_string().contains("must enable PKCE"));
+    }
+
+    #[test]
+    fn validate_state_rejects_duplicate_provider_auth_modes() {
+        let state: State = serde_json::from_value(serde_json::json!({
+            "providers": {
+                "id": {
+                    "name": "provider",
+                    "issuer": "https://id.example",
+                    "authorization_endpoint": "https://id.example/auth",
+                    "token_endpoint": "https://id.example/token",
+                    "userinfo_endpoint": "https://id.example/userinfo",
+                    "client_id": "kanidm-client",
+                    "client_secret_basic": true,
+                    "client_secret_post": true,
+                    "client_secret_file": "/run/credentials/secret"
+                }
+            }
+        }))
+        .unwrap();
+
+        let err = validate_state(&state).unwrap_err();
+        assert!(err.to_string().contains("both client_secret_basic"));
     }
 
     #[test]

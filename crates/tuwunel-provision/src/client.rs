@@ -23,15 +23,11 @@ impl fmt::Debug for TuwunelClient {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct RegisterResponse {
     access_token: String,
-    #[serde(default)]
-    user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct ErrorResponse {
     errcode: Option<String>,
     error: Option<String>,
@@ -108,16 +104,15 @@ impl TuwunelClient {
         let localpart = localpart.split(':').next().unwrap_or(localpart);
 
         match self.try_register(localpart, password, true, None) {
-            Ok(token) => return Ok(token),
+            Ok(token) => Ok(token),
             Err(e) => {
                 if let Some(session) = extract_session_id(&e) {
                     eprintln!(
-                        "tuwunel-provision: register flow requires session {}; completing m.login.dummy",
-                        session
+                        "tuwunel-provision: register flow requires interactive authentication; completing m.login.dummy"
                     );
                     return self.try_register(localpart, password, true, Some(&session));
                 }
-                return Err(e);
+                Err(e)
             }
         }
     }
@@ -144,8 +139,7 @@ impl TuwunelClient {
             return Ok(data.access_token);
         }
 
-        let body_text = resp.text().unwrap_or_default();
-        bail!("password login returned HTTP {status}: {body_text}");
+        bail!("password login returned HTTP {status}");
     }
 
     fn try_register(
@@ -180,40 +174,36 @@ impl TuwunelClient {
         }
 
         let body_text = resp.text().unwrap_or_default();
-        if status == StatusCode::BAD_REQUEST {
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body_text) {
-                if err.errcode.as_deref() == Some("M_USER_IN_USE") {
-                    return Err(anyhow!("user_in_use:{localpart}"));
-                }
-            }
+        if status == StatusCode::BAD_REQUEST
+            && let Ok(err) = serde_json::from_str::<ErrorResponse>(&body_text)
+            && err.errcode.as_deref() == Some("M_USER_IN_USE")
+        {
+            return Err(anyhow!("user_in_use:{localpart}"));
         }
-        if status == StatusCode::FORBIDDEN {
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body_text) {
-                if err.errcode.as_deref() == Some("M_FORBIDDEN")
-                    && err
-                        .error
-                        .as_deref()
-                        .is_some_and(|msg| msg.contains("Registration has been disabled"))
-                {
-                    return Err(anyhow!("registration_disabled"));
-                }
-            }
+        if status == StatusCode::FORBIDDEN
+            && let Ok(err) = serde_json::from_str::<ErrorResponse>(&body_text)
+            && err.errcode.as_deref() == Some("M_FORBIDDEN")
+            && err
+                .error
+                .as_deref()
+                .is_some_and(|msg| msg.contains("Registration has been disabled"))
+        {
+            return Err(anyhow!("registration_disabled"));
+        }
+        if status == StatusCode::UNAUTHORIZED
+            && let Ok(err) = serde_json::from_str::<ErrorResponse>(&body_text)
+            && let Some(session) = err.session
+        {
+            return Err(anyhow!("need_session:{session}"));
         }
         if status == StatusCode::UNAUTHORIZED {
-            if let Ok(err) = serde_json::from_str::<ErrorResponse>(&body_text) {
-                if let Some(session) = err.session {
-                    return Err(anyhow!("need_session:{session}"));
-                }
-            }
             if session.is_none() {
-                bail!(
-                    "register returned 401 without a session — registration may be disabled: {body_text}"
-                );
+                bail!("register returned 401 without a session — registration may be disabled");
             }
-            bail!("register returned 401 during session completion: {body_text}");
+            bail!("register returned 401 during session completion");
         }
 
-        bail!("register returned HTTP {status}: {body_text}");
+        bail!("register returned HTTP {status}");
     }
 
     pub fn create_or_update_user(
@@ -259,11 +249,10 @@ impl TuwunelClient {
             );
         }
 
-        let body_text = resp.text().unwrap_or_default();
         if status == StatusCode::UNAUTHORIZED {
             bail!("admin API returned 401 for {user_id} — the admin token has been rejected");
         }
-        bail!("admin API returned {status} for {user_id}: {body_text}");
+        bail!("admin API returned {status} for {user_id}");
     }
 
     fn register_fallback(
@@ -278,26 +267,26 @@ impl TuwunelClient {
 
         match self.try_register(localpart, password, admin, None) {
             Ok(_token) => {
-                if let Some(dn) = display_name {
-                    if let Err(e) = self.set_display_name(user_id, dn) {
-                        eprintln!(
-                            "tuwunel-provision: warning — failed to set display name \
-                             for {user_id} via fallback: {e}"
-                        );
-                    }
+                if let Some(dn) = display_name
+                    && let Err(e) = self.set_display_name(user_id, dn)
+                {
+                    eprintln!(
+                        "tuwunel-provision: warning — failed to set display name \
+                         for {user_id} via fallback: {e}"
+                    );
                 }
                 Ok(())
             }
             Err(e) => {
                 if let Some(session) = extract_session_id(&e) {
                     self.try_register(localpart, password, admin, Some(&session))?;
-                    if let Some(dn) = display_name {
-                        if let Err(e) = self.set_display_name(user_id, dn) {
-                            eprintln!(
-                                "tuwunel-provision: warning — failed to set display name \
-                                 for {user_id} via fallback: {e}"
-                            );
-                        }
+                    if let Some(dn) = display_name
+                        && let Err(e) = self.set_display_name(user_id, dn)
+                    {
+                        eprintln!(
+                            "tuwunel-provision: warning — failed to set display name \
+                             for {user_id} via fallback: {e}"
+                        );
                     }
                     return Ok(());
                 }
@@ -320,8 +309,7 @@ impl TuwunelClient {
         if status.is_success() {
             return Ok(());
         }
-        let body_text = resp.text().unwrap_or_default();
-        bail!("display name API returned {status} for {user_id}: {body_text}");
+        bail!("display name API returned {status} for {user_id}");
     }
 
     pub fn resolve_room_alias(&self, alias: &str) -> Result<Option<String>> {
@@ -348,8 +336,7 @@ impl TuwunelClient {
         if status == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let body_text = resp.text().unwrap_or_default();
-        bail!("room alias lookup returned {status} for {alias}: {body_text}");
+        bail!("room alias lookup returned {status} for {alias}");
     }
 
     pub fn create_room(
@@ -378,8 +365,7 @@ impl TuwunelClient {
             let data: CreateRoomResponse = resp.json().context("decoding createRoom response")?;
             return Ok(data.room_id);
         }
-        let body_text = resp.text().unwrap_or_default();
-        bail!("createRoom returned {status} for {alias}: {body_text}");
+        bail!("createRoom returned {status} for {alias}");
     }
 
     pub fn invite_user_to_room(&self, room_id: &str, user_id: &str) -> Result<()> {
@@ -401,7 +387,7 @@ impl TuwunelClient {
         if status == StatusCode::FORBIDDEN && body_text.contains("already") {
             return Ok(());
         }
-        bail!("room invite returned {status} for {user_id} in {room_id}: {body_text}");
+        bail!("room invite returned {status} for {user_id} in {room_id}");
     }
 }
 
@@ -480,7 +466,6 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(resp.access_token, "syt_YWNjZXNz...");
-        assert_eq!(resp.user_id.as_deref(), Some("@can:example.com"));
     }
 
     #[test]

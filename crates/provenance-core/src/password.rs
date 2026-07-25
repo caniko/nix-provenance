@@ -7,19 +7,23 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+
+use crate::{Error, Result};
 
 /// Read a password from `path`, trimming surrounding whitespace and rejecting
 /// empty files.
 pub fn read_password_file(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
     let value = fs::read_to_string(path)
-        .with_context(|| format!("reading password file {}", path.display()))?
+        .map_err(|source| Error::io(format!("reading password file {}", path.display()), source))?
         .trim()
         .to_owned();
     if value.is_empty() {
-        bail!("password file {} is empty", path.display());
+        return Err(Error::invalid(format!(
+            "password file {} is empty",
+            path.display()
+        )));
     }
     Ok(value)
 }
@@ -55,7 +59,7 @@ impl PasswordMarkerStore {
         match fs::read_to_string(self.marker_path(id)) {
             Ok(current) => Ok(current.trim() != desired),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
-            Err(err) => Err(err).with_context(|| format!("reading password marker for {id}")),
+            Err(err) => Err(Error::io(format!("reading password marker for {id}"), err)),
         }
     }
 
@@ -65,26 +69,33 @@ impl PasswordMarkerStore {
         match fs::read_to_string(self.marker_path(id)) {
             Ok(current) => Ok(Some(current.trim().to_owned())),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(err).with_context(|| format!("reading password marker for {id}")),
+            Err(err) => Err(Error::io(format!("reading password marker for {id}"), err)),
         }
     }
 
     /// Record that `secret` was successfully applied for `id`.
     pub fn commit(&self, id: &str, secret: &str) -> Result<()> {
-        fs::create_dir_all(&self.dir).with_context(|| {
-            format!("creating password marker directory {}", self.dir.display())
+        fs::create_dir_all(&self.dir).map_err(|source| {
+            Error::io(
+                format!("creating password marker directory {}", self.dir.display()),
+                source,
+            )
         })?;
         fs::write(self.marker_path(id), format!("{}\n", secret_digest(secret)))
-            .with_context(|| format!("writing password marker for {id}"))
+            .map_err(|source| Error::io(format!("writing password marker for {id}"), source))
     }
 
     /// Mark that an initial password must still be applied for `id`.
     pub fn mark_pending(&self, id: &str) -> Result<()> {
-        fs::create_dir_all(&self.dir).with_context(|| {
-            format!("creating password marker directory {}", self.dir.display())
+        fs::create_dir_all(&self.dir).map_err(|source| {
+            Error::io(
+                format!("creating password marker directory {}", self.dir.display()),
+                source,
+            )
         })?;
-        fs::write(self.pending_path(id), b"pending\n")
-            .with_context(|| format!("writing pending password marker for {id}"))
+        fs::write(self.pending_path(id), b"pending\n").map_err(|source| {
+            Error::io(format!("writing pending password marker for {id}"), source)
+        })
     }
 
     /// Clear a pending initial-password marker for `id`, if one exists.
@@ -92,9 +103,10 @@ impl PasswordMarkerStore {
         match fs::remove_file(self.pending_path(id)) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => {
-                Err(err).with_context(|| format!("removing pending password marker for {id}"))
-            }
+            Err(err) => Err(Error::io(
+                format!("removing pending password marker for {id}"),
+                err,
+            )),
         }
     }
 
@@ -103,9 +115,10 @@ impl PasswordMarkerStore {
         match fs::metadata(self.pending_path(id)) {
             Ok(meta) => Ok(meta.is_file()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(err) => {
-                Err(err).with_context(|| format!("reading pending password marker for {id}"))
-            }
+            Err(err) => Err(Error::io(
+                format!("reading pending password marker for {id}"),
+                err,
+            )),
         }
     }
 

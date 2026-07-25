@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::{Error, Result};
 
 /// Resolve a secret, preferring `file` over `inline`, trimming surrounding
 /// whitespace and rejecting empties. `what` names the secret in error messages;
@@ -22,18 +22,22 @@ pub fn resolve(
     env_hint: &str,
 ) -> Result<String> {
     if let Some(path) = file {
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("reading {what} file {}", path.display()))?;
+        let raw = fs::read_to_string(path).map_err(|source| {
+            Error::io(format!("reading {what} file {}", path.display()), source)
+        })?;
         let value = raw.trim().to_owned();
         if value.is_empty() {
-            bail!("{what} file {} is empty", path.display());
+            return Err(Error::invalid(format!(
+                "{what} file {} is empty",
+                path.display()
+            )));
         }
         return Ok(value);
     }
     inline
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("no {what}: pass {flag_hint} or set {env_hint}"))
+        .ok_or_else(|| Error::invalid(format!("no {what}: pass {flag_hint} or set {env_hint}")))
 }
 
 #[cfg(test)]

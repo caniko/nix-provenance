@@ -2,6 +2,7 @@
 
 use std::env;
 use std::ffi::OsStr;
+use std::fmt;
 use std::io::{self, Read};
 use std::path::Path;
 use std::process::Command;
@@ -10,12 +11,14 @@ use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use zeroize::Zeroize;
 
 const VAULT_LOCKED_MESSAGE: &str =
     "Bitwarden vault locked or session missing: run `bw unlock` and export `BW_SESSION`";
 
 /// A Bitwarden login item to create or update.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Zeroize)]
+#[zeroize(drop)]
 pub struct BwLoginItem {
     pub name: String,
     pub username: String,
@@ -25,8 +28,22 @@ pub struct BwLoginItem {
     pub session: Option<String>,
 }
 
+impl fmt::Debug for BwLoginItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BwLoginItem")
+            .field("name", &self.name)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("totp", &self.totp.as_ref().map(|_| "<redacted>"))
+            .field("folder", &self.folder)
+            .field("session", &self.session.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 /// Inputs accepted by the `bitwarden upsert` CLI command.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq, Zeroize)]
+#[zeroize(drop)]
 pub struct UpsertInput {
     pub name: Option<String>,
     pub username: Option<String>,
@@ -36,6 +53,21 @@ pub struct UpsertInput {
     pub session: Option<String>,
     pub from_json: Option<String>,
     pub use_primary: bool,
+}
+
+impl fmt::Debug for UpsertInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpsertInput")
+            .field("name", &self.name)
+            .field("username", &self.username)
+            .field("password_from", &self.password_from)
+            .field("totp", &self.totp.as_ref().map(|_| "<redacted>"))
+            .field("folder", &self.folder)
+            .field("session", &self.session.as_ref().map(|_| "<redacted>"))
+            .field("from_json", &self.from_json)
+            .field("use_primary", &self.use_primary)
+            .finish()
+    }
 }
 
 /// Create or update a Bitwarden login item idempotently using the `bw` CLI.
@@ -49,25 +81,27 @@ pub fn upsert_login(item: BwLoginItem) -> Result<()> {
     let encoded = encode_item_json(&item, folder_id.as_deref(), existing.as_ref(), &session)?;
 
     if let Some(existing) = existing {
-        run_bw([
-            OsStr::new("edit"),
-            OsStr::new("item"),
-            OsStr::new(&existing.id),
-            OsStr::new(&encoded),
-            OsStr::new("--session"),
-            OsStr::new(&session),
-            OsStr::new("--nointeraction"),
-        ])
+        run_bw_session(
+            [
+                OsStr::new("edit"),
+                OsStr::new("item"),
+                OsStr::new(&existing.id),
+                OsStr::new(&encoded),
+                OsStr::new("--nointeraction"),
+            ],
+            &session,
+        )
         .context("editing Bitwarden item")?;
     } else {
-        run_bw([
-            OsStr::new("create"),
-            OsStr::new("item"),
-            OsStr::new(&encoded),
-            OsStr::new("--session"),
-            OsStr::new(&session),
-            OsStr::new("--nointeraction"),
-        ])
+        run_bw_session(
+            [
+                OsStr::new("create"),
+                OsStr::new("item"),
+                OsStr::new(&encoded),
+                OsStr::new("--nointeraction"),
+            ],
+            &session,
+        )
         .context("creating Bitwarden item")?;
     }
 
@@ -114,7 +148,7 @@ struct BwFolder {
 }
 
 fn resolve_input_with_provision(
-    input: UpsertInput,
+    mut input: UpsertInput,
     provision: Option<&Value>,
 ) -> Result<BwLoginItem> {
     let password = match input.password_from.as_deref() {
@@ -139,16 +173,19 @@ fn resolve_input_with_provision(
 
     let name = input
         .name
+        .take()
         .or_else(|| provision.and_then(|value| optional_string_field(value, "name")))
         .ok_or_else(|| anyhow!("missing --name"))?;
     let username = input
         .username
+        .take()
         .or_else(|| provision.and_then(|value| optional_string_field(value, "username")))
         .or_else(|| provision.and_then(|value| optional_string_field(value, "spn")))
         .or_else(|| provision.and_then(|value| optional_string_field(value, "account")))
         .ok_or_else(|| anyhow!("missing --username"))?;
     let totp = input
         .totp
+        .take()
         .or_else(|| provision.and_then(|value| optional_string_field(value, "totp_uri")));
 
     Ok(BwLoginItem {
@@ -156,8 +193,8 @@ fn resolve_input_with_provision(
         username,
         password,
         totp,
-        folder: input.folder,
-        session: input.session,
+        folder: input.folder.take(),
+        session: input.session.take(),
     })
 }
 
@@ -170,12 +207,10 @@ fn require_unlocked_session(explicit: Option<&str>) -> Result<String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!(VAULT_LOCKED_MESSAGE))?;
 
-    let status_output = run_bw([
-        OsStr::new("status"),
-        OsStr::new("--session"),
-        OsStr::new(&session),
-        OsStr::new("--nointeraction"),
-    ])
+    let status_output = run_bw_session(
+        [OsStr::new("status"), OsStr::new("--nointeraction")],
+        &session,
+    )
     .map_err(|_| anyhow!(VAULT_LOCKED_MESSAGE))?;
     let status: Status =
         serde_json::from_slice(&status_output).context("parsing `bw status` output")?;
@@ -193,13 +228,14 @@ fn ensure_bw_available() -> Result<()> {
 }
 
 fn resolve_folder_id(folder_name: &str, session: &str) -> Result<String> {
-    let output = run_bw([
-        OsStr::new("list"),
-        OsStr::new("folders"),
-        OsStr::new("--session"),
-        OsStr::new(session),
-        OsStr::new("--nointeraction"),
-    ])
+    let output = run_bw_session(
+        [
+            OsStr::new("list"),
+            OsStr::new("folders"),
+            OsStr::new("--nointeraction"),
+        ],
+        session,
+    )
     .context("listing Bitwarden folders")?;
     let folders: Vec<BwFolder> =
         serde_json::from_slice(&output).context("parsing Bitwarden folder list")?;
@@ -219,15 +255,16 @@ fn find_existing_item(
     folder_id: Option<&str>,
     session: &str,
 ) -> Result<Option<BwItemRef>> {
-    let output = run_bw([
-        OsStr::new("list"),
-        OsStr::new("items"),
-        OsStr::new("--search"),
-        OsStr::new(name),
-        OsStr::new("--session"),
-        OsStr::new(session),
-        OsStr::new("--nointeraction"),
-    ])
+    let output = run_bw_session(
+        [
+            OsStr::new("list"),
+            OsStr::new("items"),
+            OsStr::new("--search"),
+            OsStr::new(name),
+            OsStr::new("--nointeraction"),
+        ],
+        session,
+    )
     .context("listing Bitwarden items")?;
     let items: Vec<BwItemRef> =
         serde_json::from_slice(&output).context("parsing Bitwarden item list")?;
@@ -253,25 +290,27 @@ fn encode_item_json(
     session: &str,
 ) -> Result<String> {
     let mut value: Value = if let Some(existing) = existing {
-        let output = run_bw([
-            OsStr::new("get"),
-            OsStr::new("item"),
-            OsStr::new(&existing.id),
-            OsStr::new("--session"),
-            OsStr::new(session),
-            OsStr::new("--nointeraction"),
-        ])
+        let output = run_bw_session(
+            [
+                OsStr::new("get"),
+                OsStr::new("item"),
+                OsStr::new(&existing.id),
+                OsStr::new("--nointeraction"),
+            ],
+            session,
+        )
         .context("getting existing Bitwarden item")?;
         serde_json::from_slice(&output).context("parsing existing Bitwarden item")?
     } else {
-        let output = run_bw([
-            OsStr::new("get"),
-            OsStr::new("template"),
-            OsStr::new("item"),
-            OsStr::new("--session"),
-            OsStr::new(session),
-            OsStr::new("--nointeraction"),
-        ])
+        let output = run_bw_session(
+            [
+                OsStr::new("get"),
+                OsStr::new("template"),
+                OsStr::new("item"),
+                OsStr::new("--nointeraction"),
+            ],
+            session,
+        )
         .context("getting Bitwarden item template")?;
         serde_json::from_slice(&output).context("parsing Bitwarden item template")?
     };
@@ -295,8 +334,23 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = Command::new("bw")
-        .args(args)
+    run_bw_with_session(args, None)
+}
+
+fn run_bw_session<I, S>(args: I, session: &str) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_bw_with_session(args, Some(session))
+}
+
+fn run_bw_with_session<I, S>(args: I, session: Option<&str>) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = build_bw_command(args, session)
         .output()
         .context("running `bw`")?;
     if !output.status.success() {
@@ -308,6 +362,19 @@ where
         bail!("`bw` exited with status {}: {message}", output.status);
     }
     Ok(output.stdout)
+}
+
+fn build_bw_command<I, S>(args: I, session: Option<&str>) -> Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut command = Command::new("bw");
+    command.args(args);
+    if let Some(session) = session {
+        command.env("BW_SESSION", session);
+    }
+    command
 }
 
 fn read_provision_json_from_stdin() -> Result<Value> {
@@ -342,7 +409,31 @@ fn optional_string_field(value: &Value, field: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BwLoginItem, UpsertInput, resolve_input_with_provision, validate_password_source};
+    use std::ffi::OsStr;
+
+    use super::{
+        BwLoginItem, UpsertInput, build_bw_command, resolve_input_with_provision,
+        validate_password_source,
+    };
+
+    #[test]
+    fn session_is_environment_only() {
+        let command = build_bw_command(
+            [OsStr::new("status"), OsStr::new("--nointeraction")],
+            Some("secret-session"),
+        );
+        let args = command
+            .get_args()
+            .map(OsStr::to_string_lossy)
+            .collect::<Vec<_>>();
+        assert!(!args.iter().any(|arg| arg.contains("secret-session")));
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == OsStr::new("BW_SESSION")
+                    && value == Some(OsStr::new("secret-session")))
+        );
+    }
 
     #[test]
     fn explicit_fields_win_over_json() {
@@ -393,8 +484,14 @@ mod tests {
 
         let item = resolve_input_with_provision(
             UpsertInput {
+                name: None,
+                username: None,
+                password_from: None,
+                totp: None,
+                folder: None,
+                session: None,
+                from_json: None,
                 use_primary: true,
-                ..UpsertInput::default()
             },
             Some(&json),
         )
@@ -410,7 +507,12 @@ mod tests {
             UpsertInput {
                 name: Some("item".to_owned()),
                 username: Some("user".to_owned()),
-                ..UpsertInput::default()
+                password_from: None,
+                totp: None,
+                folder: None,
+                session: None,
+                from_json: None,
+                use_primary: false,
             },
             None,
         )

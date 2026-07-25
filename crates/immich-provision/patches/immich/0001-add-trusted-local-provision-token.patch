@@ -60,40 +60,44 @@ diff --git a/server/src/dtos/user.dto.ts b/server/src/dtos/user.dto.ts
 index 8d35c08..a1142cb 100644
 --- a/server/src/dtos/user.dto.ts
 +++ b/server/src/dtos/user.dto.ts
-@@ -77,13 +77,16 @@ export class UserAdminSearchDto extends createZodDto(UserAdminSearchSchema) {}
- export const UserAdminCreateSchema = z
-   .object({
-     email: toEmail.describe('User email'),
--    password: z.string().describe('User password'),
-+    password: z
-+      .string()
-+      .optional()
-+      .describe('User password. Optional when OAuth is enabled'),
-     name: z.string().describe('User name'),
-     avatarColor: UserAvatarColorSchema.nullish(),
-     pinCode: z.string().regex(pinCodeRegex).nullable().optional().describe('PIN code').meta({ example: '123456' }),
-     storageLabel: z.string().pipe(sanitizeFilename).nullish().describe('Storage label'),
-     quotaSizeInBytes: z.int().min(0).nullish().describe('Storage quota in bytes'),
-     shouldChangePassword: z.boolean().optional().describe('Require password change on next login'),
-     notify: z.boolean().optional().describe('Send notification email'),
-     isAdmin: z.boolean().optional().describe('Grant admin privileges'),
-   })
+@@ -1,5 +1,5 @@
+ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+ import { Transform } from 'class-transformer';
+-import { IsEmail, IsInt, IsNotEmpty, IsString, Min } from 'class-validator';
++import { IsEmail, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
+ import { User, UserAdmin } from 'src/database';
+ import { UserAvatarColor, UserMetadataKey, UserStatus } from 'src/enum';
+ import { MaybeDehydrated, UserMetadataItem } from 'src/types';
+@@ -90,8 +90,10 @@ export class UserAdminSearchDto {
+ }
+
+ export class UserAdminCreateDto {
+   @ApiProperty({ description: 'User email' })
+   @IsEmail({ require_tld: false })
+   @Transform(toEmail)
+   email!: string;
+
+-  @ApiProperty({ description: 'User password' })
++  @ApiPropertyOptional({ description: 'User password. Optional when OAuth is enabled' })
++  @IsOptional()
+   @IsString()
+-  password!: string;
++  password?: string;
 diff --git a/server/src/dtos/user.dto.spec.ts b/server/src/dtos/user.dto.spec.ts
 index e119920..aa4f694 100644
 --- a/server/src/dtos/user.dto.spec.ts
 +++ b/server/src/dtos/user.dto.spec.ts
-@@ -27,5 +27,11 @@ describe('create user DTO', () => {
-     });
-     expect(result.success).toBe(true);
+@@ -38,3 +38,10 @@ describe('create user DTO', () => {
+     expect(errors).toHaveLength(0);
 +
-+    const passwordlessResult = UserAdminCreateSchema.safeParse({
++    const passwordlessDto = plainToInstance(UserAdminCreateDto, {
 +      email: 'oauth@email.com',
 +      name: 'OAuth User',
 +    });
-+    expect(passwordlessResult.success).toBe(true);
++    const passwordlessErrors = await validate(passwordlessDto);
++    expect(passwordlessErrors).toHaveLength(0);
    });
  
-   it('validates invalid email type', () => {
 diff --git a/server/src/services/cli.service.spec.ts b/server/src/services/cli.service.spec.ts
 index 347d9ee..c47f154 100644
 --- a/server/src/services/cli.service.spec.ts

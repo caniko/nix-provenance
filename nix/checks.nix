@@ -58,6 +58,7 @@ in
     rauthy-state-render = packages.rauthy-state-render;
     vikunja-provision = packages.vikunja-provision;
     stalwart016-provision = packages.stalwart016-provision;
+    tuwunel-provision = packages.tuwunel-provision;
     docs = docs;
     site = docs;
     forgejo-cli = packages.forgejo-cli;
@@ -65,6 +66,7 @@ in
     # The fj application-token path must consume the token through stdin only.
     fj-module-eval = let
       tokenFile = "/tmp/nix-provenance-fj-application-token";
+      codebergTokenFile = "/tmp/nix-provenance-fj-codeberg-token";
       fakeFj = pkgs.writeShellScriptBin "fj-test" ''
         printf '%s\n' "$@" > "$FJ_TEST_ARGS"
         cat > "$FJ_TEST_STDIN"
@@ -100,6 +102,12 @@ in
                 username = "can";
                 tokenFile = tokenFile;
               };
+              applicationTokens.codeberg = {
+                enable = true;
+                host = "codeberg.org";
+                username = "can";
+                tokenFile = codebergTokenFile;
+              };
             };
           }
         ];
@@ -107,14 +115,22 @@ in
       };
       service = evaluated.config.systemd.user.services.nix-provenance-fj-application-token;
       path = evaluated.config.systemd.user.paths.nix-provenance-fj-application-token;
+      codebergService = evaluated.config.systemd.user.services.nix-provenance-fj-application-token-codeberg;
+      codebergPath = evaluated.config.systemd.user.paths.nix-provenance-fj-application-token-codeberg;
     in
       assert service.Service.Type == "oneshot";
       assert builtins.elem "agenix.service" service.Unit.Wants;
       assert builtins.elem "agenix.service" service.Unit.After;
       assert builtins.elem tokenFile path.Path.PathChanged;
+      assert codebergService.Service.Type == "oneshot";
+      assert builtins.elem "agenix.service" codebergService.Unit.Wants;
+      assert builtins.elem codebergTokenFile codebergPath.Path.PathChanged;
       assert builtins.elem fakeFj evaluated.config.home.packages;
         runCommand "fj-module-eval" {} ''
           grep -Fq ${lib.escapeShellArg tokenFile} ${service.Service.ExecStart}
+          grep -Fq 'auth logout codefloe.com' ${service.Service.ExecStart}
+          grep -Fq ${lib.escapeShellArg codebergTokenFile} ${codebergService.Service.ExecStart}
+          grep -Fq 'auth logout codeberg.org' ${codebergService.Service.ExecStart}
           if grep -Fq 'test-application-token' ${service.Service.ExecStart}; then
             echo "fj: token leaked into the generated command" >&2
             exit 1
@@ -134,6 +150,13 @@ in
           fi
           printf 'can\ntest-application-token\n' > "$TMPDIR/expected"
           cmp -s "$TMPDIR/expected" "$TMPDIR/stdin"
+          printf 'test-codeberg-token\n' > ${lib.escapeShellArg codebergTokenFile}
+          FJ_TEST_ARGS="$TMPDIR/codeberg-args" \
+            FJ_TEST_STDIN="$TMPDIR/codeberg-stdin" \
+            ${codebergService.Service.ExecStart}
+          test "$(sed -n '2p' "$TMPDIR/codeberg-args")" = "codeberg.org"
+          printf 'can\ntest-codeberg-token\n' > "$TMPDIR/codeberg-expected"
+          cmp -s "$TMPDIR/codeberg-expected" "$TMPDIR/codeberg-stdin"
           touch $out
         '';
 
@@ -145,6 +168,7 @@ in
     rauthy-clippy = mkClippy "rauthy-provision";
     vikunja-clippy = mkClippy "vikunja-provision";
     stalwart016-provision-clippy = mkClippy "stalwart016-provision";
+    tuwunel-provision-clippy = mkClippy "tuwunel-provision";
 
     # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
     identity-test = craneLib.cargoTest (
@@ -174,6 +198,14 @@ in
       args.stalwart016-provision
       // {
         cargoArtifacts = cargoArtifacts.stalwart016-provision;
+        doCheck = true;
+      }
+    );
+
+    tuwunel-provision-test = craneLib.cargoTest (
+      args.tuwunel-provision
+      // {
+        cargoArtifacts = cargoArtifacts.tuwunel-provision;
         doCheck = true;
       }
     );

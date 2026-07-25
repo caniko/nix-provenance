@@ -2,7 +2,8 @@
 //!
 //! Authentication is a long-lived scoped API token sent as
 //! `Authorization: Bearer <token>`. The token must cover the deployed
-//! instance's `teams`, `teams_members`, and `webhooks` route scopes. Derive
+//! instance's `teams`, `teams_members`, `projects`, `labels`, and `webhooks`
+//! route scopes. Derive
 //! exact scope strings from `GET /api/v1/routes` when minting the token;
 //! Vikunja scopes pin methods and paths.
 
@@ -10,11 +11,13 @@ use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use provenance_core::http::ensure_success as ok;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
+
+const PAGINATION_TOTAL_PAGES: &str = "x-pagination-total-pages";
 
 pub struct VikunjaClient {
     http: Client,
@@ -59,6 +62,32 @@ pub struct TeamRequest<'a> {
     pub description: Option<&'a str>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ProjectSummary {
+    pub id: i64,
+    pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectRequest<'a> {
+    title: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LabelSummary {
+    pub id: i64,
+    pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LabelRequest<'a> {
+    title: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hex_color: Option<&'a str>,
+}
+
 #[derive(Debug, Serialize)]
 struct MemberRequest<'a> {
     username: &'a str,
@@ -68,8 +97,6 @@ struct MemberRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct VikunjaError {
     code: i64,
-    #[serde(default)]
-    message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +128,68 @@ impl VikunjaClient {
             .header(reqwest::header::AUTHORIZATION, &self.auth)
     }
 
+    fn total_pages(resp: &Response) -> u64 {
+        resp.headers()
+            .get(PAGINATION_TOTAL_PAGES)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1)
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<ProjectSummary>> {
+        let mut projects = Vec::new();
+        let mut page = 1;
+        loop {
+            let path = format!("/projects?page={page}&per_page=100");
+            let resp = self.send_ok(self.req(Method::GET, &path), "requesting Vikunja projects")?;
+            let total_pages = Self::total_pages(&resp);
+            projects.extend(
+                resp.json::<Vec<ProjectSummary>>()
+                    .context("decoding projects list")?,
+            );
+            if page >= total_pages {
+                return Ok(projects);
+            }
+            page += 1;
+        }
+    }
+
+    pub fn create_project(&self, title: &str, description: Option<&str>) -> Result<()> {
+        self.send_write_ok(
+            self.req(Method::PUT, "/projects")
+                .json(&ProjectRequest { title, description }),
+            &format!("creating Vikunja project {title}"),
+        )?;
+        Ok(())
+    }
+
+    pub fn list_labels(&self) -> Result<Vec<LabelSummary>> {
+        let mut labels = Vec::new();
+        let mut page = 1;
+        loop {
+            let path = format!("/labels?page={page}&per_page=100");
+            let resp = self.send_ok(self.req(Method::GET, &path), "requesting Vikunja labels")?;
+            let total_pages = Self::total_pages(&resp);
+            labels.extend(
+                resp.json::<Vec<LabelSummary>>()
+                    .context("decoding labels list")?,
+            );
+            if page >= total_pages {
+                return Ok(labels);
+            }
+            page += 1;
+        }
+    }
+
+    pub fn create_label(&self, title: &str, hex_color: Option<&str>) -> Result<()> {
+        self.send_write_ok(
+            self.req(Method::PUT, "/labels")
+                .json(&LabelRequest { title, hex_color }),
+            &format!("creating Vikunja label {title}"),
+        )?;
+        Ok(())
+    }
+
     fn send_ok(&self, req: RequestBuilder, context: impl Into<String>) -> Result<Response> {
         let context = context.into();
         let resp = req.send().with_context(|| context.clone())?;
@@ -111,11 +200,10 @@ impl VikunjaClient {
         let resp = req.send().with_context(|| operation.to_string())?;
         let status = resp.status();
         if status == StatusCode::FORBIDDEN {
-            let body = resp.text().unwrap_or_default();
             bail!(
                 "{operation} failed with HTTP 403; this is a hard token-scope drift error. \
-                 Re-mint the Vikunja API token with current teams/teams_members scopes from \
-                 GET /api/v1/routes: {body}"
+                 Re-mint the Vikunja API token with current teams/teams_members/projects/labels scopes from \
+                 GET /api/v1/routes"
             );
         }
         ok(resp).with_context(|| operation.to_string())
@@ -148,12 +236,11 @@ impl VikunjaClient {
         if status.is_success() {
             return Ok(());
         }
-        let body = resp.text().unwrap_or_default();
         match status {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => bail!(
-                "API token rejected ({status}) -- check the token value and its teams read scope: {body}"
+                "API token rejected ({status}) -- check the token value and its required read scopes"
             ),
-            _ => bail!("unexpected status {status} validating API token: {body}"),
+            _ => bail!("unexpected status {status} validating API token"),
         }
     }
 
@@ -210,11 +297,10 @@ impl VikunjaClient {
             .with_context(|| operation.clone())?;
         let status = resp.status();
         if status == StatusCode::FORBIDDEN {
-            let body = resp.text().unwrap_or_default();
             bail!(
                 "{operation} failed with HTTP 403; this is a hard token-scope drift error. \
-                 Re-mint the Vikunja API token with current teams/teams_members scopes from \
-                 GET /api/v1/routes: {body}"
+                 Re-mint the Vikunja API token with current teams/teams_members/projects/labels scopes from \
+                 GET /api/v1/routes"
             );
         }
         if status.is_success() {
@@ -228,13 +314,9 @@ impl VikunjaClient {
                 1005 => return Ok(AddMemberOutcome::UserMissing),
                 _ => {}
             }
-            bail!(
-                "{operation} failed with Vikunja business code {}: {}",
-                err.code,
-                err.message
-            );
+            bail!("{operation} failed with Vikunja business code {}", err.code);
         }
-        bail!("{operation} failed with HTTP {status}: {body}");
+        bail!("{operation} failed with HTTP {status}");
     }
 
     pub fn remove_member(&self, team_id: i64, username: &str) -> Result<()> {
@@ -270,7 +352,11 @@ impl VikunjaClient {
         secret: Option<&str>,
     ) -> Result<()> {
         self.req(Method::PUT, &format!("/projects/{project_id}/webhooks"))
-            .json(&WebhookRequest { url, events, secret })
+            .json(&WebhookRequest {
+                url,
+                events,
+                secret,
+            })
             .send()
             .with_context(|| format!("creating Vikunja webhook for project {project_id}"))
             .and_then(|resp| {
@@ -278,8 +364,7 @@ impl VikunjaClient {
                 if status.is_success() {
                     Ok(())
                 } else {
-                    let body = resp.text().unwrap_or_default();
-                    bail!("creating Vikunja webhook for project {project_id} returned {status}: {body}")
+                    bail!("creating Vikunja webhook for project {project_id} returned {status}")
                 }
             })
     }
@@ -305,8 +390,7 @@ impl VikunjaClient {
             if status.is_success() {
                 Ok(())
             } else {
-                let body = resp.text().unwrap_or_default();
-                bail!("updating Vikunja webhook {webhook_id} for project {project_id} returned {status}: {body}")
+                bail!("updating Vikunja webhook {webhook_id} for project {project_id} returned {status}")
             }
         })
     }
@@ -367,12 +451,10 @@ mod tests {
                 "secret": "shared-secret",
             })
         );
-        assert!(
-            value["target_url"]
-                .as_str()
-                .unwrap()
-                .starts_with("https://")
-        );
+        assert!(value["target_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://"));
     }
 
     #[test]

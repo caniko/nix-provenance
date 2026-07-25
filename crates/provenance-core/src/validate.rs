@@ -1,6 +1,6 @@
 //! Fail-fast validation primitives.
 
-use anyhow::{Result, bail};
+use crate::{Error, Result};
 
 /// Reject an empty trimmed string with a descriptive error naming the
 /// parameter.
@@ -10,7 +10,7 @@ use anyhow::{Result, bail};
 /// Returns an error when `value` is empty or whitespace-only.
 pub fn require_non_empty(value: &str, label: &str) -> Result<()> {
     if value.trim().is_empty() {
-        bail!("{label} must not be empty");
+        return Err(Error::invalid(format!("{label} must not be empty")));
     }
     Ok(())
 }

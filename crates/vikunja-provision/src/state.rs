@@ -2,6 +2,8 @@
 //!
 //! The state file is a JSON document with two top-level maps:
 //! - `teams` — keyed by Vikunja team name
+//! - `projects` — keyed by stable Vikunja project title
+//! - `labels` — keyed by stable Vikunja label title
 //! - `webhooks` — keyed by Vikunja project ID (string)
 
 use std::collections::BTreeMap;
@@ -15,6 +17,10 @@ use serde::Deserialize;
 pub struct State {
     #[serde(default)]
     pub teams: BTreeMap<String, TeamSpec>,
+    #[serde(default)]
+    pub projects: BTreeMap<String, ProjectSpec>,
+    #[serde(default)]
+    pub labels: BTreeMap<String, LabelSpec>,
     #[serde(default)]
     pub webhooks: BTreeMap<String, WebhookSpec>,
 }
@@ -33,6 +39,26 @@ pub struct TeamSpec {
     pub admins: Vec<String>,
     #[serde(default)]
     pub description: Option<String>,
+}
+
+/// Desired presence of one Vikunja project, keyed by title.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSpec {
+    #[serde(default = "default_present")]
+    pub present: bool,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Desired presence of one global Vikunja label, keyed by title.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LabelSpec {
+    #[serde(default = "default_present")]
+    pub present: bool,
+    #[serde(default)]
+    pub hex_color: Option<String>,
 }
 
 /// Desired state for one Vikunja project webhook.
@@ -68,6 +94,22 @@ mod tests {
         assert!(t.members.is_empty());
         assert!(t.admins.is_empty());
         assert_eq!(t.description.as_deref(), Some("Ops"));
+    }
+
+    #[test]
+    fn parses_project_and_label_resources() {
+        let s: State = serde_json::from_str(
+            r##"{
+                "projects": { "cl_gaming": { "description": "Hermes" } },
+                "labels": { "hermes": { "hex_color": "#123456" } }
+            }"##,
+        )
+        .unwrap();
+        assert_eq!(
+            s.projects["cl_gaming"].description.as_deref(),
+            Some("Hermes")
+        );
+        assert_eq!(s.labels["hermes"].hex_color.as_deref(), Some("#123456"));
     }
 
     #[test]

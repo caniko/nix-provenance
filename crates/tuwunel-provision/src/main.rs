@@ -2,11 +2,11 @@ mod client;
 mod state;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
@@ -288,8 +288,8 @@ impl RegistrationBootstrap {
 fn refresh_admin_token(
     state: &State,
     client: &TuwunelClient,
-    cred_dir: &PathBuf,
-    admin_token_file: &PathBuf,
+    cred_dir: &Path,
+    admin_token_file: &Path,
 ) -> Result<()> {
     let Some(localpart) = state.admin_token_user.as_deref() else {
         return Ok(());
@@ -325,7 +325,7 @@ fn refresh_admin_token(
 fn bootstrap_admin_token(
     state: &State,
     base_url: &str,
-    cred_dir: &PathBuf,
+    cred_dir: &Path,
     admin_token_file: &PathBuf,
     registration_bootstrap: Option<&RegistrationBootstrap>,
 ) -> Result<String> {
@@ -387,22 +387,38 @@ fn bootstrap_admin_token(
     Ok(token)
 }
 
-fn atomic_write_0644(path: &PathBuf, contents: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, contents).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644))
-        .with_context(|| format!("setting permissions on {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
-    Ok(())
+fn atomic_write_0644(path: &Path, contents: &[u8]) -> Result<()> {
+    atomic_write(path, contents, 0o644)
 }
 
-fn write_token_file(path: &PathBuf, token: &str) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, token).with_context(|| format!("writing admin token to {}", tmp.display()))?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("setting permissions on {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
-    Ok(())
+fn write_token_file(path: &Path, token: &str) -> Result<()> {
+    atomic_write(path, token.as_bytes(), 0o600)
+}
+
+fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> Result<()> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| anyhow::anyhow!("clock before Unix epoch: {err}"))?
+        .as_nanos();
+    let tmp = path.with_extension(format!("tmp.{}.{}", std::process::id(), stamp));
+    let result: Result<()> = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&tmp)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        use std::io::Write as _;
+        file.write_all(contents)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing {}", tmp.display()))?;
+        fs::rename(&tmp, path)
+            .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }

@@ -89,10 +89,10 @@
       })
     ];
 
-  # Produce a NixOS module that enables declarative Vikunja team provisioning
+  # Produce a NixOS module that enables declarative Vikunja resource provisioning
   # using the same API token used by vkc. Callers must provide the token path
-  # (typically from agenix decryption). The token must have teams and
-  # teams_members read/create/delete scopes.
+  # (typically from agenix decryption). The token must have teams,
+  # teams_members, projects, and labels read/create scopes.
   mkProvisionToken = {
     tokenFile,
     botUsername ? "vikunja-provision",

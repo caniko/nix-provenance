@@ -36,10 +36,6 @@ pub enum ProvisionError {
     #[error("stalwart-cli apply failed on {file}: {detail}")]
     ApplyFailed { file: String, detail: String },
 
-    #[error("store health check failed: probe table '{table}' unreachable in {database}")]
-    #[expect(dead_code, reason = "exit-code mapping reserved for future use")]
-    StoreHealthCheck { table: String, database: String },
-
     #[error("stalwart-cli query failed for {object}: {detail}")]
     QueryFailed { object: String, detail: String },
 }

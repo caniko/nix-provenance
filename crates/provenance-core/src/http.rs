@@ -2,10 +2,10 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
-use reqwest::StatusCode;
 use reqwest::blocking::{Client, Response};
 use serde::de::DeserializeOwned;
+
+use crate::{Error, Result};
 
 /// Build a blocking reqwest client with a user agent and optional request
 /// timeout.
@@ -25,12 +25,12 @@ pub fn build_blocking_client(
     timeout: Option<Duration>,
 ) -> Result<Client> {
     if user_agent.trim().is_empty() {
-        bail!("user_agent must not be empty");
+        return Err(Error::invalid("user_agent must not be empty"));
     }
     if let Some(d) = timeout
         && d.is_zero()
     {
-        bail!("timeout must be positive");
+        return Err(Error::invalid("timeout must be positive"));
     }
     let mut builder = Client::builder()
         .danger_accept_invalid_certs(accept_invalid_certs)
@@ -38,28 +38,29 @@ pub fn build_blocking_client(
     if let Some(timeout) = timeout {
         builder = builder.timeout(timeout);
     }
-    builder.build().context("building HTTP client")
+    builder
+        .build()
+        .map_err(|source| Error::http("building HTTP client", source))
 }
 
-/// Return the response unchanged if it is 2xx, otherwise an error carrying the
-/// status and response body (with a dedicated message for 401 Unauthorized).
+/// Return the response unchanged if it is 2xx, otherwise an error carrying only
+/// the status (with a dedicated message for 401 Unauthorized).
+///
+/// Response bodies are deliberately not included in the error: external
+/// services may echo credentials, tokens, or personal data. Callers that need
+/// a protocol-specific error code must parse the body themselves after checking
+/// the status.
 ///
 /// # Errors
 ///
-/// Returns an error for every non-success HTTP status. If reading the response
-/// body fails, the status is still reported and the body text is omitted.
+/// Returns an error for every non-success HTTP status without exposing the
+/// response body.
 pub fn ensure_success(resp: Response) -> Result<Response> {
     let status = resp.status();
     if status.is_success() {
         return Ok(resp);
     }
-    let body = resp
-        .text()
-        .unwrap_or_else(|e| format!("<could not read response body: {e}>"));
-    if status == StatusCode::UNAUTHORIZED {
-        bail!("request was unauthorized ({status}); the credential was rejected: {body}");
-    }
-    bail!("request failed with HTTP {status}: {body}");
+    Err(Error::HttpStatus { status })
 }
 
 /// Decode a 2xx JSON response into `T`, attributing failures to `context`.
@@ -69,7 +70,7 @@ pub fn ensure_success(resp: Response) -> Result<Response> {
 /// Returns an error when [`ensure_success`] rejects the status or when the
 /// response body cannot be decoded as `T`.
 pub fn json_ok<T: DeserializeOwned>(resp: Response, context: &str) -> Result<T> {
-    let resp = ensure_success(resp).with_context(|| format!("{context} request failed"))?;
+    let resp = ensure_success(resp)?;
     resp.json()
-        .with_context(|| format!("decoding {context} response"))
+        .map_err(|source| Error::http(format!("decoding {context} response"), source))
 }

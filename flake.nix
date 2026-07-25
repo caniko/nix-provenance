@@ -182,7 +182,10 @@
     )
     // {
       # System-independent pure-Nix helpers (see nix/lib/default.nix).
-      lib = import ./nix/lib/default.nix {lib = nixpkgs.lib; inherit self;};
+      lib = import ./nix/lib/default.nix {
+        lib = nixpkgs.lib;
+        inherit self;
+      };
 
       # One named NixOS module per tenant. Rauthy consumers should import both
       # `rauthyServer` (the server service) and `rauthy` (the provisioner)
@@ -258,11 +261,10 @@
             popd
           '';
         });
-      in
-        {
-          inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision stalwart016-provision tuwunel-provision;
-          forgejo-cli = forgejo-cli.packages.${final.stdenv.hostPlatform.system}.forgejo-cli;
-          rauthy-vikunja-groups = rauthyVikunjaGroups;
-        };
+      in {
+        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision stalwart016-provision tuwunel-provision;
+        forgejo-cli = forgejo-cli.packages.${final.stdenv.hostPlatform.system}.forgejo-cli;
+        rauthy-vikunja-groups = rauthyVikunjaGroups;
+      };
     };
 }

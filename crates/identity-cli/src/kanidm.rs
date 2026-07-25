@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,6 +12,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
 use tokio::time::{Duration, sleep};
 use totp_rs::{Algorithm, TOTP};
+use zeroize::Zeroize;
 
 const IDM_ADMIN: &str = "idm_admin";
 const ADMIN: &str = "admin";
@@ -56,7 +58,8 @@ pub struct ProvisionRequest {
 }
 
 /// Provisioned credential material emitted explicitly to stdout.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize, Zeroize)]
+#[zeroize(drop)]
 pub struct ProvisionResult {
     /// Target account name.
     pub account: String,
@@ -68,6 +71,18 @@ pub struct ProvisionResult {
     pub totp_uri: Option<String>,
     /// Backup codes generated during TOTP enrollment.
     pub backup_codes: Vec<String>,
+}
+
+impl fmt::Debug for ProvisionResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProvisionResult")
+            .field("account", &self.account)
+            .field("primary_password", &"<redacted>")
+            .field("posix_password", &"<redacted>")
+            .field("totp_uri", &self.totp_uri.as_ref().map(|_| "<redacted>"))
+            .field("backup_codes", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Provision primary, optional TOTP/backup codes, and POSIX credentials.

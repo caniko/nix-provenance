@@ -143,10 +143,11 @@ pub fn build_update_user_request(existing: &ImmichUser, spec: &UserSpec) -> Map<
 }
 
 fn resolve_password(spec: &UserSpec) -> Result<Option<String>> {
-    spec.password_file
+    Ok(spec
+        .password_file
         .as_deref()
         .map(read_password_file)
-        .transpose()
+        .transpose()?)
 }
 
 pub fn ensure_delete_allowed(key: &str, spec: &UserSpec, allow_user_delete: bool) -> Result<()> {

@@ -512,17 +512,36 @@ async fn run_kanidm(args: KanidmArgs) -> Result<()> {
 fn write_secret_file(path: &str, secret: &str) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|err| anyhow::anyhow!("opening {path} for token write: {err}"))?;
-    file.write_all(secret.as_bytes())
-        .map_err(|err| anyhow::anyhow!("writing token to {path}: {err}"))?;
-    Ok(())
+    let destination = Path::new(path);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| anyhow::anyhow!("clock before Unix epoch: {err}"))?
+        .as_nanos();
+    let temporary = destination.with_extension(format!("tmp.{}.{}", std::process::id(), stamp));
+    let result: Result<()> = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|err| {
+                anyhow::anyhow!("opening {} for token write: {err}", temporary.display())
+            })?;
+        file.write_all(secret.as_bytes())
+            .map_err(|err| anyhow::anyhow!("writing token to {path}: {err}"))?;
+        file.sync_all()
+            .map_err(|err| anyhow::anyhow!("syncing token for {path}: {err}"))?;
+        std::fs::rename(&temporary, destination)
+            .map_err(|err| anyhow::anyhow!("installing token at {path}: {err}"))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 #[cfg(feature = "bitwarden")]
@@ -596,4 +615,31 @@ fn print_provision_result(
     }
 
     Ok(())
+}
+
+#[cfg(all(test, feature = "kanidm"))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::write_secret_file;
+
+    #[test]
+    fn secret_file_is_atomic_and_private() {
+        let path = std::env::temp_dir().join(format!(
+            "identity-cli-secret-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        write_secret_file(path.to_str().unwrap(), "token").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "token");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_file(path).unwrap();
+    }
 }

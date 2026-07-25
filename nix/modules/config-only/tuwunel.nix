@@ -120,11 +120,13 @@
     server_name = cfg.settings.global.server_name;
     port = builtins.head cfg.settings.global.port;
     admin_token_user = pcfg.adminTokenUser;
-    users = lib.mapAttrs (name: user: {
-      inherit (user) admin;
-      display_name = user.displayName;
-      credential_name = passwords.credentialName name;
-    }) pcfg.users;
+    users =
+      lib.mapAttrs (name: user: {
+        inherit (user) admin;
+        display_name = user.displayName;
+        credential_name = passwords.credentialName name;
+      })
+      pcfg.users;
     rooms = pcfg.rooms;
   });
   registrationBootstrapClosedConfig = toml.generate "tuwunel-provision-registration-closed.toml" {
@@ -215,26 +217,29 @@ in {
       admin_signal_execute = lib.mkIf pcfg.registrationBootstrap.enable [
         registrationBootstrapReloadCommand
       ];
-      identity_provider = lib.mapAttrs (name: provider: {
-        brand = provider.brand;
-        client_id = provider.clientId;
-        client_secret_file = "/run/credentials/tuwunel.service/${oidcCredentialName name}";
-        issuer_url = provider.issuerUrl;
-        callback_url = provider.callbackUrl;
-        inherit (provider) scope trusted registration default;
-        userid_claims = provider.useridClaims;
-        unique_id_fallbacks = provider.uniqueIdFallbacks;
-      } // lib.optionalAttrs (provider.displayName != null) {
-        name = provider.displayName;
-      }) pcfg.oidcProviders;
+      identity_provider = lib.mapAttrs (name: provider:
+        {
+          brand = provider.brand;
+          client_id = provider.clientId;
+          client_secret_file = "/run/credentials/tuwunel.service/${oidcCredentialName name}";
+          issuer_url = provider.issuerUrl;
+          callback_url = provider.callbackUrl;
+          inherit (provider) scope trusted registration default;
+          userid_claims = provider.useridClaims;
+          unique_id_fallbacks = provider.uniqueIdFallbacks;
+        }
+        // lib.optionalAttrs (provider.displayName != null) {
+          name = provider.displayName;
+        })
+      pcfg.oidcProviders;
     };
 
     systemd.services.tuwunel.serviceConfig.LoadCredential = lib.mkAfter (
-        lib.mapAttrsToList (
-          name: provider: "${oidcCredentialName name}:${toString provider.clientSecretFile}"
-        )
-        pcfg.oidcProviders
-      );
+      lib.mapAttrsToList (
+        name: provider: "${oidcCredentialName name}:${toString provider.clientSecretFile}"
+      )
+      pcfg.oidcProviders
+    );
 
     systemd.services.tuwunel-provision = {
       description = "Declaratively provision tuwunel Matrix users";

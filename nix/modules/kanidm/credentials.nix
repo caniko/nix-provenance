@@ -32,16 +32,15 @@
   sa = cfg.serviceAccount;
   posixNames = lib.attrNames cfg.posixAccounts;
   validSshTag = tag: builtins.match "[A-Za-z0-9_.@:-]+" tag != null;
-  invalidSshTags =
-    lib.concatLists (
-      lib.mapAttrsToList (
-        name: acct:
-          map (tag: "${name}.${tag}") (
-            lib.filter (tag: !(validSshTag tag)) (lib.attrNames acct.sshPublicKeys)
-          )
-      )
-      cfg.posixAccounts
-    );
+  invalidSshTags = lib.concatLists (
+    lib.mapAttrsToList (
+      name: acct:
+        map (tag: "${name}.${tag}") (
+          lib.filter (tag: !(validSshTag tag)) (lib.attrNames acct.sshPublicKeys)
+        )
+    )
+    cfg.posixAccounts
+  );
 
   desiredSshTagsFile = name: acct:
     pkgs.writeText "kanidm-${name}-ssh-tags" (
@@ -142,13 +141,13 @@
           touch "$owned_tags"
           ssh_ok=1
           ${lib.concatStringsSep "\n" (lib.mapAttrsToList (tag: publicKey: ''
-            if ! idm ssh-public-key ensure ${lib.escapeShellArg name} ${lib.escapeShellArg tag} ${lib.escapeShellArg publicKey} >/dev/null; then
-              echo "kanidm-credentials: failed to ensure SSH public key ${tag} for ${name}" >&2
-              rc=1
-              ssh_ok=0
-            fi
-          '')
-          cfg.posixAccounts.${name}.sshPublicKeys)}
+              if ! idm ssh-public-key ensure ${lib.escapeShellArg name} ${lib.escapeShellArg tag} ${lib.escapeShellArg publicKey} >/dev/null; then
+                echo "kanidm-credentials: failed to ensure SSH public key ${tag} for ${name}" >&2
+                rc=1
+                ssh_ok=0
+              fi
+            '')
+            cfg.posixAccounts.${name}.sshPublicKeys)}
           while IFS= read -r old_tag; do
             [ -n "$old_tag" ] || continue
             if ! grep -Fxq -- "$old_tag" "$desired_tags"; then
