@@ -59,6 +59,10 @@ in {
   stalwart016-provision = packages.stalwart016-provision;
   docs = docs;
   site = docs;
+  fj-executable = runCommand "fj-executable" {} ''
+    test -x ${lib.getExe' packages.forgejo-cli "fj"}
+    touch $out
+  '';
 
   # Lint each crate against its isolated deps.
   identity-clippy = mkClippy "identity-cli";

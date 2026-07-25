@@ -8,7 +8,7 @@
   cfg = config.nix-provenance.fj;
   tokenCfg = cfg.applicationToken;
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.forgejo-cli;
-  fjExecutable = lib.escapeShellArg (lib.getExe cfg.package);
+  fjExecutable = lib.escapeShellArg (lib.getExe' cfg.package "fj");
   tokenFile =
     if tokenCfg.tokenFile == null
     then ""
@@ -29,6 +29,7 @@
         exit 1
       }
 
+      ${fjExecutable} -H ${lib.escapeShellArg tokenCfg.host} auth logout ${lib.escapeShellArg tokenCfg.host} || true
       {
         printf '%s\n' ${lib.escapeShellArg tokenCfg.username}
         cat "$token_file"
