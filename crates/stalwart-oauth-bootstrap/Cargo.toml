@@ -1,0 +1,31 @@
+[package]
+name = "stalwart-oauth-bootstrap"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Non-interactive Stalwart OAuth refresh-token bootstrap"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+authors.workspace = true
+keywords = ["stalwart", "oauth", "keyring", "nixos"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "stalwart-oauth-bootstrap"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+base64 = "0.22"
+clap.workspace = true
+keyring = { version = "3", default-features = false, features = ["sync-secret-service"] }
+provenance-core = { path = "../provenance-core" }
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.10"
+zeroize.workspace = true
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -42,6 +42,12 @@
   # stalwart016-provision uses explicit version because crateNameFromCargoToml
   # may not resolve the cargoToml path across evaluation contexts.
   stalwartProvisionArgs = buildArgs "stalwart016-provision" "0.1.0";
+  stalwartOauthBootstrapArgs =
+    buildArgs "stalwart-oauth-bootstrap" "0.1.0"
+    // {
+      nativeBuildInputs = [pkgs.clang pkgs.mold pkgs.pkg-config];
+      buildInputs = [pkgs.dbus];
+    };
   tuwunelArgs = mkArgs "tuwunel-provision";
 
   immichDeps = craneLib.buildDepsOnly immichArgs;
@@ -51,6 +57,7 @@
   vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
+  stalwartOauthBootstrapDeps = craneLib.buildDepsOnly stalwartOauthBootstrapArgs;
   tuwunelDeps = craneLib.buildDepsOnly tuwunelArgs;
 in {
   args = {
@@ -61,6 +68,7 @@ in {
     vikunja-provision = vikunjaArgs;
     identity-cli = identityArgs;
     stalwart016-provision = stalwartProvisionArgs;
+    stalwart-oauth-bootstrap = stalwartOauthBootstrapArgs;
     tuwunel-provision = tuwunelArgs;
   };
 
@@ -72,6 +80,7 @@ in {
     vikunja-provision = vikunjaDeps;
     identity-cli = identityDeps;
     stalwart016-provision = stalwartProvisionDeps;
+    stalwart-oauth-bootstrap = stalwartOauthBootstrapDeps;
     tuwunel-provision = tuwunelDeps;
   };
 
@@ -142,6 +151,16 @@ in {
         meta = {
           description = "Recovery-mode provisioner for Stalwart Mail Server 0.16";
           mainProgram = "stalwart016-provision";
+          license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    stalwart-oauth-bootstrap = craneLib.buildPackage (stalwartOauthBootstrapArgs
+      // {
+        cargoArtifacts = stalwartOauthBootstrapDeps;
+        meta = {
+          description = "Non-interactive Stalwart OAuth refresh-token bootstrap";
+          mainProgram = "stalwart-oauth-bootstrap";
           license = with lib.licenses; [mit asl20];
         };
       });

@@ -9,6 +9,7 @@ members = [
   "crates/vikunja-provision",
   "crates/identity-cli",
   "crates/stalwart016-provision",
+  "crates/stalwart-oauth-bootstrap",
   "crates/tuwunel-provision",
 ]
 

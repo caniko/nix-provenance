@@ -49,6 +49,50 @@
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
 
+  stalwartOauthBootstrapEval = let
+    fakePackage = pkgs.writeShellScriptBin "stalwart-oauth-bootstrap" "exit 0";
+  in
+    lib.evalModules {
+      modules = [
+        ({lib, ...}: {
+          options.home.packages = lib.mkOption {
+            type = lib.types.listOf lib.types.package;
+            default = [];
+          };
+          options.systemd.user.services = lib.mkOption {
+            type = lib.types.attrsOf lib.types.anything;
+            default = {};
+          };
+          options.systemd.user.paths = lib.mkOption {
+            type = lib.types.attrsOf lib.types.anything;
+            default = {};
+          };
+          options.assertions = lib.mkOption {
+            type = lib.types.listOf lib.types.anything;
+            default = [];
+          };
+        })
+        (import ./modules/home/stalwart-oauth-bootstrap.nix {inherit self;})
+        {
+          nix-provenance.stalwart-oauth-bootstrap = {
+            enable = true;
+            package = fakePackage;
+            accounts.can = {
+              issuer = "https://mail.example.test";
+              accountName = "can@example.test";
+              passwordFile = "/run/user/1000/agenix/stalwart_account_can";
+              clientId = "neverlight-mail";
+              redirectUri = "http://127.0.0.1:49152/callback";
+              resource = "https://mail.example.test/jmap/session";
+              keyringService = "neverlight-mail";
+              keyringUsername = "oauth-refresh:can";
+            };
+          };
+        }
+      ];
+      specialArgs = {inherit pkgs;};
+    };
+
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in
   {
@@ -60,6 +104,7 @@ in
     rauthy-state-render = packages.rauthy-state-render;
     vikunja-provision = packages.vikunja-provision;
     stalwart016-provision = packages.stalwart016-provision;
+    stalwart-oauth-bootstrap = packages.stalwart-oauth-bootstrap;
     tuwunel-provision = packages.tuwunel-provision;
     docs = docs;
     site = docs;
@@ -170,6 +215,7 @@ in
     rauthy-clippy = mkClippy "rauthy-provision";
     vikunja-clippy = mkClippy "vikunja-provision";
     stalwart016-provision-clippy = mkClippy "stalwart016-provision";
+    stalwart-oauth-bootstrap-clippy = mkClippy "stalwart-oauth-bootstrap";
     tuwunel-provision-clippy = mkClippy "tuwunel-provision";
 
     # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
@@ -200,6 +246,14 @@ in
       args.stalwart016-provision
       // {
         cargoArtifacts = cargoArtifacts.stalwart016-provision;
+        doCheck = true;
+      }
+    );
+
+    stalwart-oauth-bootstrap-test = craneLib.cargoTest (
+      args.stalwart-oauth-bootstrap
+      // {
+        cargoArtifacts = cargoArtifacts.stalwart-oauth-bootstrap;
         doCheck = true;
       }
     );
@@ -456,6 +510,25 @@ in
         grep -Fq '"@type":"upsert","matchOn":["name"],"object":"NetworkListener"' ${plan}
         printf '%s' ${lib.escapeShellArg serviceEnvironment} | grep -Fq 'STALWART_PUBLIC_URL'
         test ${lib.escapeShellArg cfg.publicUrl} = 'https://mail.example.test'
+        touch $out
+      '';
+
+    stalwart-oauth-bootstrap-module-eval = let
+      service = stalwartOauthBootstrapEval.config.systemd.user.services.nix-provenance-stalwart-oauth-bootstrap-can;
+      path = stalwartOauthBootstrapEval.config.systemd.user.paths.nix-provenance-stalwart-oauth-bootstrap-can;
+      serviceConfig = builtins.toJSON service.Service;
+    in
+      runCommand "stalwart-oauth-bootstrap-module-eval" {} ''
+        test ${lib.escapeShellArg service.Service.Type} = oneshot
+        test ${lib.escapeShellArg service.Service.Restart} = on-failure
+        test ${lib.escapeShellArg (toString service.Service.RestartPreventExitStatus)} = 2
+        test ${lib.escapeShellArg path.Path.PathChanged} = /run/user/1000/agenix/stalwart_account_can
+        printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- 'mail.example.test'
+        printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- '/run/user/1000/agenix/stalwart_account_can'
+        if printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- 'account-secret'; then
+          echo "stalwart OAuth bootstrap: secret value leaked into service config" >&2
+          exit 1
+        fi
         touch $out
       '';
 
