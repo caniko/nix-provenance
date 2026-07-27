@@ -11,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 use crate::error::ProvisionError;
 
@@ -191,11 +191,12 @@ pub fn query_object(
     password: &str,
     object_type: &str,
 ) -> Result<serde_json::Value> {
+    let fields = query_fields(object_type);
     let output = Command::new(cli_binary)
         .arg("query")
         .arg(object_type)
         .arg("--fields")
-        .arg("name")
+        .arg(fields)
         .arg("--json")
         .arg("--url")
         .arg(url)
@@ -218,6 +219,19 @@ pub fn query_object(
     }
 
     parse_query_output(object_type, &output.stdout)
+}
+
+/// Return the stable identifier field for a registry object.
+///
+/// Most Stalwart registry objects expose `name`; OAuth clients are keyed by
+/// `clientId` instead. Keeping this mapping here lets the evidence capture
+/// remain enabled for every declaratively managed object without asking the
+/// CLI to select a field that does not exist.
+fn query_fields(object_type: &str) -> &'static str {
+    match object_type {
+        "OAuthClient" => "clientId",
+        _ => "name",
+    }
 }
 
 fn parse_query_output(object_type: &str, stdout: &[u8]) -> Result<serde_json::Value> {
@@ -258,7 +272,13 @@ pub fn write_query_output(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_query_output;
+    use super::{parse_query_output, query_fields};
+
+    #[test]
+    fn oauth_clients_use_client_id_field() {
+        assert_eq!(query_fields("OAuthClient"), "clientId");
+        assert_eq!(query_fields("NetworkListener"), "name");
+    }
 
     #[test]
     fn parses_single_json_document() {
