@@ -236,6 +236,12 @@ fn main() -> Result<()> {
 
     // ── Check pending ────────────────────────────────────────
     let mut pending = check_pending(&cfg)?;
+    eprintln!(
+        "stalwart016-provision: pending migration={} registry={} marker={}",
+        pending.migration,
+        pending.registry,
+        cfg.registry_marker.display()
+    );
 
     // ── Assume migration applied ─────────────────────────────
     if pending.migration && cfg.assume_migration_applied {
