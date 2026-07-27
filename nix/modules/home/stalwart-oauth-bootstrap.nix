@@ -109,7 +109,11 @@
         Wants = ["agenix.service" "oo7-daemon.service"];
         After = ["agenix.service" "oo7-daemon.service"];
       };
-      Path.PathChanged = account.passwordFile;
+      # systemd path settings require an absolute path and do not expand
+      # environment variables.  `%t` is the user runtime directory
+      # specifier, so convert agenix's `${XDG_RUNTIME_DIR}` placeholder while
+      # leaving already-absolute custom paths untouched.
+      Path.PathChanged = builtins.replaceStrings ["\${XDG_RUNTIME_DIR}"] ["%t"] account.passwordFile;
       Install.WantedBy = ["graphical-session.target"];
     };
 in {

@@ -48,6 +48,7 @@
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
+  stalwartOauthBootstrapPasswordFile = "\${XDG_RUNTIME_DIR}/agenix/stalwart_account_can";
 
   stalwartOauthBootstrapEval = let
     fakePackage = pkgs.writeShellScriptBin "stalwart-oauth-bootstrap" "exit 0";
@@ -80,7 +81,7 @@
             accounts.can = {
               issuer = "https://mail.example.test";
               accountName = "can@example.test";
-              passwordFile = "/run/user/1000/agenix/stalwart_account_can";
+              passwordFile = stalwartOauthBootstrapPasswordFile;
               clientId = "neverlight-mail";
               redirectUri = "http://127.0.0.1:49152/callback";
               resource = "https://mail.example.test/jmap/session";
@@ -522,9 +523,9 @@ in
         test ${lib.escapeShellArg service.Service.Type} = oneshot
         test ${lib.escapeShellArg service.Service.Restart} = on-failure
         test ${lib.escapeShellArg (toString service.Service.RestartPreventExitStatus)} = 2
-        test ${lib.escapeShellArg path.Path.PathChanged} = /run/user/1000/agenix/stalwart_account_can
+        test ${lib.escapeShellArg path.Path.PathChanged} = %t/agenix/stalwart_account_can
         printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- 'mail.example.test'
-        printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- '/run/user/1000/agenix/stalwart_account_can'
+        printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- ${lib.escapeShellArg stalwartOauthBootstrapPasswordFile}
         if printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- 'account-secret'; then
           echo "stalwart OAuth bootstrap: secret value leaked into service config" >&2
           exit 1
