@@ -107,9 +107,12 @@ in {
   mkDkimManagement = {
     algorithms ? ["Dkim1Ed25519Sha256" "Dkim1RsaSha256"],
     selectorTemplate ? "v<version>-<type>-<date>",
-    rotateAfter ? "P90D",
-    retireAfter ? "P7D",
-    deleteAfter ? "P14D",
+    # Stalwart's JSON/JMAP Duration fields are encoded as milliseconds.  The
+    # CLI accepts human-readable values, but apply plans must use the numeric
+    # wire representation or updates fail with `Invalid path for Duration`.
+    rotateAfter ? 90 * 24 * 60 * 60 * 1000,
+    retireAfter ? 7 * 24 * 60 * 60 * 1000,
+    deleteAfter ? 30 * 24 * 60 * 60 * 1000,
   }: {
     "@type" = "Automatic";
     algorithms = toSet algorithms;

@@ -123,10 +123,10 @@ in
       assert service.Service.Type == "oneshot";
       assert builtins.elem "agenix.service" service.Unit.Wants;
       assert builtins.elem "agenix.service" service.Unit.After;
-      assert builtins.elem tokenFile path.Path.PathChanged;
+      assert path.Path.PathChanged == tokenFile;
       assert codebergService.Service.Type == "oneshot";
       assert builtins.elem "agenix.service" codebergService.Unit.Wants;
-      assert builtins.elem codebergTokenFile codebergPath.Path.PathChanged;
+      assert codebergPath.Path.PathChanged == codebergTokenFile;
       assert builtins.elem fakeFj evaluated.config.home.packages;
         runCommand "fj-module-eval" {} ''
           grep -Fq ${lib.escapeShellArg tokenFile} ${service.Service.ExecStart}
