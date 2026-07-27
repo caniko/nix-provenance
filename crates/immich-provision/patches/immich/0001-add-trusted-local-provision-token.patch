@@ -1,18 +1,24 @@
 diff --git a/server/src/commands/index.ts b/server/src/commands/index.ts
-index 2a2dd18..c0ee4eb 100644
 --- a/server/src/commands/index.ts
 +++ b/server/src/commands/index.ts
-@@ -10,2 +10,3 @@ import { DisableOAuthLogin, EnableOAuthLogin } from 'src/commands/oauth-login';
+@@ -8,6 +8,7 @@
+ } from 'src/commands/media-location.command';
+ import { DisableOAuthLogin, EnableOAuthLogin } from 'src/commands/oauth-login';
  import { DisablePasswordLoginCommand, EnablePasswordLoginCommand } from 'src/commands/password-login';
 +import { ProvisionTokenCommand } from 'src/commands/provision-token.command';
  import { PromptPasswordQuestions, ResetAdminPasswordCommand } from 'src/commands/reset-admin-password.command';
-@@ -26,2 +27,3 @@ export const commandsAndQuestions = [
+ import { SchemaCheck } from 'src/commands/schema-check';
+ import { VersionCommand } from 'src/commands/version.command';
+@@ -24,6 +25,7 @@
+   DisableOAuthLogin,
+   ListUsersCommand,
    VersionCommand,
 +  ProvisionTokenCommand,
    GrantAdminCommand,
+   RevokeAdminCommand,
+   ChangeMediaLocationCommand,
 diff --git a/server/src/commands/provision-token.command.ts b/server/src/commands/provision-token.command.ts
 new file mode 100644
-index 0000000..dabc77b
 --- /dev/null
 +++ b/server/src/commands/provision-token.command.ts
 @@ -0,0 +1,40 @@
@@ -56,53 +62,40 @@ index 0000000..dabc77b
 +    return ttl;
 +  }
 +}
-diff --git a/server/src/dtos/user.dto.ts b/server/src/dtos/user.dto.ts
-index 8d35c08..a1142cb 100644
---- a/server/src/dtos/user.dto.ts
-+++ b/server/src/dtos/user.dto.ts
-@@ -1,5 +1,5 @@
- import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
- import { Transform } from 'class-transformer';
--import { IsEmail, IsInt, IsNotEmpty, IsString, Min } from 'class-validator';
-+import { IsEmail, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
- import { User, UserAdmin } from 'src/database';
- import { UserAvatarColor, UserMetadataKey, UserStatus } from 'src/enum';
- import { MaybeDehydrated, UserMetadataItem } from 'src/types';
-@@ -90,8 +90,10 @@ export class UserAdminSearchDto {
- }
-
- export class UserAdminCreateDto {
-   @ApiProperty({ description: 'User email' })
-   @IsEmail({ require_tld: false })
-   @Transform(toEmail)
-   email!: string;
-
--  @ApiProperty({ description: 'User password' })
-+  @ApiPropertyOptional({ description: 'User password. Optional when OAuth is enabled' })
-+  @IsOptional()
-   @IsString()
--  password!: string;
-+  password?: string;
 diff --git a/server/src/dtos/user.dto.spec.ts b/server/src/dtos/user.dto.spec.ts
-index e119920..aa4f694 100644
 --- a/server/src/dtos/user.dto.spec.ts
 +++ b/server/src/dtos/user.dto.spec.ts
-@@ -38,3 +38,10 @@ describe('create user DTO', () => {
-     expect(errors).toHaveLength(0);
+@@ -26,6 +26,12 @@
+       name: 'name',
+     });
+     expect(result.success).toBe(true);
 +
-+    const passwordlessDto = plainToInstance(UserAdminCreateDto, {
++    const passwordlessResult = UserAdminCreateSchema.safeParse({
 +      email: 'oauth@email.com',
 +      name: 'OAuth User',
 +    });
-+    const passwordlessErrors = await validate(passwordlessDto);
-+    expect(passwordlessErrors).toHaveLength(0);
++    expect(passwordlessResult.success).toBe(true);
    });
  
+   it('validates invalid email type', () => {
+diff --git a/server/src/dtos/user.dto.ts b/server/src/dtos/user.dto.ts
+--- a/server/src/dtos/user.dto.ts
++++ b/server/src/dtos/user.dto.ts
+@@ -77,7 +77,7 @@
+ export const UserAdminCreateSchema = z
+   .object({
+     email: toEmail.describe('User email'),
+-    password: z.string().describe('User password'),
++    password: z.string().optional().describe('User password. Optional when OAuth is enabled'),
+     name: z.string().describe('User name'),
+     avatarColor: UserAvatarColorSchema.nullish(),
+     pinCode: z.string().regex(pinCodeRegex).nullable().optional().describe('PIN code').meta({ example: '123456' }),
 diff --git a/server/src/services/cli.service.spec.ts b/server/src/services/cli.service.spec.ts
-index 347d9ee..c47f154 100644
 --- a/server/src/services/cli.service.spec.ts
 +++ b/server/src/services/cli.service.spec.ts
-@@ -70,2 +70,30 @@ describe(CliService.name, () => {
+@@ -21,6 +21,34 @@
+     });
+   });
  
 +  describe('createProvisionToken', () => {
 +    it('should only work when there is an admin account', async () => {
@@ -132,16 +125,22 @@ index 347d9ee..c47f154 100644
 +    });
 +  });
 +
-   describe('disablePasswordLogin', () => {
+   describe('resetAdminPassword', () => {
+     it('should only work when there is an admin account', async () => {
+       mocks.user.getAdmin.mockResolvedValue(void 0);
 diff --git a/server/src/services/cli.service.ts b/server/src/services/cli.service.ts
-index 22f06e2..d248a8b 100644
 --- a/server/src/services/cli.service.ts
 +++ b/server/src/services/cli.service.ts
-@@ -2,2 +2,3 @@ import { schemaDiff } from '@immich/sql-tools';
+@@ -1,5 +1,6 @@
+ import { schemaDiff } from '@immich/sql-tools';
  import { Injectable } from '@nestjs/common';
 +import { DateTime } from 'luxon';
  import { isAbsolute, join } from 'node:path';
-@@ -76,2 +77,27 @@ export class CliService extends BaseService {
+ import { SALT_ROUNDS } from 'src/constants';
+ import { MaintenanceAuthDto } from 'src/dtos/maintenance.dto';
+@@ -59,6 +60,31 @@
+     return users.map((user) => mapUserAdmin(user));
+   }
  
 +  async createProvisionToken(ttlSeconds: number): Promise<string> {
 +    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 3600) {
@@ -168,4 +167,6 @@ index 22f06e2..d248a8b 100644
 +    return token;
 +  }
 +
-   async disablePasswordLogin(): Promise<void> {
+   async resetAdminPassword(ask: (admin: UserAdminResponseDto) => Promise<string | undefined>) {
+     const admin = await this.userRepository.getAdmin();
+     if (!admin) {
