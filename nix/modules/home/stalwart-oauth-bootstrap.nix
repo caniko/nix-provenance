@@ -106,8 +106,6 @@
     lib.nameValuePair unitName {
       Unit = {
         Description = "Watch the Stalwart OAuth bootstrap password for ${name}";
-        Wants = ["agenix.service"];
-        After = ["agenix.service"];
       };
       # systemd path settings require an absolute path and do not expand
       # environment variables.  `%t` is the user runtime directory

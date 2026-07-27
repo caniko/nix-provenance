@@ -524,7 +524,7 @@ in
         test ${lib.escapeShellArg service.Service.Restart} = on-failure
         test ${lib.escapeShellArg (toString service.Service.RestartPreventExitStatus)} = 2
         test ${lib.escapeShellArg path.Path.PathChanged} = %t/agenix/stalwart_account_can
-        test ${lib.escapeShellArg (builtins.toJSON path.Unit.Wants)} = '["agenix.service"]'
+        test ${lib.escapeShellArg (builtins.toJSON (path.Unit.Wants or []))} = '[]'
         printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- 'mail.example.test'
         printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- ${lib.escapeShellArg stalwartOauthBootstrapPasswordFile}
         if printf '%s' ${lib.escapeShellArg serviceConfig} | grep -Fq -- 'account-secret'; then
