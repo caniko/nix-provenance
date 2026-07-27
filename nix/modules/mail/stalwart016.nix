@@ -78,17 +78,10 @@
     })
     enabledListeners;
 
-  listenerDestroyOps =
-    lib.mapAttrsToList (_: listener: {
-      "@type" = "destroy";
-      object = "NetworkListener";
-      value.name = listener.name;
-    })
-    enabledListeners;
-
-  listenerCreateOps = lib.optional (listenerCreateValue != {}) {
-    "@type" = "create";
+  listenerOps = lib.optional (listenerCreateValue != {}) {
+    "@type" = "upsert";
     object = "NetworkListener";
+    matchOn = ["name"];
     value = listenerCreateValue;
   };
 
@@ -104,7 +97,7 @@
     }) cfg.oidc.clients;
   };
 
-  generatedPlan = listenerDestroyOps ++ listenerCreateOps ++ cfg.provision.registryConfig ++ oauthClientOps;
+  generatedPlan = listenerOps ++ cfg.provision.registryConfig ++ oauthClientOps;
   generatedPlanFile =
     pkgs.writeText "stalwart016-apply.ndjson"
     (lib.concatMapStrings (op: builtins.toJSON op + "\n") generatedPlan);

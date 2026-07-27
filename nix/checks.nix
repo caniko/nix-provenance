@@ -447,11 +447,13 @@ in
     stalwart016-module-eval = let
       cfg = stalwart016Eval.config.services.stalwart016;
       clients = builtins.toJSON cfg.oidc.clients;
+      plan = stalwart016Eval.config.environment.etc."stalwart016/apply.ndjson".source;
       serviceEnvironment = builtins.toJSON stalwart016Eval.config.systemd.services.stalwart.environment;
     in
       runCommand "stalwart016-module-eval" {} ''
         printf '%s' ${lib.escapeShellArg clients} | grep -Fq '"neverlight-mail"'
         printf '%s' ${lib.escapeShellArg clients} | grep -Fq '"redirectUris":["http://127.0.0.1:49152/callback"]'
+        grep -Fq '"@type":"upsert","matchOn":["name"],"object":"NetworkListener"' ${plan}
         printf '%s' ${lib.escapeShellArg serviceEnvironment} | grep -Fq 'STALWART_PUBLIC_URL'
         test ${lib.escapeShellArg cfg.publicUrl} = 'https://mail.example.test'
         touch $out
