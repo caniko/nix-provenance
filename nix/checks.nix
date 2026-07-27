@@ -69,7 +69,7 @@ in
     fj-module-eval = let
       tokenFile = "/tmp/nix-provenance-fj-application-token";
       codebergTokenFile = "/tmp/nix-provenance-fj-codeberg-token";
-      fakeFj = pkgs.writeShellScriptBin "fj-test" ''
+      fakeFj = pkgs.writeShellScriptBin "fj" ''
         printf '%s\n' "$@" > "$FJ_TEST_ARGS"
         cat > "$FJ_TEST_STDIN"
       '';

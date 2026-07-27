@@ -7,7 +7,7 @@
   inherit (lib) mkEnableOption mkIf mkOption types;
   cfg = config.nix-provenance.fj;
   defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.forgejo-cli;
-  fjExecutable = lib.escapeShellArg (lib.getExe cfg.package);
+  fjExecutable = lib.escapeShellArg (lib.getExe' cfg.package "fj");
   tokenOptions = {
     enable = mkEnableOption "automatic Forgejo application-token registration";
 
