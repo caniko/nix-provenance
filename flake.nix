@@ -198,6 +198,7 @@
         stalwart016 = import ./nix/modules/mail/stalwart016.nix {inherit self;};
         kanidmCredentials = import ./nix/modules/kanidm/credentials.nix {inherit self;};
         externalApp = import ./nix/modules/adapter/external-app.nix {inherit self;};
+        wireguardStatus = import ./nix/modules/adapter/wireguard-status.nix;
         tuwunel = import ./nix/modules/config-only/tuwunel.nix {inherit self;};
         default = {imports = [self.nixosModules.rauthy];};
       };
