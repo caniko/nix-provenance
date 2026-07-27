@@ -47,6 +47,7 @@
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
+  wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
 
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in
@@ -457,6 +458,20 @@ in
       '';
 
     stalwart016-vmtest = stalwart016VmTest;
+
+    wireguard-status-module-eval = let
+      exporter = wireguardStatusEval.config.services.prometheus.exporters.wireguard;
+      artifact = wireguardStatusEval.config.environment.etc."nix-provenance/wireguard-status.json".text;
+    in
+      runCommand "wireguard-status-module-eval" {} ''
+        test ${lib.escapeShellArg (toString exporter.enable)} = 1
+        test ${lib.escapeShellArg exporter.listenAddress} = 127.0.0.1
+        test ${lib.escapeShellArg (toString exporter.port)} = 19586
+        test ${lib.escapeShellArg (builtins.toJSON exporter.interfaces)} = '["wg-home"]'
+        printf '%s' ${lib.escapeShellArg artifact} | grep -q '"schemaVersion":1'
+        printf '%s' ${lib.escapeShellArg artifact} | grep -q '127.0.0.1:19586/metrics'
+        touch $out
+      '';
 
     # The kanidm-credentials reconcile module must evaluate to a concrete oneshot,
     # and its reconcile script must pass shellcheck (forced by depending on the
