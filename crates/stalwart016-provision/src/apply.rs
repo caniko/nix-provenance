@@ -103,6 +103,19 @@ fn parse_apply_output(result: &ApplyResult) -> PlanResult {
         }
     }
 
+    // Some stalwart-cli failures only report a non-zero exit status and a
+    // plain stderr message, without the structured `✗`/`Done:` output. Keep
+    // those failures visible to the caller instead of treating them as a
+    // successful no-op.
+    if !plan.success && plan.errors.is_empty() {
+        let detail = result.stderr.trim();
+        plan.errors.push(if detail.is_empty() {
+            format!("stalwart-cli apply exited with status {}", result.exit_code)
+        } else {
+            detail.to_string()
+        });
+    }
+
     plan
 }
 
@@ -190,6 +203,19 @@ mod tests {
         assert_eq!(plan.failed, 1);
         assert_eq!(plan.errors.len(), 1);
         assert!(plan.errors[0].contains("AcmeProvider"));
+    }
+
+    #[test]
+    fn test_parse_apply_output_failure_without_marker() {
+        let result = ApplyResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "error: invalid OAuthClient\n".to_string(),
+        };
+
+        let plan = parse_apply_output(&result);
+        assert!(!plan.success);
+        assert_eq!(plan.errors, vec!["error: invalid OAuthClient"]);
     }
 
     #[test]
