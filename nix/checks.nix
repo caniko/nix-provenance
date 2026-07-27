@@ -42,6 +42,7 @@
   vikunjaProvisionEval = evalSystem ./modules/test/vikunja-provision-eval.nix;
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
   stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
+  stalwart016Eval = evalSystem ./modules/test/stalwart016-eval.nix;
   stalwart016VmTest = import ./modules/test/stalwart016-vmtest.nix {inherit pkgs self system;};
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
@@ -439,6 +440,19 @@ in
         if printf '%s' "$directory" | grep -Fq '"attributes":'; then echo "stalwart: found legacy attributes map" >&2; exit 1; fi
         if printf '%s' "$directory" | grep -Fq '"base-dn"'; then echo "stalwart: found legacy base-dn key" >&2; exit 1; fi
         if printf '%s' "$directory" | grep -Fq '"allow-invalid-certs"'; then echo "stalwart: found legacy allow-invalid-certs key" >&2; exit 1; fi
+        touch $out
+      '';
+
+    stalwart016-module-eval = let
+      cfg = stalwart016Eval.config.services.stalwart016;
+      clients = builtins.toJSON cfg.oidc.clients;
+      serviceEnvironment = builtins.toJSON stalwart016Eval.config.systemd.services.stalwart.environment;
+    in
+      runCommand "stalwart016-module-eval" {} ''
+        printf '%s' ${lib.escapeShellArg clients} | grep -Fq '"neverlight-mail"'
+        printf '%s' ${lib.escapeShellArg clients} | grep -Fq '"redirectUris":["http://127.0.0.1:49152/callback"]'
+        printf '%s' ${lib.escapeShellArg serviceEnvironment} | grep -Fq 'STALWART_PUBLIC_URL'
+        test ${lib.escapeShellArg cfg.publicUrl} = 'https://mail.example.test'
         touch $out
       '';
 

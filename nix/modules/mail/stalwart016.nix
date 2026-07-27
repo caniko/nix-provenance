@@ -92,7 +92,19 @@
     value = listenerCreateValue;
   };
 
-  generatedPlan = listenerDestroyOps ++ listenerCreateOps ++ cfg.provision.registryConfig;
+  oauthClientOps = lib.optional (cfg.oidc.clients != {}) {
+    "@type" = "upsert";
+    object = "OAuthClient";
+    matchOn = ["clientId"];
+    value = lib.mapAttrs (_: client: {
+      clientId = client.clientId;
+      description = client.description;
+      redirectUris = lib.genAttrs client.redirectUris (_: true);
+      contacts = lib.genAttrs client.contacts (_: true);
+    }) cfg.oidc.clients;
+  };
+
+  generatedPlan = listenerDestroyOps ++ listenerCreateOps ++ cfg.provision.registryConfig ++ oauthClientOps;
   generatedPlanFile =
     pkgs.writeText "stalwart016-apply.ndjson"
     (lib.concatMapStrings (op: builtins.toJSON op + "\n") generatedPlan);
@@ -144,6 +156,41 @@ in {
       type = types.str;
       default = config.networking.fqdnOrHostName;
       description = "Hostname exported as STALWART_HOSTNAME during recovery and normal startup.";
+    };
+
+    publicUrl = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Public HTTPS URL used by OAuth clients and discovery consumers.";
+    };
+
+    oidc.clients = mkOption {
+      type = types.attrsOf (types.submodule ({name, ...}: {
+        options = {
+          clientId = mkOption {
+            type = types.str;
+            default = name;
+            description = "Stable OAuth client_id presented to the authorization server.";
+          };
+          description = mkOption {
+            type = types.str;
+            default = name;
+            description = "Administrative description shown for the OAuth client.";
+          };
+          redirectUris = mkOption {
+            type = types.listOf types.str;
+            default = [];
+            description = "Exact redirect URIs accepted for this public client.";
+          };
+          contacts = mkOption {
+            type = types.listOf types.str;
+            default = [];
+            description = "Administrative contact email addresses for the client.";
+          };
+        };
+      }));
+      default = {};
+      description = "Declarative Stalwart OAuth clients, reconciled by the recovery apply plan.";
     };
 
     credentials = mkOption {
@@ -384,7 +431,7 @@ in {
 
       queryObjects = mkOption {
         type = types.listOf types.str;
-        default = ["NetworkListener"];
+        default = ["NetworkListener" "OAuthClient"];
         description = ''
           Object types queried during recovery-mode provisioning. Results are
           captured under /var/lib/stalwart016/query-<Object>.json for tests and
@@ -492,6 +539,7 @@ in {
     ];
 
     environment.etc."stalwart016/config.json".source = bootstrapConfig;
+    environment.etc."stalwart016/apply.ndjson".source = generatedPlanFile;
 
     services.postgresql = mkIf postgres.createLocally {
       enable = true;
@@ -534,6 +582,8 @@ in {
       environment = {
         STALWART_HOSTNAME = cfg.hostname;
         HOME = "/var/lib/stalwart016";
+      } // lib.optionalAttrs (cfg.publicUrl != null) {
+        STALWART_PUBLIC_URL = cfg.publicUrl;
       };
 
       serviceConfig = {
