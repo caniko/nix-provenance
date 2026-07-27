@@ -82,7 +82,7 @@
         Wants = ["agenix.service"];
         After = ["agenix.service"];
       };
-      Path.PathChanged = [builtins.replaceStrings ["\${XDG_RUNTIME_DIR}"] ["%t"] tokenFile];
+      Path.PathChanged = builtins.replaceStrings ["\${XDG_RUNTIME_DIR}"] ["%t"] tokenFile;
       Install.WantedBy = ["default.target"];
     }) enabledTokens;
   tokenAssertions = lib.mapAttrsToList (name: tokenCfg: {
