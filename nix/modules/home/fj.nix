@@ -106,7 +106,7 @@ in {
           After = ["agenix.service"];
         };
 
-        Path.PathChanged = [applicationTokenPath];
+        Path.PathChanged = applicationTokenPath;
 
         Install.WantedBy = ["default.target"];
       };
