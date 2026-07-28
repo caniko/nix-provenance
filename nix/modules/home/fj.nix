@@ -47,13 +47,16 @@
       else lib.escapeShellArg tokenFile;
     script = pkgs.writeShellApplication {
       name = unitName;
-      runtimeInputs = [pkgs.coreutils];
+      runtimeInputs = [pkgs.coreutils pkgs.util-linux];
       text = ''
         token_file=${tokenFileShell}
         test -s "$token_file" || {
           echo "fj: application token file is missing or empty: $token_file" >&2
           exit 1
         }
+
+        exec 9>"''${XDG_RUNTIME_DIR:?}/nix-provenance-fj-auth.lock"
+        flock 9
 
         ${fjExecutable} -H ${lib.escapeShellArg tokenCfg.host} auth logout ${lib.escapeShellArg tokenCfg.host} || true
         {
@@ -74,7 +77,8 @@
         ExecStart = lib.getExe script;
       };
       Install.WantedBy = ["default.target"];
-    }) enabledTokens;
+    })
+  enabledTokens;
   tokenPaths = lib.mapAttrs' (name: tokenCfg: let
     unitName =
       if name == "default"
@@ -90,11 +94,14 @@
       };
       Path.PathChanged = builtins.replaceStrings ["\${XDG_RUNTIME_DIR}"] ["%t"] tokenFile;
       Install.WantedBy = ["default.target"];
-    }) enabledTokens;
-  tokenAssertions = lib.mapAttrsToList (name: tokenCfg: {
-    assertion = tokenCfg.tokenFile != null;
-    message = "nix-provenance.fj application token '${name}' requires tokenFile.";
-  }) enabledTokens;
+    })
+  enabledTokens;
+  tokenAssertions =
+    lib.mapAttrsToList (name: tokenCfg: {
+      assertion = tokenCfg.tokenFile != null;
+      message = "nix-provenance.fj application token '${name}' requires tokenFile.";
+    })
+    enabledTokens;
 in {
   options.nix-provenance.fj = {
     enable = mkEnableOption "fj, the Forgejo command-line client";

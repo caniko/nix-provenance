@@ -177,15 +177,20 @@ in
       assert builtins.elem fakeFj evaluated.config.home.packages;
         runCommand "fj-module-eval" {} ''
           grep -Fq ${lib.escapeShellArg tokenFile} ${service.Service.ExecStart}
+          grep -Fq 'nix-provenance-fj-auth.lock' ${service.Service.ExecStart}
+          grep -Fq 'flock 9' ${service.Service.ExecStart}
           grep -Fq 'auth logout codefloe.com' ${service.Service.ExecStart}
           grep -Fq ${lib.escapeShellArg codebergTokenFile} ${codebergService.Service.ExecStart}
+          grep -Fq 'nix-provenance-fj-auth.lock' ${codebergService.Service.ExecStart}
+          grep -Fq 'flock 9' ${codebergService.Service.ExecStart}
           grep -Fq 'auth logout codeberg.org' ${codebergService.Service.ExecStart}
           if grep -Fq 'test-application-token' ${service.Service.ExecStart}; then
             echo "fj: token leaked into the generated command" >&2
             exit 1
           fi
           printf 'test-application-token\n' > ${lib.escapeShellArg tokenFile}
-          FJ_TEST_ARGS="$TMPDIR/args" \
+          XDG_RUNTIME_DIR="$TMPDIR" \
+            FJ_TEST_ARGS="$TMPDIR/args" \
             FJ_TEST_STDIN="$TMPDIR/stdin" \
             ${service.Service.ExecStart}
 
@@ -200,7 +205,8 @@ in
           printf 'can\ntest-application-token\n' > "$TMPDIR/expected"
           cmp -s "$TMPDIR/expected" "$TMPDIR/stdin"
           printf 'test-codeberg-token\n' > ${lib.escapeShellArg codebergTokenFile}
-          FJ_TEST_ARGS="$TMPDIR/codeberg-args" \
+          XDG_RUNTIME_DIR="$TMPDIR" \
+            FJ_TEST_ARGS="$TMPDIR/codeberg-args" \
             FJ_TEST_STDIN="$TMPDIR/codeberg-stdin" \
             ${codebergService.Service.ExecStart}
           test "$(sed -n '2p' "$TMPDIR/codeberg-args")" = "codeberg.org"
