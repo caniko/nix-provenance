@@ -7,6 +7,7 @@ members = [
   "crates/rauthy-provision",
   "crates/rauthy-state-render",
   "crates/vikunja-provision",
+  "crates/forgejo-provision",
   "crates/identity-cli",
   "crates/stalwart016-provision",
   "crates/stalwart-oauth-bootstrap",

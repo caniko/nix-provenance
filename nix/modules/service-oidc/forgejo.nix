@@ -8,6 +8,26 @@
   cfg = config.services.forgejo.provision;
   forgejoConfig = "${config.services.forgejo.customDir}/conf/app.ini";
 
+  keySubmodule = types.submodule {
+    options = {
+      present = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Whether this SSH key should exist.";
+      };
+      key = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "OpenSSH public key; required when present = true.";
+      };
+      readOnly = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Restrict this key to read-only repository access.";
+      };
+    };
+  };
+
   seedScript = pkgs.writeShellScript "forgejo-seed-oidc" ''
     set -eu
     export PATH=${lib.makeBinPath [
@@ -55,9 +75,106 @@
         --scopes ${lib.escapeShellArg cfg.scopes}
     fi
   '';
+
+  keyManifest = lib.mapAttrs (_username: keys:
+    lib.mapAttrs (_title: key: {
+      inherit (key) present;
+      key = key.key;
+      read_only = key.readOnly;
+    })
+    keys)
+  cfg.sshKeys;
+
+  stateFile = pkgs.writeText "forgejo-provision-state.json" (
+    builtins.toJSON {
+      sshKeys = keyManifest;
+    }
+  );
+
+  cliArgs = lib.escapeShellArgs ([
+      "--url"
+      cfg.endpoint
+      "--state"
+      (toString stateFile)
+      "--admin-user"
+      cfg.adminUser
+      "--ready-timeout"
+      (toString cfg.readyTimeoutSeconds)
+    ]
+    ++ lib.optional cfg.acceptInvalidCerts "--accept-invalid-certs"
+    ++ lib.optional cfg.allowSshKeyDelete "--allow-ssh-key-delete");
+
+  provisionScript = pkgs.writeShellScript "forgejo-provision-start" ''
+    set -eu
+    ${seedScript}
+    ${lib.optionalString (cfg.sshKeys != {}) ''
+      test -s "$CREDENTIALS_DIRECTORY/admin-password"
+      ${lib.getExe cfg.package} ${cliArgs} --admin-password-file "$CREDENTIALS_DIRECTORY/admin-password"
+    ''}
+  '';
 in {
   options.services.forgejo.provision = {
-    enable = mkEnableOption "declarative Forgejo OIDC auth-source registration";
+    enable = mkEnableOption "declarative Forgejo OIDC auth-source and SSH-key provisioning";
+
+    package = mkOption {
+      type = types.package;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.forgejo-provision;
+      defaultText = lib.literalExpression "self.packages.\${pkgs.stdenv.hostPlatform.system}.forgejo-provision";
+      description = "forgejo-provision package to run.";
+    };
+
+    endpoint = mkOption {
+      type = types.str;
+      default = let
+        bindAddress = config.services.forgejo.settings.server.HTTP_ADDR or "127.0.0.1";
+        host =
+          if bindAddress == "" || bindAddress == "0.0.0.0" || bindAddress == "::"
+          then "127.0.0.1"
+          else bindAddress;
+        authority =
+          if lib.hasInfix ":" host
+          then "[${host}]"
+          else host;
+      in "http://${authority}:${toString (config.services.forgejo.settings.server.HTTP_PORT or 3000)}";
+      defaultText = lib.literalExpression "\"http://127.0.0.1:\${toString (config.services.forgejo.settings.server.HTTP_PORT or 3000)}\"";
+      description = "Forgejo base URL used by the local administrative API client.";
+    };
+
+    adminUser = mkOption {
+      type = types.str;
+      default = "";
+      description = "Forgejo administrator used for SSH-key API requests.";
+    };
+
+    adminPasswordFile = mkOption {
+      type = types.nullOr (types.oneOf [types.path types.str]);
+      default = null;
+      description = "Runtime file containing the Forgejo administrator password.";
+    };
+
+    readyTimeoutSeconds = mkOption {
+      type = types.ints.positive;
+      default = 30;
+      description = "Seconds to wait for Forgejo before provisioning.";
+    };
+
+    acceptInvalidCerts = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Accept invalid TLS certificates for an explicitly configured HTTPS endpoint.";
+    };
+
+    allowSshKeyDelete = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Global deletion gate for keys declared with present = false.";
+    };
+
+    sshKeys = mkOption {
+      type = types.attrsOf (types.attrsOf keySubmodule);
+      default = {};
+      description = "Forgejo SSH keys keyed by username and stable title.";
+    };
 
     authName = mkOption {
       type = types.str;
@@ -123,12 +240,38 @@ in {
   };
 
   config = mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = config.services.forgejo.enable;
-        message = "services.forgejo.provision requires services.forgejo.enable = true.";
-      }
-    ];
+    assertions =
+      [
+        {
+          assertion = config.services.forgejo.enable;
+          message = "services.forgejo.provision requires services.forgejo.enable = true.";
+        }
+        {
+          assertion = cfg.sshKeys == {} || cfg.adminUser != "";
+          message = "services.forgejo.provision.adminUser is required when sshKeys are declared.";
+        }
+        {
+          assertion = cfg.sshKeys == {} || cfg.adminPasswordFile != null;
+          message = "services.forgejo.provision.adminPasswordFile is required when sshKeys are declared.";
+        }
+      ]
+      ++ lib.flatten (lib.mapAttrsToList (_username: keys:
+        lib.mapAttrsToList (_title: entry: [
+          {
+            assertion = entry.key == null || lib.trim entry.key != "";
+            message = "Forgejo SSH-key values must not be empty.";
+          }
+          {
+            assertion = entry.key == null || (!lib.hasInfix "\n" entry.key && !lib.hasInfix "\r" entry.key);
+            message = "Forgejo SSH-key values must be single-line public keys.";
+          }
+          {
+            assertion = !entry.present || entry.key != null;
+            message = "Forgejo SSH keys declared present require a public key.";
+          }
+        ])
+        keys)
+      cfg.sshKeys);
 
     services.forgejo.settings.oauth2_client = {
       ENABLE_AUTO_REGISTRATION = cfg.autoRegister;
@@ -138,10 +281,11 @@ in {
     };
 
     systemd.services.forgejo-seed-oidc = {
-      description = "Register / update the kanidm OIDC auth source in Forgejo";
+      description = "Register Forgejo OIDC and reconcile declared SSH keys";
       wantedBy = ["multi-user.target"];
       after = cfg.serviceAfter;
       requires = cfg.serviceAfter;
+      restartTriggers = [stateFile];
 
       serviceConfig = {
         Type = "oneshot";
@@ -152,8 +296,10 @@ in {
         UMask = "0077";
         StandardOutput = "journal";
         StandardError = "journal";
-        LoadCredential = ["oidc-secret:${toString cfg.clientSecretFile}"];
-        ExecStart = seedScript;
+        LoadCredential =
+          ["oidc-secret:${toString cfg.clientSecretFile}"]
+          ++ lib.optional (cfg.sshKeys != {}) "admin-password:${toString cfg.adminPasswordFile}";
+        ExecStart = provisionScript;
       };
     };
   };

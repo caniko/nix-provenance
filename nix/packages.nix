@@ -38,6 +38,7 @@
   rauthyArgs = mkArgs "rauthy-provision";
   rauthyStateRenderArgs = mkArgs "rauthy-state-render";
   vikunjaArgs = mkArgs "vikunja-provision";
+  forgejoArgs = mkArgs "forgejo-provision";
   identityArgs = mkArgs "identity-cli";
   # stalwart016-provision uses explicit version because crateNameFromCargoToml
   # may not resolve the cargoToml path across evaluation contexts.
@@ -55,6 +56,7 @@
   rauthyDeps = craneLib.buildDepsOnly rauthyArgs;
   rauthyStateRenderDeps = craneLib.buildDepsOnly rauthyStateRenderArgs;
   vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
+  forgejoDeps = craneLib.buildDepsOnly forgejoArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
   stalwartOauthBootstrapDeps = craneLib.buildDepsOnly stalwartOauthBootstrapArgs;
@@ -66,6 +68,7 @@ in {
     rauthy-provision = rauthyArgs;
     rauthy-state-render = rauthyStateRenderArgs;
     vikunja-provision = vikunjaArgs;
+    forgejo-provision = forgejoArgs;
     identity-cli = identityArgs;
     stalwart016-provision = stalwartProvisionArgs;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapArgs;
@@ -78,6 +81,7 @@ in {
     rauthy-provision = rauthyDeps;
     rauthy-state-render = rauthyStateRenderDeps;
     vikunja-provision = vikunjaDeps;
+    forgejo-provision = forgejoDeps;
     identity-cli = identityDeps;
     stalwart016-provision = stalwartProvisionDeps;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapDeps;
@@ -141,6 +145,16 @@ in {
         meta = {
           description = "Declarative provisioning client for Vikunja teams and memberships";
           mainProgram = "vikunja-provision";
+          license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    forgejo-provision = craneLib.buildPackage (forgejoArgs
+      // {
+        cargoArtifacts = forgejoDeps;
+        meta = {
+          description = "Declarative Forgejo SSH public-key provisioning";
+          mainProgram = "forgejo-provision";
           license = with lib.licenses; [mit asl20];
         };
       });

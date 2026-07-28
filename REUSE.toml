@@ -34,6 +34,11 @@ SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
+path = "crates/forgejo-provision/**"
+SPDX-FileCopyrightText = "Can H. Tartanoglu"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
 path = ["nix/lib/forgejo.nix", "nix/modules/service-oidc/forgejo.nix", "nix/modules/test/forgejo-eval.nix"]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "AGPL-3.0-only"

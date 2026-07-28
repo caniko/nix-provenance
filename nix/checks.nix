@@ -104,6 +104,7 @@ in
     rauthy-provision = packages.rauthy-provision;
     rauthy-state-render = packages.rauthy-state-render;
     vikunja-provision = packages.vikunja-provision;
+    forgejo-provision = packages.forgejo-provision;
     stalwart016-provision = packages.stalwart016-provision;
     stalwart-oauth-bootstrap = packages.stalwart-oauth-bootstrap;
     tuwunel-provision = packages.tuwunel-provision;
@@ -215,6 +216,7 @@ in
     rauthy-state-render-clippy = mkClippy "rauthy-state-render";
     rauthy-clippy = mkClippy "rauthy-provision";
     vikunja-clippy = mkClippy "vikunja-provision";
+    forgejo-clippy = mkClippy "forgejo-provision";
     stalwart016-provision-clippy = mkClippy "stalwart016-provision";
     stalwart-oauth-bootstrap-clippy = mkClippy "stalwart-oauth-bootstrap";
     tuwunel-provision-clippy = mkClippy "tuwunel-provision";
@@ -239,6 +241,13 @@ in
       args.vikunja-provision
       // {
         cargoArtifacts = cargoArtifacts.vikunja-provision;
+        doCheck = true;
+      }
+    );
+    forgejo-test = craneLib.cargoTest (
+      args.forgejo-provision
+      // {
+        cargoArtifacts = cargoArtifacts.forgejo-provision;
         doCheck = true;
       }
     );
@@ -469,8 +478,15 @@ in
       runCommand "forgejo-module-eval" {} ''
         test -n ${lib.escapeShellArg serviceConfig}
         test -x ${svc.serviceConfig.ExecStart}
-        grep -q -- '--config' ${svc.serviceConfig.ExecStart}
-        grep -q -- '/custom/conf/app.ini' ${svc.serviceConfig.ExecStart}
+        seed_script=$(sed -n '3p' ${svc.serviceConfig.ExecStart})
+        test -x "$seed_script"
+        grep -q -- '--config' "$seed_script"
+        grep -q -- '/custom/conf/app.ini' "$seed_script"
+        grep -q -- '--admin-password-file "$CREDENTIALS_DIRECTORY/admin-password"' ${svc.serviceConfig.ExecStart}
+        printf '%s\n' ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig.LoadCredential)} | grep -q 'admin-password:/run/secrets/forgejo-admin-password'
+        state_file=$(grep -o '/nix/store/[^ ]*forgejo-provision-state.json' ${svc.serviceConfig.ExecStart})
+        grep -q 'sshKeys' "$state_file"
+        printf '%s\n' ${lib.escapeShellArg (builtins.toJSON svc.restartTriggers)} | grep -q 'forgejo-provision-state.json'
         touch $out
       '';
 

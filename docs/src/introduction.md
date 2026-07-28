@@ -32,6 +32,7 @@ not always a Rust crate:
 | `immich-provision` | Immich users via a patched short-lived provision token | `AGPL-3.0-only` |
 | `rauthy-provision` | Rauthy users, groups, roles, and OIDC clients | `MIT OR Apache-2.0` |
 | `vikunja-provision` | Vikunja teams and memberships via the API | `MIT OR Apache-2.0` |
+| `forgejo-provision` | Forgejo SSH public keys via the administrative API | `MIT OR Apache-2.0` |
 
 See [Architecture](./concepts/architecture.md) for the tenant taxonomy and the
 add-a-tenant checklist. See [Licensing](./reference/licensing.md) for the
@@ -39,7 +40,7 @@ mixed-license boundary that keeps the shared core permissive.
 
 ## Flake outputs
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart016-provision,docs,site}`
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,stalwart016-provision,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}`
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}`
 

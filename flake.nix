@@ -264,7 +264,7 @@
           '';
         });
       in {
-        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision stalwart016-provision tuwunel-provision;
+        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision stalwart016-provision tuwunel-provision;
         forgejo-cli = forgejo-cli.packages.${final.stdenv.hostPlatform.system}.forgejo-cli;
         rauthy-vikunja-groups = rauthyVikunjaGroups;
       };

@@ -10,6 +10,7 @@ repo-wide license. Per-path SPDX is machine-readable in
 | `crates/immich-provision/**` | `AGPL-3.0-only` | immich-provision |
 | `crates/identity-cli/**` | `MPL-2.0` | identity-cli (Kanidm client-compatible) |
 | `crates/rauthy-provision/**` | `MIT OR Apache-2.0` | rauthy-provision |
+| `crates/forgejo-provision/**` | `MIT OR Apache-2.0` | forgejo-provision |
 | `crates/provenance-core/**` | `MIT OR Apache-2.0` | nix-provenance (shared core) |
 | `nix/lib/immich.nix`, `nix/modules/service-oidc/immich.nix`, `nix/modules/test/immich-eval.nix`, `docs/kanidm-oidc-migration.md`, `docs/src/guides/kanidm-oidc-migration.md`, `docs/src/rfcs/**` | `AGPL-3.0-only` | immich-provision |
 | `nix/lib/rauthy.nix`, `nix/modules/idp/rauthy.nix`, `nix/modules/test/rauthy-eval.nix` | `MIT OR Apache-2.0` | rauthy-provision |

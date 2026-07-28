@@ -86,9 +86,25 @@ These integrations do not expose direct app-local per-user profile or password
 management in `nix-provenance`.
 
 Vikunja provisioning manages teams and memberships by username; OIDC user
-creation/linking remains Vikunja's responsibility. Forgejo wiring configures
-the OIDC login surface. Stalwart uses Kanidm LDAP for mailbox authentication and
-must bind against Kanidm rather than compare local app passwords.
+creation/linking remains Vikunja's responsibility. Forgejo wiring configures the
+OIDC login surface and can reconcile public SSH keys:
+
+```nix
+services.forgejo.provision.sshKeys.can.hm-identity = {
+  key = "ssh-ed25519 AAAA...";
+  # readOnly = true;
+};
+```
+
+Keys are keyed by Forgejo username and stable title. `present` defaults to
+`true`; undeclared keys are left untouched, key/title or `readOnly` drift fails
+closed, and deletion requires both `present = false` and the explicit global
+`allowSshKeyDelete` gate. The administrator password is still a runtime
+`adminPasswordFile` loaded through systemd credentials; private SSH keys never
+enter the state.
+
+Stalwart uses Kanidm LDAP for mailbox authentication and must bind against
+Kanidm rather than compare local app passwords.
 
 ## External App Adapter
 

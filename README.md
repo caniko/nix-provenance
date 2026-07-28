@@ -2,7 +2,7 @@
 
 <!-- simit:badges:start -->
 
-[![CI](https://img.shields.io/badge/CI-managed+extra-2088ff)](.forgejo/workflows/ci.yaml) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](docs) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/identity-cli)
+![CI](https://img.shields.io/badge/CI-managed-2088ff) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](docs) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/forgejo-provision)
 
 <!-- simit:badges:end -->
 
@@ -24,7 +24,10 @@ are supported only as runtime password-file references, normally
 credentials and reconcilers store only rotation-marker hashes. Plaintext
 passwords must never enter Nix-rendered JSON, the Nix store, argv, logs, or
 environment variables. PINs, app-local password-reset flows, and notification
-emails remain out of scope unless the identity model changes again.
+emails remain out of scope unless the identity model changes again. Public SSH
+authentication keys are a separate non-secret exception: Forgejo may reconcile
+declared public keys, while private keys and all password-like material remain
+outside this repository's state.
 
 Each **tenant** reconciles one system from a Nix-rendered JSON state file via a
 `Type=oneshot` systemd unit ordered after that system. A tenant is not always a
@@ -45,6 +48,7 @@ Rust crate — the directory taxonomy makes that explicit:
 | [`immich-provision`](crates/immich-provision) | Immich users via a patched short-lived provision-token | `AGPL-3.0-only` |
 | [`rauthy-provision`](crates/rauthy-provision) | Rauthy users / groups / roles / OIDC clients | `MIT OR Apache-2.0` |
 | [`vikunja-provision`](crates/vikunja-provision) | Vikunja teams and memberships via the API | `MIT OR Apache-2.0` |
+| [`forgejo-provision`](crates/forgejo-provision) | Forgejo SSH public keys via the administrative API | `MIT OR Apache-2.0` |
 
 See [LICENSING.md](LICENSING.md) for the per-path SPDX map and the
 permissive-core rule. See [docs/architecture.md](docs/architecture.md) for the
@@ -52,7 +56,7 @@ tenant taxonomy and the add-a-tenant checklist.
 
 ## Flake outputs
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,stalwart016-provision,forgejo-cli,docs,site}`
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,stalwart016-provision,forgejo-cli,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}` — `usersFromKanidmPersons`

@@ -10,6 +10,7 @@ repository root.
 | `crates/immich-provision/**` | `AGPL-3.0-only` | immich-provision |
 | `crates/rauthy-provision/**` | `MIT OR Apache-2.0` | rauthy-provision |
 | `crates/vikunja-provision/**` | `MIT OR Apache-2.0` | vikunja-provision |
+| `crates/forgejo-provision/**` | `MIT OR Apache-2.0` | forgejo-provision |
 | `crates/provenance-core/**` | `MIT OR Apache-2.0` | nix-provenance (shared core) |
 | `nix/lib/immich.nix`, `nix/modules/service-oidc/immich.nix`, `nix/modules/test/immich-eval.nix`, `docs/kanidm-oidc-migration.md`, `docs/src/guides/kanidm-oidc-migration.md`, `docs/src/rfcs/**` | `AGPL-3.0-only` | immich-provision |
 | `nix/lib/rauthy.nix`, `nix/modules/idp/rauthy.nix` | `MIT OR Apache-2.0` | rauthy-provision |
