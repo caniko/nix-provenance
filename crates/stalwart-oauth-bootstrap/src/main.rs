@@ -247,9 +247,8 @@ fn discover_metadata(client: &reqwest::blocking::Client, config: &Config) -> Res
     let metadata: OAuthMetadata = response
         .json()
         .context("decoding Stalwart OAuth metadata")?;
-    let metadata_issuer = Url::parse(&metadata.issuer).map_err(|error| {
-        permanent(format!("parsing Stalwart OAuth metadata issuer: {error}"))
-    })?;
+    let metadata_issuer = Url::parse(&metadata.issuer)
+        .map_err(|error| permanent(format!("parsing Stalwart OAuth metadata issuer: {error}")))?;
     validate_transport_url(&metadata_issuer, "metadata issuer")?;
     if metadata_issuer.as_str().trim_end_matches('/')
         != config.issuer.as_str().trim_end_matches('/')
@@ -259,7 +258,9 @@ fn discover_metadata(client: &reqwest::blocking::Client, config: &Config) -> Res
         ));
     }
     let token_endpoint = Url::parse(&metadata.token_endpoint).map_err(|error| {
-        permanent(format!("parsing discovered Stalwart token endpoint: {error}"))
+        permanent(format!(
+            "parsing discovered Stalwart token endpoint: {error}"
+        ))
     })?;
     validate_endpoint(&token_endpoint, config)?;
     Ok(metadata)
