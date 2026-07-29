@@ -158,7 +158,7 @@
 
         devShells.default = rs-harbor.lib.mkDevShell {
           inherit pkgs craneLib cross;
-          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook];
+          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook pkgs.dbus];
           cargoConfig = rs-harbor.lib.mkCargoConfig {
             inherit pkgs;
             channel = "stable";
