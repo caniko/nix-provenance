@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     rs-harbor = {
-      url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=9bfa8bdb0ecb22d7bc11448665f7fbaebae7a759";
+      url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=c26b735eede8078f795651c4a9cbf0be8733b221";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # rust-overlay and crane are re-exported by rs-harbor; follow them through.
@@ -14,7 +14,7 @@
     rauthy-src = {
       # PR2 review-fix source: feat(bootstrap) generated API key tokens.
       # Keep this commit-pinned because the original branch was deleted.
-      url = "git+https://github.com/caniko/rauthy?rev=bdcabc50862c73f215506805980d486889a3f3d3";
+      url = "git+https://github.com/caniko/rauthy?rev=c26b735eede8078f795651c4a9cbf0be8733b221";
       flake = false;
     };
     plinth = {
@@ -52,8 +52,7 @@
         inherit (pkgs) lib;
         toolchain = rs-harbor.lib.mkToolchain {
           inherit pkgs;
-          channel = "stable";
-          extensions = ["rustfmt" "clippy"];
+          toolchainProfile = "nightly";
           crossTargets = [];
         };
         inherit (toolchain) rustToolchain craneLib;
@@ -74,8 +73,7 @@
               commonArgs = crates.args.identity-cli;
               targets = ["aarch64-linux"];
               toolchainArgs = {
-                channel = "stable";
-                extensions = ["rust-src" "rustfmt" "clippy"];
+                toolchainProfile = "nightly";
               };
             }
           else {};
@@ -161,7 +159,7 @@
           packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook pkgs.dbus];
           cargoConfig = rs-harbor.lib.mkCargoConfig {
             inherit pkgs;
-            channel = "stable";
+            channel = "nightly";
           };
           enableOsxcrossEnv = false;
           enableWindowsEnv = false;
