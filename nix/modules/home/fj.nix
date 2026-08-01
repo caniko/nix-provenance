@@ -6,7 +6,7 @@
 }: let
   inherit (lib) mkEnableOption mkIf mkOption types;
   cfg = config.nix-provenance.fj;
-  defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.forgejo-cli;
+  completionPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.forgejo-cli-nushell-completion;
   fjExecutable = lib.escapeShellArg (lib.getExe' cfg.package "fj");
   tokenOptions = {
     enable = mkEnableOption "automatic Forgejo application-token registration";
@@ -20,7 +20,7 @@
     username = mkOption {
       type = types.str;
       default = "can";
-      description = "Forgejo username associated with the application token.";
+      description = "Deprecated compatibility option ignored by forgejo-cli 0.6, which derives the user from the token.";
     };
 
     tokenFile = mkOption {
@@ -59,10 +59,7 @@
         flock 9
 
         ${fjExecutable} -H ${lib.escapeShellArg tokenCfg.host} auth logout ${lib.escapeShellArg tokenCfg.host} || true
-        {
-          printf '%s\n' ${lib.escapeShellArg tokenCfg.username}
-          cat "$token_file"
-        } | ${fjExecutable} -H ${lib.escapeShellArg tokenCfg.host} auth add-token
+        ${fjExecutable} -H ${lib.escapeShellArg tokenCfg.host} auth add-token < "$token_file"
       '';
     };
   in
@@ -108,8 +105,8 @@ in {
 
     package = mkOption {
       type = types.package;
-      default = defaultPackage;
-      defaultText = lib.literalMD "nix-provenance.packages.<system>.forgejo-cli";
+      default = pkgs.forgejo-cli;
+      defaultText = lib.literalMD "pkgs.forgejo-cli";
       description = "The Forgejo CLI package to install.";
     };
 
@@ -128,7 +125,7 @@ in {
 
   config = lib.mkMerge [
     (mkIf cfg.enable {
-      home.packages = [cfg.package];
+      home.packages = [cfg.package completionPackage];
     })
 
     (mkIf (enabledTokens != {}) {

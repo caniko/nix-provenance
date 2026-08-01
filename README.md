@@ -56,15 +56,15 @@ tenant taxonomy and the add-a-tenant checklist.
 
 ## Flake outputs
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,stalwart016-provision,forgejo-cli,docs,site}`
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,stalwart016-provision,forgejo-cli,forgejo-cli-nushell-completion,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}` — `usersFromKanidmPersons`
   for Immich/Rauthy, service-specific `kanidmOAuth2System` helpers for Immich,
   Vikunja, and Forgejo, Stalwart's kanidm LDAP helpers, and `adapter` — the
   backend-agnostic primitives third-party flakes use (see below)
-- `homeModules.fj` — installs the separate `forgejo-cli` package and provides
-  `nix-provenance.fj.enable`.
+- `homeModules.fj` — installs nixpkgs' `forgejo-cli` plus its validated Nushell
+  completion and provides `nix-provenance.fj.enable`.
 
 Enable the CLI in Home Manager, then add a CodeFloe application token
 interactively:
@@ -76,7 +76,6 @@ nix-provenance.fj.enable = true;
 
 ```console
 $ fj -H codefloe.com auth add-token
-username: can
 application token: …
 ```
 
@@ -91,7 +90,6 @@ and passed to fj over stdin; no persistent Home Manager token file is created:
 nix-provenance.fj.applicationToken = {
   enable = true;
   host = "codefloe.com";
-  username = "can";
   tokenFile = config.age.secrets.can-codefloe-token.path;
 };
 ```

@@ -14,17 +14,11 @@
     rauthy-src = {
       # PR2 review-fix source: feat(bootstrap) generated API key tokens.
       # Keep this commit-pinned because the original branch was deleted.
-      url = "git+https://github.com/caniko/rauthy?rev=c26b735eede8078f795651c4a9cbf0be8733b221";
+      url = "git+https://github.com/caniko/rauthy?rev=bdcabc50862c73f215506805980d486889a3f3d3";
       flake = false;
     };
     plinth = {
       url = "git+https://codeberg.org/caniko/plinth.git";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-    forgejo-cli = {
-      # Keep the CLI as a separate capability owner; nix-provenance only
-      # exposes its package and Home Manager integration.
-      url = "git+https://codeberg.org/caniko/forgejo-cli.git?ref=main";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -38,7 +32,6 @@
     crane,
     rauthy-src,
     plinth,
-    forgejo-cli,
     ...
   }:
     flake-utils.lib.eachDefaultSystem (
@@ -84,6 +77,8 @@
           }
           // {
             docs = docsPackage;
+            forgejo-cli = pkgs.forgejo-cli;
+            forgejo-cli-nushell-completion = fjNushellCompletion;
             site = pkgs.runCommand "nix-provenance-site" {} ''
               mkdir -p $out
               cp -rL --no-preserve=mode ${docsPackage}/. $out/
@@ -114,8 +109,16 @@
                 popd
               '';
             });
-            forgejo-cli = forgejo-cli.packages.${system}.forgejo-cli;
           };
+
+        fjNushellCompletion = pkgs.runCommand "forgejo-cli-nushell-completion-${pkgs.forgejo-cli.version}" {} ''
+          completion="$out/share/nushell/vendor/autoload/fj.nu"
+          mkdir -p "$(dirname "$completion")"
+          ${lib.getExe pkgs.forgejo-cli} completion nushell > "$completion"
+          substituteInPlace "$completion" \
+            --replace-fail '    [OWNER]/NAME: string' '    owner_name: string'
+          ${lib.getExe pkgs.nushell} --commands "nu-check --debug '$completion'"
+        '';
 
         docsPackage = pkgs.stdenv.mkDerivation {
           pname = "nix-provenance-docs";
@@ -263,7 +266,6 @@
         });
       in {
         inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision stalwart016-provision tuwunel-provision;
-        forgejo-cli = forgejo-cli.packages.${final.stdenv.hostPlatform.system}.forgejo-cli;
         rauthy-vikunja-groups = rauthyVikunjaGroups;
       };
     };

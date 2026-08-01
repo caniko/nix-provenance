@@ -111,6 +111,7 @@ in
     docs = docs;
     site = docs;
     forgejo-cli = packages.forgejo-cli;
+    forgejo-cli-nushell-completion = packages.forgejo-cli-nushell-completion;
 
     # The fj application-token path must consume the token through stdin only.
     fj-module-eval = let
@@ -175,6 +176,7 @@ in
       assert builtins.elem "agenix.service" codebergService.Unit.Wants;
       assert codebergPath.Path.PathChanged == codebergTokenFile;
       assert builtins.elem fakeFj evaluated.config.home.packages;
+      assert builtins.elem packages.forgejo-cli-nushell-completion evaluated.config.home.packages;
         runCommand "fj-module-eval" {} ''
           grep -Fq ${lib.escapeShellArg tokenFile} ${service.Service.ExecStart}
           grep -Fq 'nix-provenance-fj-auth.lock' ${service.Service.ExecStart}
@@ -202,7 +204,7 @@ in
             echo "fj: token leaked into argv" >&2
             exit 1
           fi
-          printf 'can\ntest-application-token\n' > "$TMPDIR/expected"
+          printf 'test-application-token\n' > "$TMPDIR/expected"
           cmp -s "$TMPDIR/expected" "$TMPDIR/stdin"
           printf 'test-codeberg-token\n' > ${lib.escapeShellArg codebergTokenFile}
           XDG_RUNTIME_DIR="$TMPDIR" \
@@ -210,7 +212,7 @@ in
             FJ_TEST_STDIN="$TMPDIR/codeberg-stdin" \
             ${codebergService.Service.ExecStart}
           test "$(sed -n '2p' "$TMPDIR/codeberg-args")" = "codeberg.org"
-          printf 'can\ntest-codeberg-token\n' > "$TMPDIR/codeberg-expected"
+          printf 'test-codeberg-token\n' > "$TMPDIR/codeberg-expected"
           cmp -s "$TMPDIR/codeberg-expected" "$TMPDIR/codeberg-stdin"
           touch $out
         '';
