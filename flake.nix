@@ -14,7 +14,7 @@
     rauthy-src = {
       # PR2 review-fix source: feat(bootstrap) generated API key tokens.
       # Keep this commit-pinned because the original branch was deleted.
-      url = "git+https://github.com/caniko/rauthy?rev=c26b735eede8078f795651c4a9cbf0be8733b221";
+      url = "git+https://github.com/caniko/rauthy?rev=bdcabc50862c73f215506805980d486889a3f3d3";
       flake = false;
     };
     plinth = {
