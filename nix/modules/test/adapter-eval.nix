@@ -74,6 +74,7 @@ in {
       users.dejana = {
         email = "dejana@tartanoglu.com";
         displayName = "Dejana";
+        manageProfile = false;
         credential = adapter.kanidmLogin;
       };
     };

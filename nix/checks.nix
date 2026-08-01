@@ -638,7 +638,7 @@ in
 
     # The third-party adapter must derive the pink-raven rauthy users (can keyed by
     # kanidm login, eric/caroline emailed a set-password link) and the kanidm-backend
-    # OAuth2 federation client + person, all from the uniform user schema.
+    # OAuth2 federation client + host-owned group member, all from the uniform user schema.
     adapter-module-eval = let
       svc = adapterEval.config.systemd.services.rauthy-provision;
       serviceConfig = builtins.toJSON svc.serviceConfig;
@@ -646,12 +646,14 @@ in
       rauthyUsers = builtins.toJSON adapterEval.config.services.rauthy.provision.users;
       kanidmOauth2 = builtins.toJSON adapterEval.config.services.kanidm.provision.systems.oauth2;
       kanidmPersons = builtins.toJSON adapterEval.config.services.kanidm.provision.persons;
+      kanidmGroups = builtins.toJSON adapterEval.config.services.kanidm.provision.groups;
     in
       runCommand "adapter-module-eval" {} ''
         users=${lib.escapeShellArg rauthyUsers}
         rendered_state=$(cat ${lib.escapeShellArg renderedStateFile})
         oauth2=${lib.escapeShellArg kanidmOauth2}
         persons=${lib.escapeShellArg kanidmPersons}
+        groups=${lib.escapeShellArg kanidmGroups}
         service=${lib.escapeShellArg serviceConfig}
         for e in can@tartanoglu.com efirley@protonmail.com carolinestahl@gmx.net bot@example.com; do
           printf '%s' "$users" | grep -q "$e" || { echo "adapter: rauthy user $e missing" >&2; exit 1; }
@@ -677,9 +679,12 @@ in
           || { echo "adapter: pink-raven post-logout redirect missing" >&2; exit 1; }
         printf '%s' "$rendered_state" | grep -q '"allowed_origins":\["https://raven.tartanoglu.com"\]' \
           || { echo "adapter: pink-raven allowed origin missing" >&2; exit 1; }
-        # kanidm backend rendered an OAuth2 federation client + its person.
+        # kanidm backend rendered an OAuth2 client and attached the existing
+        # host-owned person directly to the access group without redefining it.
         printf '%s' "$oauth2"  | grep -q 'internal-tool'   || { echo "adapter: kanidm oauth2 system missing" >&2; exit 1; }
-        printf '%s' "$persons" | grep -q 'dejana'          || { echo "adapter: kanidm person missing" >&2; exit 1; }
+        ! printf '%s' "$persons" | grep -q 'dejana'        || { echo "adapter: host-owned kanidm person was redefined" >&2; exit 1; }
+        printf '%s' "$groups" | ${pkgs.jq}/bin/jq -e '."internal-tool-users".members == ["dejana"]' >/dev/null \
+          || { echo "adapter: host-owned kanidm group member missing" >&2; exit 1; }
         touch $out
       '';
 

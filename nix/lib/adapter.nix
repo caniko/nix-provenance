@@ -201,7 +201,9 @@ in rec {
   kanidmPersons = {
     users,
     group,
-  }:
+  }: let
+    managedUsers = lib.filterAttrs (_: u: u.manageProfile or true) users;
+  in
     lib.mapAttrs (
       name: u:
         if !isKanidmLogin u.credential
@@ -216,5 +218,5 @@ in rec {
             mailAddresses = lib.optional ((u.email or null) != null) u.email;
           }
     )
-    users;
+    managedUsers;
 }

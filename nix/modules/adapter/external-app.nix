@@ -201,6 +201,23 @@
         scopes = a.scopes;
       }
       // lib.optionalAttrs (a.originLanding != null) {inherit (a) originLanding;});
+
+  kanidmGroupNames = lib.unique (lib.concatMap (
+      n: lib.singleton (kanidmGroupOf n kanidmApps.${n}) ++ adapter.rauthyGroupsOf kanidmApps.${n}.users
+    )
+    (lib.attrNames kanidmApps));
+  unmanagedMembersFor = group:
+    lib.unique (lib.concatMap (
+        n: let
+          a = kanidmApps.${n};
+        in
+          lib.attrNames (lib.filterAttrs (_: u:
+            !(u.manageProfile or true)
+            && (u.present or true)
+            && builtins.elem group ([(kanidmGroupOf n a)] ++ (u.groups or [])))
+          a.users)
+      )
+      (lib.attrNames kanidmApps));
 in {
   options.services.provenance.externalApps = mkOption {
     type = types.attrsOf appType;
@@ -285,8 +302,11 @@ in {
         )
         kanidmApps);
 
-      # Declare every referenced kanidm group (members auto-derive from persons).
-      groups = lib.genAttrs (lib.unique (lib.concatMap (n: lib.singleton (kanidmGroupOf n kanidmApps.${n}) ++ adapter.rauthyGroupsOf kanidmApps.${n}.users) (lib.attrNames kanidmApps))) (_: {});
+      # Profile-owned users derive membership from persons. Existing host-owned
+      # users are attached directly so the app never emits an incomplete person.
+      groups = lib.genAttrs kanidmGroupNames (group: {
+        members = lib.mkAfter (unmanagedMembersFor group);
+      });
     };
   };
 }
