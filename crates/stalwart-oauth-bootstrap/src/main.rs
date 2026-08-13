@@ -8,6 +8,8 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -21,6 +23,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 const USER_AGENT: &str = concat!("stalwart-oauth-bootstrap/", env!("CARGO_PKG_VERSION"));
+const KEYRING_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Exit marker for failures that should not be retried by systemd.
 #[derive(Debug)]
@@ -33,6 +36,25 @@ impl std::fmt::Display for Permanent {
 }
 
 impl std::error::Error for Permanent {}
+
+#[derive(Debug)]
+struct KeyringTimeout {
+    label: &'static str,
+    timeout: Duration,
+}
+
+impl std::fmt::Display for KeyringTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} timed out after {} seconds",
+            self.label,
+            self.timeout.as_secs_f32()
+        )
+    }
+}
+
+impl std::error::Error for KeyringTimeout {}
 
 /// Command-line configuration. The password is always read from a file, never
 /// passed as an argument or environment variable.
@@ -189,6 +211,10 @@ fn main() {
     let result = Config::from_cli(Cli::parse()).and_then(|config| run(&config));
 
     if let Err(error) = result {
+        if error.downcast_ref::<KeyringTimeout>().is_some() {
+            eprintln!("stalwart-oauth-bootstrap: {error}; deferring until the next trigger");
+            return;
+        }
         let permanent = error.downcast_ref::<Permanent>().is_some();
         eprintln!("stalwart-oauth-bootstrap: {error}");
         process::exit(if permanent { 2 } else { 1 });
@@ -202,15 +228,13 @@ fn run(config: &Config) -> Result<()> {
         Some(Duration::from_secs(30)),
     )?;
     let metadata = discover_metadata(&client, config)?;
-    let entry = Entry::new(&config.keyring_service, &config.keyring_username)
-        .context("creating Secret Service entry")?;
 
-    match entry.get_password() {
+    match keyring_get(config)? {
         Ok(token) if !token.is_empty() => {
             let token = Zeroizing::new(token);
             match refresh_token(&client, &metadata.token_endpoint, config, &token) {
                 Ok(tokens) => {
-                    store_refresh_token(&entry, tokens.refresh_token.as_deref(), &token)?;
+                    store_refresh_token(config, tokens.refresh_token.as_deref(), &token)?;
                     eprintln!("existing Stalwart OAuth token is valid");
                     return Ok(());
                 }
@@ -226,11 +250,50 @@ fn run(config: &Config) -> Result<()> {
 
     let password = read_password(&config.password_file)?;
     let refresh_token = bootstrap_token(&client, &metadata, config, &password)?;
-    entry
-        .set_password(&refresh_token)
-        .context("storing Stalwart OAuth refresh token in Secret Service")?;
+    keyring_set(config, refresh_token.to_string())?;
     eprintln!("Stalwart OAuth refresh token bootstrapped");
     Ok(())
+}
+
+fn keyring_get(config: &Config) -> Result<std::result::Result<String, KeyringError>> {
+    let service = config.keyring_service.clone();
+    let username = config.keyring_username.clone();
+    run_with_timeout("reading Secret Service entry", KEYRING_TIMEOUT, move || {
+        Ok(Entry::new(&service, &username)
+            .context("creating Secret Service entry")?
+            .get_password())
+    })
+}
+
+fn keyring_set(config: &Config, password: String) -> Result<()> {
+    let service = config.keyring_service.clone();
+    let username = config.keyring_username.clone();
+    run_with_timeout("writing Secret Service entry", KEYRING_TIMEOUT, move || {
+        Entry::new(&service, &username)
+            .context("creating Secret Service entry")?
+            .set_password(&password)
+            .context("storing Stalwart OAuth refresh token in Secret Service")
+    })
+}
+
+fn run_with_timeout<T, F>(label: &'static str, timeout: Duration, operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = sender.send(operation());
+    });
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(anyhow::Error::new(KeyringTimeout { label, timeout }))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            bail!("{label} worker exited without a result")
+        }
+    }
 }
 
 fn discover_metadata(client: &reqwest::blocking::Client, config: &Config) -> Result<OAuthMetadata> {
@@ -413,11 +476,9 @@ fn bootstrap_token(
         .ok_or_else(|| permanent("Stalwart did not return an OAuth refresh token"))
 }
 
-fn store_refresh_token(entry: &Entry, replacement: Option<&str>, current: &str) -> Result<()> {
+fn store_refresh_token(config: &Config, replacement: Option<&str>, current: &str) -> Result<()> {
     if let Some(replacement) = replacement {
-        entry
-            .set_password(replacement)
-            .context("storing rotated Stalwart OAuth refresh token")?;
+        keyring_set(config, replacement.to_owned())?;
     } else if current.is_empty() {
         bail!("Stalwart returned an empty OAuth refresh token");
     }
@@ -503,5 +564,15 @@ mod tests {
             " secret with spaces "
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blocking_keyring_work_is_bounded() {
+        let error = run_with_timeout("test keyring operation", Duration::from_millis(1), || {
+            thread::sleep(Duration::from_secs(1));
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.downcast_ref::<KeyringTimeout>().is_some());
     }
 }
