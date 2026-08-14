@@ -8,11 +8,12 @@ use std::fmt::Display;
 use anyhow::{Context, Result, anyhow, bail};
 use kanidm_client::KanidmClientBuilder;
 use kanidm_proto::internal::{CURegState, CUStatus, TotpAlgo, TotpSecret};
+use provenance_core::generated_secret::{GeneratedSecretStore, SecretFileStatus, SecretSource};
 use rand::distr::{Alphanumeric, SampleString};
 use serde::Serialize;
 use tokio::time::{Duration, sleep};
 use totp_rs::{Algorithm, TOTP};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const IDM_ADMIN: &str = "idm_admin";
 const ADMIN: &str = "admin";
@@ -71,6 +72,33 @@ pub struct ProvisionResult {
     pub totp_uri: Option<String>,
     /// Backup codes generated during TOTP enrollment.
     pub backup_codes: Vec<String>,
+}
+
+/// Result of reconciling a Kanidm OAuth2 basic secret with its local runtime
+/// artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuth2SecretAction {
+    /// The provider and local artifact already matched.
+    Unchanged,
+    /// The local artifact was initialized from the explicitly supplied legacy
+    /// file and matched the provider value.
+    Adopted,
+    /// The local artifact was recreated or updated from the provider value.
+    Recovered,
+    /// The provider secret was reset and the new value was persisted locally.
+    Rotated,
+}
+
+impl OAuth2SecretAction {
+    /// Stable machine-readable action name for service logs.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unchanged => "unchanged",
+            Self::Adopted => "adopted",
+            Self::Recovered => "recovered",
+            Self::Rotated => "rotated",
+        }
+    }
 }
 
 impl fmt::Debug for ProvisionResult {
@@ -249,6 +277,100 @@ pub async fn ensure_ssh_public_key(
         .await
         .kanidm_context(format!("adding SSH public key {tag} for {account}"))?;
     Ok(true)
+}
+
+/// Reconcile one Kanidm OAuth2 basic secret with a private local runtime file.
+///
+/// Kanidm is authoritative: a missing local file is recovered from Kanidm and
+/// a provider-side rotation updates the local artifact. When the provider has
+/// no secret, this resets it through Kanidm and persists the returned value.
+/// `adopt_from` is used only to initialize a missing local artifact during a
+/// migration; it is never allowed to overwrite a provider value.
+pub async fn reconcile_oauth2_basic_secret(
+    config: &ClientConfig,
+    name: &str,
+    state_file: &Path,
+    adopt_from: Option<&Path>,
+    rotate: bool,
+) -> Result<OAuth2SecretAction> {
+    if name.trim().is_empty() {
+        bail!("OAuth2 client name must not be empty");
+    }
+    let store = GeneratedSecretStore::at(state_file)?;
+    let client = authenticated_client(config).await?;
+    let mut remote = client
+        .idm_oauth2_rs_get_basic_secret(name)
+        .await
+        .kanidm_context(format!("reading OAuth2 basic secret for {name}"))?
+        .map(Zeroizing::new);
+
+    if remote.is_none() && adopt_from.is_some() && !rotate {
+        bail!(
+            "cannot adopt the legacy OAuth2 secret for {name}: Kanidm has no existing secret; run an explicit rotation instead"
+        );
+    }
+
+    if rotate || remote.is_none() {
+        client
+            .idm_oauth2_rs_update(name, None, None, None, true)
+            .await
+            .kanidm_context(format!("resetting OAuth2 basic secret for {name}"))?;
+        remote = client
+            .idm_oauth2_rs_get_basic_secret(name)
+            .await
+            .kanidm_context(format!("reading reset OAuth2 basic secret for {name}"))?
+            .map(Zeroizing::new);
+        if remote
+            .as_deref()
+            .is_none_or(|secret| secret.trim().is_empty())
+        {
+            bail!("Kanidm returned no OAuth2 basic secret for {name} after reset");
+        }
+        store.replace_text(remote.as_deref().expect("checked above"))?;
+        return Ok(OAuth2SecretAction::Rotated);
+    }
+
+    let remote = remote.as_deref().expect("checked above");
+    if remote.trim().is_empty() {
+        bail!("Kanidm returned an empty OAuth2 basic secret for {name}");
+    }
+
+    let action = match store.status()? {
+        SecretFileStatus::Missing => {
+            let source = match adopt_from {
+                Some(path) => store.ensure(Some(path))?.source,
+                None => {
+                    store.recover(remote)?;
+                    SecretSource::Generated
+                }
+            };
+            let local = store.read()?;
+            if local.expose() != remote.trim() {
+                if source == SecretSource::Adopted {
+                    bail!(
+                        "legacy OAuth2 secret for {name} does not match Kanidm; refusing silent replacement"
+                    );
+                }
+                store.replace_text(remote)?;
+                OAuth2SecretAction::Recovered
+            } else if source == SecretSource::Adopted {
+                OAuth2SecretAction::Adopted
+            } else {
+                OAuth2SecretAction::Recovered
+            }
+        }
+        SecretFileStatus::Ready => {
+            let local = store.read()?;
+            if local.expose() == remote.trim() {
+                OAuth2SecretAction::Unchanged
+            } else {
+                store.replace_text(remote)?;
+                OAuth2SecretAction::Recovered
+            }
+        }
+    };
+
+    Ok(action)
 }
 
 /// Delete a person's tagged SSH public key.
