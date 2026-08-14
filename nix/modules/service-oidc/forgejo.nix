@@ -7,6 +7,16 @@
   inherit (lib) mkEnableOption mkIf mkOption types;
   cfg = config.services.forgejo.provision;
   forgejoConfig = "${config.services.forgejo.customDir}/conf/app.ini";
+  identityCli = self.packages.${pkgs.stdenv.hostPlatform.system}.identity-cli;
+  generatedSecret = cfg.clientSecretFile == null;
+  clientSecretPath =
+    if generatedSecret
+    then cfg.generatedClientSecretFile
+    else cfg.clientSecretFile;
+  secretFileScript =
+    if generatedSecret
+    then "secret_file=${lib.escapeShellArg (toString clientSecretPath)}"
+    else ''secret_file="$CREDENTIALS_DIRECTORY/oidc-secret"'';
 
   keySubmodule = types.submodule {
     options = {
@@ -37,7 +47,9 @@
       pkgs.gnused
     ]}:$PATH
 
-    secret="$(< "$CREDENTIALS_DIRECTORY/oidc-secret")"
+    ${secretFileScript}
+    test -s "$secret_file"
+    secret="$(< "$secret_file")"
     name=${lib.escapeShellArg cfg.authName}
     forgejo_cli() {
       forgejo \
@@ -106,6 +118,14 @@
 
   provisionScript = pkgs.writeShellScript "forgejo-provision-start" ''
     set -eu
+    ${lib.optionalString generatedSecret ''
+      ${identityCli}/bin/forgejo-oidc-secret \
+        --url ${lib.escapeShellArg cfg.kanidmUrl} \
+        --idm-admin-password-file "$CREDENTIALS_DIRECTORY/idm-admin" \
+        --name ${lib.escapeShellArg cfg.clientId} \
+        --state-file ${lib.escapeShellArg (toString cfg.generatedClientSecretFile)} \
+        ${lib.optionalString (cfg.adoptClientSecretFile != null) ''--adopt-from "$CREDENTIALS_DIRECTORY/legacy-oidc-secret"''}
+    ''}
     ${seedScript}
     ${lib.optionalString (cfg.sshKeys != {}) ''
       test -s "$CREDENTIALS_DIRECTORY/admin-password"
@@ -199,13 +219,41 @@ in {
     };
 
     clientSecretFile = mkOption {
-      type = types.oneOf [types.path types.str];
+      type = types.nullOr (types.oneOf [types.path types.str]);
+      default = null;
       description = ''
-        Path to a file containing the OIDC client secret, readable by the
-        Forgejo user. Loaded through systemd LoadCredential so the secret is
-        not embedded in the Nix store or unit file. Forgejo's CLI still accepts
-        the secret only through --secret at runtime.
+        Optional legacy path containing the OIDC client secret. When omitted,
+        the secret is recovered from Kanidm into generatedClientSecretFile.
       '';
+    };
+
+    generatedClientSecretFile = mkOption {
+      type = types.str;
+      default = self.lib.forgejo.generatedBasicSecretFile;
+      defaultText = lib.literalExpression "self.lib.forgejo.generatedBasicSecretFile";
+      description = ''
+        Runtime path for the Kanidm OAuth2 secret when clientSecretFile is not
+        set. The default is owned by this service's StateDirectory and is never
+        rendered into the Nix store with secret contents.
+      '';
+    };
+
+    adoptClientSecretFile = mkOption {
+      type = types.nullOr (types.oneOf [types.path types.str]);
+      default = null;
+      description = "Optional legacy client-secret file adopted when generating the runtime artifact.";
+    };
+
+    kanidmUrl = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Kanidm base URL used to recover the generated OAuth2 secret.";
+    };
+
+    kanidmIdmAdminPasswordFile = mkOption {
+      type = types.nullOr (types.oneOf [types.path types.str]);
+      default = null;
+      description = "Runtime path containing the Kanidm idm_admin password for generated-secret recovery.";
     };
 
     scopes = mkOption {
@@ -254,6 +302,14 @@ in {
           assertion = cfg.sshKeys == {} || cfg.adminPasswordFile != null;
           message = "services.forgejo.provision.adminPasswordFile is required when sshKeys are declared.";
         }
+        {
+          assertion = !generatedSecret || (cfg.kanidmUrl != null && cfg.kanidmIdmAdminPasswordFile != null);
+          message = "services.forgejo.provision generated secrets require kanidmUrl and kanidmIdmAdminPasswordFile.";
+        }
+        {
+          assertion = !generatedSecret || cfg.generatedClientSecretFile == self.lib.forgejo.generatedBasicSecretFile;
+          message = "services.forgejo.provision.generatedClientSecretFile must use the StateDirectory-backed default path.";
+        }
       ]
       ++ lib.flatten (lib.mapAttrsToList (_username: keys:
         lib.mapAttrsToList (_title: entry: [
@@ -283,8 +339,8 @@ in {
     systemd.services.forgejo-seed-oidc = {
       description = "Register Forgejo OIDC and reconcile declared SSH keys";
       wantedBy = ["multi-user.target"];
-      after = cfg.serviceAfter;
-      requires = cfg.serviceAfter;
+      after = cfg.serviceAfter ++ lib.optional generatedSecret "kanidm.service";
+      requires = cfg.serviceAfter ++ lib.optional generatedSecret "kanidm.service";
       restartTriggers = [stateFile];
 
       serviceConfig = {
@@ -293,11 +349,15 @@ in {
         User = config.services.forgejo.user;
         Group = config.services.forgejo.group;
         WorkingDirectory = config.services.forgejo.stateDir;
+        StateDirectory = lib.mkIf generatedSecret "forgejo-oidc-secret";
+        StateDirectoryMode = lib.mkIf generatedSecret "0700";
         UMask = "0077";
         StandardOutput = "journal";
         StandardError = "journal";
         LoadCredential =
-          ["oidc-secret:${toString cfg.clientSecretFile}"]
+          (lib.optional (!generatedSecret) "oidc-secret:${toString cfg.clientSecretFile}")
+          ++ lib.optional generatedSecret "idm-admin:${toString cfg.kanidmIdmAdminPasswordFile}"
+          ++ lib.optional (generatedSecret && cfg.adoptClientSecretFile != null) "legacy-oidc-secret:${toString cfg.adoptClientSecretFile}"
           ++ lib.optional (cfg.sshKeys != {}) "admin-password:${toString cfg.adminPasswordFile}";
         ExecStart = provisionScript;
       };

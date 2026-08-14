@@ -75,6 +75,7 @@ impl Error {
 /// Result type returned by shared provisioning helpers.
 pub type Result<T> = std::result::Result<T, Error>;
 
+pub mod generated_secret;
 pub mod http;
 pub mod password;
 pub mod reconcile;

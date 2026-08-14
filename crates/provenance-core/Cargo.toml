@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+rand.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 sha2 = "0.10"
@@ -16,6 +17,10 @@ sha2 = "0.10"
 # (rustls-tls vs rustls-tls-native-roots) wins via additive feature unification,
 # so this permissive core never forces a TLS backend and never links openssl.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+zeroize.workspace = true
 
 [dev-dependencies]
+# Tests compile the HTTP module directly; this keeps the production crate's TLS
+# choice delegated to its leaf callers.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde_json.workspace = true

@@ -20,6 +20,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+provenance-core = { path = "../provenance-core" }
 rand = "0.9"
 serde.workspace = true
 serde_json.workspace = true
@@ -37,6 +38,7 @@ totp-rs = { version = "5", optional = true }
 # do not hoist into [workspace.dependencies]. spow solves Rauthy's request_reset
 # Proof-of-Work (server feature = the native solver), matching rauthy-provision.
 reqwest = { version = "0.12", default-features = false, features = [
+  "blocking",
   "json",
   "rustls-tls-native-roots",
 ], optional = true }
@@ -44,7 +46,7 @@ spow = { version = "0.6", default-features = false, features = ["server"], optio
 
 [features]
 default = ["kanidm", "bitwarden", "rauthy"]
-kanidm = ["dep:kanidm_client", "dep:kanidm_proto", "dep:totp-rs"]
+kanidm = ["dep:kanidm_client", "dep:kanidm_proto", "dep:totp-rs", "dep:reqwest"]
 bitwarden = ["dep:base64"]
 rauthy = ["dep:reqwest", "dep:spow"]
 

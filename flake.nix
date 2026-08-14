@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     rs-harbor = {
-      url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=c26b735eede8078f795651c4a9cbf0be8733b221";
+      url = "git+ssh://git@codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=f209ddbca3fdbb0dc31fa3886ccc2ff7369c18ac";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # rust-overlay and crane are re-exported by rs-harbor; follow them through.
@@ -65,8 +65,12 @@
               pname = "identity-cli";
               commonArgs = crates.args.identity-cli;
               targets = ["aarch64-linux"];
+              # ponytail: disable cross sccache until rs-harbor keeps Cargo and rustc on the build platform.
+              buildCache = null;
               toolchainArgs = {
+                inherit pkgs;
                 toolchainProfile = "nightly";
+                crossTargets = ["aarch64-unknown-linux-gnu"];
               };
             }
           else {};

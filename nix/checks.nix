@@ -41,6 +41,7 @@
   vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
   vikunjaProvisionEval = evalSystem ./modules/test/vikunja-provision-eval.nix;
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
+  forgejoGeneratedEval = evalSystem ./modules/test/forgejo-generated-eval.nix;
   stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
   stalwart016Eval = evalSystem ./modules/test/stalwart016-eval.nix;
   stalwart016VmTest = import ./modules/test/stalwart016-vmtest.nix {inherit pkgs self system;};
@@ -98,7 +99,10 @@
 in
   {
     # Build all crates.
-    identity-cli = packages.identity-cli;
+    identity-cli = runCommand "identity-cli-package" {} ''
+      test -x ${packages.identity-cli}/bin/forgejo-oidc-secret
+      touch $out
+    '';
     immich-provision = packages.immich-provision;
     kanidm-state-render = packages.kanidm-state-render;
     rauthy-provision = packages.rauthy-provision;
@@ -486,7 +490,7 @@ in
       runCommand "forgejo-module-eval" {} ''
         test -n ${lib.escapeShellArg serviceConfig}
         test -x ${svc.serviceConfig.ExecStart}
-        seed_script=$(sed -n '3p' ${svc.serviceConfig.ExecStart})
+        seed_script=$(grep -m1 'forgejo-seed-oidc$' ${svc.serviceConfig.ExecStart})
         test -x "$seed_script"
         grep -q -- '--config' "$seed_script"
         grep -q -- '/custom/conf/app.ini' "$seed_script"
@@ -495,6 +499,21 @@ in
         state_file=$(grep -o '/nix/store/[^ ]*forgejo-provision-state.json' ${svc.serviceConfig.ExecStart})
         grep -q 'sshKeys' "$state_file"
         printf '%s\n' ${lib.escapeShellArg (builtins.toJSON svc.restartTriggers)} | grep -q 'forgejo-provision-state.json'
+        touch $out
+      '';
+
+    forgejo-generated-secret-module-eval = let
+      svc = forgejoGeneratedEval.config.systemd.services.forgejo-seed-oidc;
+      serviceConfig = builtins.toJSON svc.serviceConfig;
+      execStart = svc.serviceConfig.ExecStart;
+    in
+      runCommand "forgejo-generated-secret-module-eval" {} ''
+        test -n ${lib.escapeShellArg serviceConfig}
+        test -x ${execStart}
+        grep -q -- 'forgejo-oidc-secret' ${execStart}
+        grep -q -- '--state-file /var/lib/forgejo-oidc-secret/oidc-secret' ${execStart}
+        printf '%s\n' ${lib.escapeShellArg serviceConfig} | grep -q 'idm-admin:/run/secrets/kanidm-idm-admin'
+        printf '%s\n' ${lib.escapeShellArg serviceConfig} | grep -q 'StateDirectory.*forgejo-oidc-secret'
         touch $out
       '';
 
@@ -739,5 +758,8 @@ in
   // lib.optionalAttrs (system == "x86_64-linux") {
     # Keep the target package in the ordinary flake check graph so a future
     # change cannot silently reintroduce host objects into the target linker.
-    identity-cli-aarch64-linux = identityCrossPackageSet."identity-cli-aarch64-linux";
+    identity-cli-aarch64-linux = runCommand "identity-cli-aarch64-linux-package" {} ''
+      test -x ${identityCrossPackageSet."identity-cli-aarch64-linux"}/bin/forgejo-oidc-secret
+      touch $out
+    '';
   }
