@@ -67,6 +67,7 @@
               targets = ["aarch64-linux"];
               # ponytail: disable cross sccache until rs-harbor keeps Cargo and rustc on the build platform.
               buildCache = null;
+              targetArgs.aarch64-linux.stdenv = cross.linuxAarch64.pkgsCross.stdenv;
               toolchainArgs = {
                 inherit pkgs;
                 toolchainProfile = "nightly";
