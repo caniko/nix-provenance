@@ -1,1 +1,0 @@
-{"nodes": [{"id": "data_nvme0_can_canix_projects_repos_owned_codeberg_org_caniko_nix_provenance_crates_identity_cli_src_lib_rs", "label": "lib.rs", "file_type": "code", "source_file": "crates/identity-cli/src/lib.rs", "source_location": "L1"}], "edges": [], "raw_calls": []}
