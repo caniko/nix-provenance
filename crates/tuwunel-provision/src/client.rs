@@ -105,6 +105,9 @@ impl TuwunelClient {
 
         match self.try_register(localpart, password, true, None) {
             Ok(token) => Ok(token),
+            Err(e) if is_user_in_use(&e) => self
+                .login_password(localpart, password)
+                .with_context(|| format!("logging into existing admin user {localpart}")),
             Err(e) => {
                 if let Some(session) = extract_session_id(&e) {
                     eprintln!(
@@ -278,6 +281,19 @@ impl TuwunelClient {
                 Ok(())
             }
             Err(e) => {
+                if is_user_in_use(&e) {
+                    self.login_password(localpart, password)
+                        .with_context(|| format!("verifying existing user {user_id}"))?;
+                    if let Some(dn) = display_name
+                        && let Err(e) = self.set_display_name(user_id, dn)
+                    {
+                        eprintln!(
+                            "tuwunel-provision: warning — failed to set display name \
+                             for {user_id} after existing-user reconciliation: {e}"
+                        );
+                    }
+                    return Ok(());
+                }
                 if let Some(session) = extract_session_id(&e) {
                     self.try_register(localpart, password, admin, Some(&session))?;
                     if let Some(dn) = display_name
@@ -412,7 +428,6 @@ fn extract_session_id(err: &anyhow::Error) -> Option<String> {
     None
 }
 
-#[cfg(test)]
 fn is_user_in_use(err: &anyhow::Error) -> bool {
     err.chain()
         .map(|cause| format!("{cause}"))
