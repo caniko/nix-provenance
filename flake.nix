@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     rs-harbor = {
-      url = "git+https://github.com/caniko/rs-harbor.git?ref=trunk&rev=f209ddbca3fdbb0dc31fa3886ccc2ff7369c18ac";
+      url = "git+https://github.com/caniko/rs-harbor.git?ref=trunk&rev=77d0a937c760e6ced8b7ec8fc5a214f550abe35e";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # rust-overlay and crane are re-exported by rs-harbor; follow them through.
