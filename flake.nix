@@ -4,13 +4,14 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    rs-harbor = {
-      url = "git+https://github.com/caniko/rs-harbor.git?ref=trunk&rev=05cc4f162b55fa904b687db1821e2463fa813e50";
+    harbor-rs = {
+      url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=05cc4f162b55fa904b687db1821e2463fa813e50";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # rust-overlay and crane are re-exported by rs-harbor; follow them through.
-    rust-overlay.follows = "rs-harbor/rust-overlay";
-    crane.follows = "rs-harbor/crane";
+    rs-harbor.follows = "harbor-rs";
+    # rust-overlay and crane are re-exported by harbor-rs; follow them through.
+    rust-overlay.follows = "harbor-rs/rust-overlay";
+    crane.follows = "harbor-rs/crane";
     rauthy-src = {
       # PR2 review-fix source: feat(bootstrap) generated API key tokens.
       # Keep this commit-pinned because the original branch was deleted.
@@ -27,7 +28,7 @@
     self,
     nixpkgs,
     flake-utils,
-    rs-harbor,
+    harbor-rs,
     rust-overlay,
     crane,
     rauthy-src,
@@ -43,13 +44,13 @@
           ];
         };
         inherit (pkgs) lib;
-        toolchain = rs-harbor.lib.mkToolchain {
+        toolchain = harbor-rs.lib.mkToolchain {
           inherit pkgs;
           toolchainProfile = "nightly";
           crossTargets = [];
         };
         inherit (toolchain) rustToolchain craneLib;
-        cross = rs-harbor.lib.mkCross {inherit pkgs system;};
+        cross = harbor-rs.lib.mkCross {inherit pkgs system;};
         src = craneLib.cleanCargoSource ./.;
 
         crates = import ./nix/packages.nix {
@@ -60,12 +61,12 @@
         identityCrossPackageSet =
           if system == "x86_64-linux"
           then
-            rs-harbor.lib.mkCrossPackages {
+            harbor-rs.lib.mkCrossPackages {
               inherit pkgs craneLib cross;
               pname = "identity-cli";
               commonArgs = crates.args.identity-cli;
               targets = ["aarch64-linux"];
-              # ponytail: disable cross sccache until rs-harbor keeps Cargo and rustc on the build platform.
+              # ponytail: disable cross sccache until harbor-rs keeps Cargo and rustc on the build platform.
               buildCache = null;
               targetArgs.aarch64-linux.stdenv = cross.linuxAarch64.pkgsCross.stdenv;
               toolchainArgs = {
@@ -144,7 +145,7 @@
           '';
         };
 
-        atticAdapter = rs-harbor.lib.mkAdapter {
+        atticAdapter = harbor-rs.lib.mkAdapter {
           attic = {
             endpoint = "https://attic.candee.baby";
             cache = "canix";
@@ -162,10 +163,10 @@
           docs = docsPackage;
         };
 
-        devShells.default = rs-harbor.lib.mkDevShell {
+        devShells.default = harbor-rs.lib.mkDevShell {
           inherit pkgs craneLib cross;
           packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook pkgs.dbus];
-          cargoConfig = rs-harbor.lib.mkCargoConfig {
+          cargoConfig = harbor-rs.lib.mkCargoConfig {
             inherit pkgs;
             channel = "nightly";
           };
@@ -173,7 +174,7 @@
           enableWindowsEnv = false;
         };
 
-        apps.push-cache = rs-harbor.lib.mkAtticPush {
+        apps.push-cache = harbor-rs.lib.mkAtticPush {
           inherit pkgs;
           adapter = atticAdapter;
           paths = builtins.attrValues packages;
