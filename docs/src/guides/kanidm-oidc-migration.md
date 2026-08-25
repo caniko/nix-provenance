@@ -119,7 +119,7 @@ Immich host:
 ```nix
 {
   inputs.immich-provision.url =
-    "git+ssh://git@codeberg.org/caniko/immich-provision.git?ref=main";
+    "git+ssh://git@github.com/caniko/immich-provision.git?ref=main";
 
   imports = [inputs.immich-provision.nixosModules.default];
 
