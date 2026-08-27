@@ -711,16 +711,22 @@ fn user_drifted(user: &client::UserResponse, spec: &UserSpec) -> bool {
 }
 
 fn update_user(user: &client::UserResponse, spec: &UserSpec) -> UpdateUserRequest {
-    // Carry the current name/language/enabled/email_verified through unchanged;
-    // a PUT is a full replace, so omitting them would reset server-side values.
+    // A PUT is a full replace, so carry unmanaged fields through and apply
+    // declared profile values in the same request as role/group changes.
     // roles/groups are the UNION of current + declared so out-of-band roles
     // (e.g. rauthy_admin) survive.
     let cur_groups = user.groups.as_deref().unwrap_or_default();
     let groups = union(cur_groups, &spec.groups);
     UpdateUserRequest {
         email: user.email.clone(),
-        given_name: user.given_name.clone(),
-        family_name: user.family_name.clone(),
+        given_name: spec
+            .given_name
+            .clone()
+            .unwrap_or_else(|| user.given_name.clone()),
+        family_name: spec
+            .family_name
+            .clone()
+            .unwrap_or_else(|| user.family_name.clone()),
         language: user.language.clone(),
         roles: union(&user.roles, &spec.roles),
         groups: if groups.is_empty() {
@@ -1389,6 +1395,28 @@ mod tests {
             "groups": groups,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn user_update_applies_declared_profile_fields() {
+        let mut current = user(&[], Some(&["staff"]));
+        current.given_name = Some("Upstream".into());
+        current.family_name = Some("Invalid. Upstream".into());
+        let desired: UserSpec = serde_json::from_value(serde_json::json!({
+            "given_name": "Can",
+            "family_name": "Tartanoglu",
+            "groups": ["pink-raven"]
+        }))
+        .unwrap();
+
+        let update = update_user(&current, &desired);
+
+        assert_eq!(update.given_name.as_deref(), Some("Can"));
+        assert_eq!(update.family_name.as_deref(), Some("Tartanoglu"));
+        assert_eq!(
+            update.groups,
+            Some(vec!["staff".into(), "pink-raven".into()])
+        );
     }
 
     #[test]
