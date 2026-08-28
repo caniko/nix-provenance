@@ -890,7 +890,7 @@
         "lastModified": 1785942123,
         "narHash": "sha256-vQrXcZM9iyb3f24jDjRN/HMduKnv7UCM2BeMYiSAMlk=",
         "ref": "trunk",
-        "rev": "ddf90037b3dc0648365298836b9163af35e4f0ea",
+        "rev": "de6795d347b9bfc43eb792d58a519ab5676582dc",
         "revCount": 68,
         "type": "git",
         "url": "https://codeberg.org/caniko/nix-cache-pin.git"
@@ -1489,7 +1489,7 @@
         "lastModified": 1786574539,
         "narHash": "sha256-EG4hm76+a82iX24MpXsI1i7A7tmylu97ITpGX6GIVy4=",
         "ref": "refs/heads/trunk",
-        "rev": "79a5be7f33a1309fb0c58188767f8cf6c8604a20",
+        "rev": "98230878848d8b8a09a94f8477547c25ea96b081",
         "revCount": 248,
         "type": "git",
         "url": "https://codeberg.org/caniko/plinth.git"
@@ -1542,7 +1542,7 @@
         "lastModified": 1784780997,
         "narHash": "sha256-fOJS0gBszb2Rgyz2ejgFWrM11D3MoJrzVkahfdqAwW4=",
         "ref": "refs/heads/trunk",
-        "rev": "8b597e7a192eb8e141dd38d63e6d070e311b646c",
+        "rev": "014adb5a070decba27b40c469a5a73f6addeaabb",
         "revCount": 232,
         "type": "git",
         "url": "https://codefloe.com/caniko/plinth.git"
