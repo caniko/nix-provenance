@@ -765,4 +765,15 @@ in
       test -x ${identityCrossPackageSet."identity-cli-aarch64-linux"}/bin/forgejo-oidc-secret
       touch $out
     '';
+    identity-cli-cross-kanidm-args = assert args.identity-cli.cargoExtraArgs == "-p identity-cli";
+      runCommand "identity-cli-cross-kanidm-args" {} ''
+        flake='${../flake.nix}'
+        packages='${../nix/packages.nix}'
+        grep -Fq 'cargoExtraArgs = "-p identity-cli --no-default-features --features kanidm";' "$flake" \
+          || { echo "aarch64 identity-cli must use --no-default-features --features kanidm"; exit 1; }
+        if grep -q 'no-default-features' "$packages"; then
+          echo "native identity-cli args must keep cargo defaults"; exit 1
+        fi
+        touch $out
+      '';
   }
