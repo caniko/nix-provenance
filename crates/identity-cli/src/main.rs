@@ -51,6 +51,15 @@ struct RauthyArgs {
     #[arg(long, env = "RAUTHY_PROVISION_STATE")]
     state: std::path::PathBuf,
 
+    /// File containing the full Rauthy API key token (`<name>$<secret>`).
+    /// Required for passkey commands; unused by `reset-password`.
+    #[arg(long, env = "RAUTHY_API_KEY_FILE")]
+    api_key_file: Option<std::path::PathBuf>,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+
     #[command(subcommand)]
     command: RauthyCommand,
 }
@@ -67,6 +76,22 @@ enum RauthyCommand {
     ResetPassword {
         /// User identifier (email, local-part, or name).
         username: String,
+    },
+
+    /// List WebAuthn passkeys for a user.
+    ListPasskeys {
+        /// User identifier (email, local-part, or name).
+        username: String,
+    },
+
+    /// Delete every WebAuthn passkey for a user. Requires `--confirm <email>`.
+    ResetPasskeys {
+        /// User identifier (email, local-part, or name).
+        username: String,
+
+        /// Exact email of the resolved user (case-insensitive).
+        #[arg(long)]
+        confirm: String,
     },
 }
 
@@ -568,24 +593,94 @@ fn run_bitwarden(command: BitwardenCommand) -> Result<()> {
 }
 
 #[cfg(feature = "rauthy")]
+fn rauthy_api_key(args: &RauthyArgs) -> Result<String> {
+    let path = args
+        .api_key_file
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("pass --api-key-file or set RAUTHY_API_KEY_FILE"))?;
+    identity_cli::rauthy::api_key_from_file(path)
+}
+
+#[cfg(feature = "rauthy")]
 async fn run_rauthy(args: RauthyArgs) -> Result<()> {
     match args.command {
         RauthyCommand::ListEmailUsers => {
             let users = identity_cli::rauthy::email_users(&args.state)?;
-            if users.is_empty() {
-                println!("(no email-derived users in {})", args.state.display());
-            }
-            for user in users {
-                match user.name {
-                    Some(name) => println!("{}\t{name}", user.email),
-                    None => println!("{}", user.email),
+            if args.json {
+                let rows: Vec<serde_json::Value> = users
+                    .iter()
+                    .map(|user| {
+                        serde_json::json!({
+                            "email": user.email,
+                            "name": user.name,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string(&rows)?);
+            } else {
+                if users.is_empty() {
+                    println!("(no email-derived users in {})", args.state.display());
+                }
+                for user in users {
+                    match user.name {
+                        Some(name) => println!("{}\t{name}", user.email),
+                        None => println!("{}", user.email),
+                    }
                 }
             }
         }
         RauthyCommand::ResetPassword { username } => {
             let user = identity_cli::rauthy::find_user(&args.state, &username)?;
             identity_cli::rauthy::reset_password(&args.url, &user).await?;
-            println!("reset_email_sent={}", user.email);
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "email": user.email,
+                        "accepted": true,
+                    })
+                );
+            } else {
+                println!("reset_email_requested={}", user.email);
+            }
+        }
+        RauthyCommand::ListPasskeys { ref username } => {
+            let user = identity_cli::rauthy::find_user(&args.state, username)?;
+            let key = rauthy_api_key(&args)?;
+            let names = identity_cli::rauthy::list_passkeys(&args.url, &key, &user).await?;
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "email": user.email,
+                        "passkeys": names,
+                    })
+                );
+            } else {
+                for name in names {
+                    println!("{name}");
+                }
+            }
+        }
+        RauthyCommand::ResetPasskeys {
+            ref username,
+            ref confirm,
+        } => {
+            let user = identity_cli::rauthy::find_user(&args.state, username)?;
+            let key = rauthy_api_key(&args)?;
+            let deleted =
+                identity_cli::rauthy::reset_passkeys(&args.url, &key, &user, confirm).await?;
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "email": user.email,
+                        "deleted": deleted,
+                    })
+                );
+            } else {
+                println!("passkeys_deleted={}", deleted.join(","));
+            }
         }
     }
     Ok(())

@@ -194,6 +194,128 @@ pub async fn reset_password(base_url: &str, user: &EmailUser) -> Result<()> {
     Ok(())
 }
 
+pub fn api_key_from_file(path: &Path) -> Result<String> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading Rauthy API key file {}", path.display()))?;
+    let key = raw.trim().to_owned();
+    if key.is_empty() {
+        bail!("Rauthy API key file {} is empty", path.display());
+    }
+    Ok(key)
+}
+
+pub(crate) fn require_confirmed_email(user: &EmailUser, confirm: &str) -> Result<()> {
+    if confirm.trim().eq_ignore_ascii_case(&user.email) {
+        return Ok(());
+    }
+    bail!(
+        "confirmation email does not match {}; pass --confirm with that exact address",
+        user.email
+    )
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn api_base(base_url: &str) -> String {
+    format!("{}/auth/v1", base_url.trim_end_matches('/'))
+}
+
+fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(concat!("identity-cli/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("building HTTP client")
+}
+
+async fn fetch_passkeys(
+    base_url: &str,
+    api_key: &str,
+    email: &str,
+) -> Result<(String, Vec<String>)> {
+    let api = api_base(base_url);
+    let http = http_client()?;
+    let auth = format!("API-Key {api_key}");
+
+    #[derive(Deserialize)]
+    struct UserId {
+        id: String,
+    }
+    let user: UserId = http
+        .get(format!("{api}/users/email/{}", percent_encode(email)))
+        .header(reqwest::header::AUTHORIZATION, &auth)
+        .send()
+        .await
+        .context("looking up Rauthy user")?
+        .error_for_status()
+        .context("looking up Rauthy user")?
+        .json()
+        .await
+        .context("decoding Rauthy user")?;
+
+    #[derive(Deserialize)]
+    struct Passkey {
+        name: String,
+    }
+    let passkeys: Vec<Passkey> = http
+        .get(format!("{api}/users/{}/webauthn", percent_encode(&user.id)))
+        .header(reqwest::header::AUTHORIZATION, &auth)
+        .send()
+        .await
+        .context("listing Rauthy passkeys")?
+        .error_for_status()
+        .context("listing Rauthy passkeys")?
+        .json()
+        .await
+        .context("decoding Rauthy passkeys")?;
+    Ok((
+        user.id,
+        passkeys.into_iter().map(|passkey| passkey.name).collect(),
+    ))
+}
+
+pub async fn list_passkeys(base_url: &str, api_key: &str, user: &EmailUser) -> Result<Vec<String>> {
+    Ok(fetch_passkeys(base_url, api_key, &user.email).await?.1)
+}
+
+pub async fn reset_passkeys(
+    base_url: &str,
+    api_key: &str,
+    user: &EmailUser,
+    confirm: &str,
+) -> Result<Vec<String>> {
+    require_confirmed_email(user, confirm)?;
+    let api = api_base(base_url);
+    let http = http_client()?;
+    let auth = format!("API-Key {api_key}");
+    let (id, names) = fetch_passkeys(base_url, api_key, &user.email).await?;
+    for name in &names {
+        http.delete(format!(
+            "{api}/users/{}/webauthn/delete/{}",
+            percent_encode(&id),
+            percent_encode(name)
+        ))
+        .header(reqwest::header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .with_context(|| format!("deleting Rauthy passkey {name}"))?
+        .error_for_status()
+        .with_context(|| format!("deleting Rauthy passkey {name}"))?;
+    }
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +388,134 @@ mod tests {
         assert!(find_user(&t.0, "can").is_err());
         // unknown identifier
         assert!(find_user(&t.0, "nobody").is_err());
+    }
+
+    #[tokio::test]
+    async fn passkeys_mock_auth_encode_list_delete_and_confirm_mismatch() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        struct Record {
+            first: String,
+            auth: String,
+            body: String,
+        }
+
+        fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<Record>>>) {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            let mut auth = String::new();
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.is_empty() || line == "\n" || line == "\r\n" {
+                    break;
+                }
+                let (name, value) = match line.split_once(':') {
+                    Some(parts) => parts,
+                    None => continue,
+                };
+                if name.eq_ignore_ascii_case("authorization") {
+                    auth = value.trim().to_string();
+                }
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; content_length];
+            if content_length > 0 {
+                reader.read_exact(&mut body).unwrap();
+            }
+            requests.lock().unwrap().push(Record {
+                first: first.trim().to_string(),
+                auth,
+                body: String::from_utf8(body).unwrap(),
+            });
+
+            let path = first.split_whitespace().nth(1).unwrap_or("");
+            let (status, body) = if path.contains("/users/email/") {
+                ("200 OK", r#"{"id":"user-1","email":"foo+bar@example.com"}"#)
+            } else if path.ends_with("/webauthn") {
+                (
+                    "200 OK",
+                    r#"[{"name":"YubiKey 5","registered":1,"last_used":2},{"name":"iCloud Key","registered":1,"last_used":2}]"#,
+                )
+            } else {
+                ("200 OK", "")
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let recorded = requests.clone();
+        thread::spawn(move || {
+            for stream in listener.incoming().take(16) {
+                handle(stream.unwrap(), &recorded);
+            }
+        });
+        let base = format!("http://{addr}");
+
+        let key_path = {
+            let mut path = std::env::temp_dir();
+            path.push(format!("identity-cli-rauthy-key-{}", std::process::id()));
+            std::fs::write(&path, "  prov$key\n").unwrap();
+            path
+        };
+        let api_key = api_key_from_file(&key_path).unwrap();
+        assert_eq!(api_key, "prov$key");
+        let _ = std::fs::remove_file(&key_path);
+
+        let user = EmailUser {
+            email: "foo+bar@example.com".into(),
+            name: Some("Foo".into()),
+            redirect_uri: None,
+        };
+
+        assert!(
+            reset_passkeys(&base, &api_key, &user, "other@example.com")
+                .await
+                .is_err()
+        );
+        assert!(requests.lock().unwrap().is_empty());
+
+        let names = list_passkeys(&base, &api_key, &user).await.unwrap();
+        assert_eq!(names, vec!["YubiKey 5", "iCloud Key"]);
+
+        let deleted = reset_passkeys(&base, &api_key, &user, "FOO+BAR@EXAMPLE.COM")
+            .await
+            .unwrap();
+        assert_eq!(deleted, vec!["YubiKey 5", "iCloud Key"]);
+
+        let recs = requests.lock().unwrap();
+        assert!(recs.iter().all(|r| r.auth == "API-Key prov$key"));
+        assert!(recs.iter().any(|r| {
+            r.first
+                .starts_with("GET /auth/v1/users/email/foo%2Bbar%40example.com ")
+        }));
+        assert!(
+            recs.iter()
+                .any(|r| r.first.starts_with("GET /auth/v1/users/user-1/webauthn "))
+        );
+        assert!(recs.iter().any(|r| {
+            r.first
+                .starts_with("DELETE /auth/v1/users/user-1/webauthn/delete/YubiKey%205 ")
+                && r.body == "{}"
+        }));
+        assert!(recs.iter().any(|r| {
+            r.first
+                .starts_with("DELETE /auth/v1/users/user-1/webauthn/delete/iCloud%20Key ")
+                && r.body == "{}"
+        }));
     }
 }
