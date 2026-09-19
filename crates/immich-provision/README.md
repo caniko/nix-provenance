@@ -51,7 +51,7 @@ The create request intentionally omits `password` and `oauthId`.
 
 ```nix
 {
-  inputs.immich-provision.url = "git+ssh://git@codeberg.org/caniko/immich-provision.git";
+  inputs.immich-provision.url = "git+ssh://git@github.com/caniko/immich-provision.git";
 
   imports = [inputs.immich-provision.nixosModules.default];
 

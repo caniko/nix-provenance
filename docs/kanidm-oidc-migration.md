@@ -131,7 +131,7 @@ The canix repo wires this on the `immich-provision-safety` branch
 ```nix
 {
   inputs.immich-provision.url =
-    "git+ssh://git@codeberg.org/caniko/immich-provision.git?ref=main";
+    "git+ssh://git@github.com/caniko/immich-provision.git?ref=main";
 
   # atlas-side (Immich host)
   imports = [inputs.immich-provision.nixosModules.default];

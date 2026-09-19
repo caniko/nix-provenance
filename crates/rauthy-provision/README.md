@@ -105,7 +105,7 @@ deletes the entity if it exists; pass `--no-auto-remove` to skip deletions.
 
 ```nix
 {
-  inputs.rauthy-provision.url = "git+https://codeberg.org/caniko/rauthy-provision.git";
+  inputs.rauthy-provision.url = "git+https://github.com/caniko/rauthy-provision.git";
 
   # in a host module:
   imports = [ inputs.rauthy-provision.nixosModules.default ];

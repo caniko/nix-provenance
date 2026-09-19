@@ -19,7 +19,7 @@ members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.95"
-repository = "https://codeberg.org/caniko/nix-provenance"
+repository = "https://github.com/caniko/nix-provenance"
 authors = ["Can H. Tartanoglu <gpg@rotas.mozmail.com>"]
 
 # Only license-agnostic, feature-stable dependencies are hoisted here. reqwest is
