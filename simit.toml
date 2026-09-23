@@ -1,10 +1,11 @@
 [ci]
-provider = "crow"
-platform = "forgejo"
+provider = "actions"
+platform = "github"
 runtime = "nix"
-runner = "codefloe-global"
+runner = "ubuntu-24.04"
 workspace = true
 publish_crates = true
+all_features = false
 
 [ci.pages]
 repo = "caniko/nix-provenance"
