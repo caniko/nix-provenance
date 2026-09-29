@@ -25,7 +25,7 @@
   # path resolution issues when the Cargo.toml is not at the workspace root).
   buildArgs = pname: ver: {
     inherit src;
-    pname = pname;
+    inherit pname;
     version = ver;
     strictDeps = true;
     nativeBuildInputs = [pkgs.clang pkgs.mold];
@@ -40,6 +40,7 @@
   vikunjaArgs = mkArgs "vikunja-provision";
   forgejoArgs = mkArgs "forgejo-provision";
   identityArgs = mkArgs "identity-cli";
+  oauthArgs = mkArgs "provenance-oauth";
   # stalwart016-provision uses explicit version because crateNameFromCargoToml
   # may not resolve the cargoToml path across evaluation contexts.
   stalwartProvisionArgs = buildArgs "stalwart016-provision" "0.1.0";
@@ -58,6 +59,7 @@
   vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
   forgejoDeps = craneLib.buildDepsOnly forgejoArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
+  oauthDeps = craneLib.buildDepsOnly oauthArgs;
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
   stalwartOauthBootstrapDeps = craneLib.buildDepsOnly stalwartOauthBootstrapArgs;
   tuwunelDeps = craneLib.buildDepsOnly tuwunelArgs;
@@ -70,6 +72,7 @@ in {
     vikunja-provision = vikunjaArgs;
     forgejo-provision = forgejoArgs;
     identity-cli = identityArgs;
+    provenance-oauth = oauthArgs;
     stalwart016-provision = stalwartProvisionArgs;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapArgs;
     tuwunel-provision = tuwunelArgs;
@@ -83,12 +86,33 @@ in {
     vikunja-provision = vikunjaDeps;
     forgejo-provision = forgejoDeps;
     identity-cli = identityDeps;
+    provenance-oauth = oauthDeps;
     stalwart016-provision = stalwartProvisionDeps;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapDeps;
     tuwunel-provision = tuwunelDeps;
   };
 
   packages = {
+    provenance-oauth = craneLib.buildPackage (oauthArgs
+      // {
+        cargoArtifacts = oauthDeps;
+        nativeBuildInputs = oauthArgs.nativeBuildInputs ++ [pkgs.makeWrapper];
+        postInstall = ''
+          wrapProgram $out/bin/provenance-oauth --prefix PATH : ${lib.makeBinPath [pkgs.coreutils]}
+        '';
+        meta = {
+          description = "Host-scoped OAuth enrollment and shared access credentials";
+          mainProgram = "provenance-oauth";
+          license = with lib.licenses; [mit asl20];
+          platforms = lib.platforms.linux;
+        };
+      });
+
+    oauth-adapters = pkgs.runCommand "provenance-oauth-adapters" {} ''
+      mkdir -p $out/share/provenance-oauth
+      cp ${../adapters/oauth}/{access,opencode,omp}.mjs ${../adapters/oauth}/server.js $out/share/provenance-oauth/
+    '';
+
     identity-cli = craneLib.buildPackage (identityArgs
       // {
         cargoArtifacts = identityDeps;

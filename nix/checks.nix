@@ -33,6 +33,8 @@
       modules = [module];
     };
 
+  oauthEval = evalSystem ./modules/test/oauth-eval.nix;
+
   immichEval = evalSystem ./modules/test/immich-eval.nix;
   rauthyServerEval = evalSystem ./modules/test/rauthy-server-eval.nix;
   rauthyEval = evalSystem ./modules/test/rauthy-eval.nix;
@@ -103,19 +105,19 @@ in
       test -x ${packages.identity-cli}/bin/forgejo-oidc-secret
       touch $out
     '';
-    immich-provision = packages.immich-provision;
-    kanidm-state-render = packages.kanidm-state-render;
-    rauthy-provision = packages.rauthy-provision;
-    rauthy-state-render = packages.rauthy-state-render;
-    vikunja-provision = packages.vikunja-provision;
-    forgejo-provision = packages.forgejo-provision;
-    stalwart016-provision = packages.stalwart016-provision;
-    stalwart-oauth-bootstrap = packages.stalwart-oauth-bootstrap;
-    tuwunel-provision = packages.tuwunel-provision;
-    docs = docs;
+    inherit (packages) immich-provision;
+    inherit (packages) kanidm-state-render;
+    inherit (packages) rauthy-provision;
+    inherit (packages) rauthy-state-render;
+    inherit (packages) vikunja-provision;
+    inherit (packages) forgejo-provision;
+    inherit (packages) stalwart016-provision;
+    inherit (packages) stalwart-oauth-bootstrap;
+    inherit (packages) tuwunel-provision;
+    inherit docs;
     site = docs;
-    forgejo-cli = packages.forgejo-cli;
-    forgejo-cli-nushell-completion = packages.forgejo-cli-nushell-completion;
+    inherit (packages) forgejo-cli;
+    inherit (packages) forgejo-cli-nushell-completion;
 
     # The fj application-token path must consume the token through stdin only.
     fj-module-eval = let
@@ -154,7 +156,7 @@ in
                 enable = true;
                 host = "codefloe.com";
                 username = "can";
-                tokenFile = tokenFile;
+                inherit tokenFile;
               };
               applicationTokens.codeberg = {
                 enable = true;
@@ -223,6 +225,7 @@ in
 
     # Lint each crate against its isolated deps.
     identity-clippy = mkClippy "identity-cli";
+    oauth-clippy = mkClippy "provenance-oauth";
     immich-clippy = mkClippy "immich-provision";
     kanidm-state-render-clippy = mkClippy "kanidm-state-render";
     rauthy-state-render-clippy = mkClippy "rauthy-state-render";
@@ -237,6 +240,30 @@ in
     identity-test = craneLib.cargoTest (
       args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;}
     );
+    oauth-test = craneLib.cargoTest (
+      args.provenance-oauth // {cargoArtifacts = cargoArtifacts.provenance-oauth;}
+    );
+    oauth-adapters = runCommand "oauth-adapters-test" {nativeBuildInputs = [pkgs.nodejs];} ''
+      node --test ${../adapters/oauth}/adapters.test.mjs
+      touch $out
+    '';
+    oauth-module-eval = let
+      svc = oauthEval.config.systemd.services.provenance-oauth-alice-openai;
+      initial = oauthEval.config.systemd.services.provenance-oauth-alice-openai-initialize;
+    in
+      assert svc.serviceConfig.User == "alice";
+      assert svc.serviceConfig.StateDirectoryMode == "0700";
+      assert svc.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-openai"];
+      assert !(lib.hasInfix "--initialize" svc.serviceConfig.ExecStart);
+      assert lib.hasInfix "--initialize" initial.serviceConfig.ExecStart;
+      assert initial.wantedBy == [];
+      assert svc.unitConfig.ConditionPathExists == "/var/lib/provenance-oauth-alice-openai/state.json";
+      assert oauthEval.config.systemd.paths.provenance-oauth-alice-openai.pathConfig.PathChanged == "/run/agenix/oauth-alice-openai";
+        runCommand "oauth-module-eval" {} ''
+          test -n ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig)}
+          touch $out
+        '';
+    oauth-home-module-eval = import ./modules/test/oauth-home-eval.nix {inherit pkgs self;};
     immich-test = craneLib.cargoTest (
       args.immich-provision // {cargoArtifacts = cargoArtifacts.immich-provision;}
     );

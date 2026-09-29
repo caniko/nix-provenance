@@ -10,3 +10,7 @@
 ### Added
 
 - A reusable treefmt module for the repository's Alejandra formatting policy.
+- Host/user-scoped OpenAI ChatGPT OAuth enrollment with serialized refresh,
+  rollback fencing, encrypted recovery checkpoints, and access-only adapters for
+  stock OpenCode V2 and OMP. NixOS and Home Manager modules provide runtime
+  enrollment and automatic compatible-consumer bindings.

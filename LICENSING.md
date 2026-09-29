@@ -12,6 +12,7 @@ repo-wide license. Per-path SPDX is machine-readable in
 | `crates/rauthy-provision/**` | `MIT OR Apache-2.0` | rauthy-provision |
 | `crates/forgejo-provision/**` | `MIT OR Apache-2.0` | forgejo-provision |
 | `crates/provenance-core/**` | `MIT OR Apache-2.0` | nix-provenance (shared core) |
+| `crates/provenance-oauth/**`, `adapters/oauth/**`, OAuth Nix modules, shared OAuth guide | `MIT OR Apache-2.0` | nix-provenance (shared provider OAuth) |
 | `nix/lib/immich.nix`, `nix/modules/service-oidc/immich.nix`, `nix/modules/test/immich-eval.nix`, `docs/kanidm-oidc-migration.md`, `docs/src/guides/kanidm-oidc-migration.md`, `docs/src/rfcs/**` | `AGPL-3.0-only` | immich-provision |
 | `nix/lib/rauthy.nix`, `nix/modules/idp/rauthy.nix`, `nix/modules/test/rauthy-eval.nix` | `MIT OR Apache-2.0` | rauthy-provision |
 | `docs/adapter-external-apps.md`, `docs/src/guides/external-apps.md` | `MIT OR Apache-2.0` | nix-provenance |

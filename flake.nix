@@ -85,7 +85,7 @@
           }
           // {
             docs = docsPackage;
-            forgejo-cli = pkgs.forgejo-cli;
+            inherit (pkgs) forgejo-cli;
             forgejo-cli-nushell-completion = fjNushellCompletion;
             site = pkgs.runCommand "nix-provenance-site" {} ''
               mkdir -p $out
@@ -193,7 +193,7 @@
     // {
       # System-independent pure-Nix helpers (see nix/lib/default.nix).
       lib = import ./nix/lib/default.nix {
-        lib = nixpkgs.lib;
+        inherit (nixpkgs) lib;
         inherit self;
       };
 
@@ -201,6 +201,7 @@
       # `rauthyServer` (the server service) and `rauthy` (the provisioner)
       # until nixpkgs ships `services.rauthy` on the supported branch.
       nixosModules = {
+        oauth = import ./nix/modules/oauth.nix {inherit self;};
         immich = import ./nix/modules/service-oidc/immich.nix {inherit self;};
         rauthyServer = import ./nix/modules/idp/rauthy-server.nix;
         rauthy = import ./nix/modules/idp/rauthy.nix {inherit self;};
@@ -217,6 +218,7 @@
       };
 
       homeModules = {
+        oauth = import ./nix/modules/home/oauth.nix {inherit self;};
         rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
         fj = import ./nix/modules/home/fj.nix {inherit self;};
         stalwart-oauth-bootstrap = import ./nix/modules/home/stalwart-oauth-bootstrap.nix {inherit self;};

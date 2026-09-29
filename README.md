@@ -49,6 +49,7 @@ Rust crate — the directory taxonomy makes that explicit:
 | [`rauthy-provision`](crates/rauthy-provision) | Rauthy users / groups / roles / OIDC clients | `MIT OR Apache-2.0` |
 | [`vikunja-provision`](crates/vikunja-provision) | Vikunja teams and memberships via the API | `MIT OR Apache-2.0` |
 | [`forgejo-provision`](crates/forgejo-provision) | Forgejo SSH public keys via the administrative API | `MIT OR Apache-2.0` |
+| [`provenance-oauth`](crates/provenance-oauth) | Host/user-scoped OAuth enrollment, refresh, and access-only app adapters | `MIT OR Apache-2.0` |
 
 See [LICENSING.md](LICENSING.md) for the per-path SPDX map and the
 permissive-core rule. See [docs/architecture.md](docs/architecture.md) for the
@@ -65,6 +66,11 @@ tenant taxonomy and the add-a-tenant checklist.
   backend-agnostic primitives third-party flakes use (see below)
 - `homeModules.fj` — installs nixpkgs' `forgejo-cli` plus its validated Nushell
   completion and provides `nix-provenance.fj.enable`.
+- `packages.<system>.{provenance-oauth,oauth-adapters}`, `nixosModules.oauth`, and
+  `homeModules.oauth` — shared provider authorization for compatible stock
+  applications. OpenAI ChatGPT is supported through OpenCode V2 plugins and OMP
+  extensions. See the [shared OAuth guide](docs/src/guides/shared-oauth.md) for
+  enrollment, recovery, and the host/user trust boundary.
 
 Enable the CLI in Home Manager, then add a CodeFloe application token
 interactively:
