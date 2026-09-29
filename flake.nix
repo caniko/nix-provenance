@@ -50,6 +50,10 @@
         };
         inherit (toolchain) rustToolchain craneLib;
         cross = harbor-rs.lib.mkCross {inherit pkgs system;};
+        opencodeLspShell = harbor-rs.inputs.nix-opencode-lsp.lib.mkShell {
+          inherit pkgs;
+          rustAnalyzer = rustToolchain;
+        };
         src = craneLib.cleanCargoSource ./.;
 
         crates = import ./nix/packages.nix {
@@ -164,6 +168,7 @@
         devShells.default = harbor-rs.lib.mkDevShell {
           inherit pkgs craneLib cross;
           packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook pkgs.dbus];
+          extraShellHook = opencodeLspShell.shellHook;
           cargoConfig = harbor-rs.lib.mkCargoConfig {
             inherit pkgs;
             channel = "nightly";
