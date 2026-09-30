@@ -105,6 +105,9 @@ impl TuwunelClient {
 
         match self.try_register(localpart, password, true, None) {
             Ok(token) => Ok(token),
+            Err(e) if is_user_in_use(&e) => self
+                .login_password(localpart, password)
+                .with_context(|| format!("logging into existing admin user {localpart}")),
             Err(e) => {
                 if let Some(session) = extract_session_id(&e) {
                     eprintln!(
@@ -278,6 +281,19 @@ impl TuwunelClient {
                 Ok(())
             }
             Err(e) => {
+                if is_user_in_use(&e) {
+                    self.login_password(localpart, password)
+                        .with_context(|| format!("verifying existing user {user_id}"))?;
+                    if let Some(dn) = display_name
+                        && let Err(e) = self.set_display_name(user_id, dn)
+                    {
+                        eprintln!(
+                            "tuwunel-provision: warning — failed to set display name \
+                             for {user_id} after existing-user reconciliation: {e}"
+                        );
+                    }
+                    return Ok(());
+                }
                 if let Some(session) = extract_session_id(&e) {
                     self.try_register(localpart, password, admin, Some(&session))?;
                     if let Some(dn) = display_name
@@ -412,7 +428,6 @@ fn extract_session_id(err: &anyhow::Error) -> Option<String> {
     None
 }
 
-#[cfg(test)]
 fn is_user_in_use(err: &anyhow::Error) -> bool {
     err.chain()
         .map(|cause| format!("{cause}"))
@@ -455,6 +470,82 @@ pub fn registration_required(err: &anyhow::Error) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn existing_accounts_require_successful_password_login() {
+        for admin in [true, false] {
+            for accepted in [true, false] {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let url = format!("http://{}", listener.local_addr().unwrap());
+                let server = std::thread::spawn(move || {
+                    for step in 0..2 {
+                        let (mut stream, _) = listener.accept().unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let mut reader = BufReader::new(&stream);
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        assert_eq!(
+                            line.trim(),
+                            if step == 0 {
+                                "POST /_matrix/client/v3/register HTTP/1.1"
+                            } else {
+                                "POST /_matrix/client/v3/login HTTP/1.1"
+                            }
+                        );
+                        let mut length = 0;
+                        loop {
+                            line.clear();
+                            reader.read_line(&mut line).unwrap();
+                            if line == "\r\n" {
+                                break;
+                            }
+                            if let Some(value) =
+                                line.to_ascii_lowercase().strip_prefix("content-length:")
+                            {
+                                length = value.trim().parse::<usize>().unwrap();
+                            }
+                        }
+                        let mut body = vec![0; length];
+                        reader.read_exact(&mut body).unwrap();
+                        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                        if step == 1 {
+                            assert_eq!(body["identifier"]["user"], "alice");
+                            assert_eq!(body["password"], "fixture-password");
+                        }
+                        let (status, response) = if step == 0 {
+                            (
+                                400,
+                                json!({"errcode":"M_USER_IN_USE", "error":"already exists"}),
+                            )
+                        } else if accepted {
+                            (200, json!({"access_token":"fixture-access"}))
+                        } else {
+                            (
+                                403,
+                                json!({"errcode":"M_FORBIDDEN", "error":"wrong password"}),
+                            )
+                        };
+                        let response = response.to_string();
+                        write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                    }
+                });
+                let client = TuwunelClient::new_without_auth(&url).unwrap();
+                let result = if admin {
+                    client
+                        .register_admin("@alice:example.test", "fixture-password")
+                        .map(|_| ())
+                } else {
+                    client.register_fallback("@alice:example.test", "fixture-password", false, None)
+                };
+                assert_eq!(result.is_ok(), accepted);
+                server.join().unwrap();
+            }
+        }
+    }
 
     #[test]
     fn register_response_deserializes_access_token() {
