@@ -38,10 +38,10 @@ jobs:
         run: nix flake check
 
       - name: Test
-        run: nix develop -c cargo test -p vikunja-provision
+        run: nix develop -c cargo test -p provenance-oauth
 
       - name: Clippy
-        run: nix develop -c cargo clippy -p vikunja-provision --all-targets -- --deny warnings
+        run: nix develop -c cargo clippy -p provenance-oauth --all-targets -- --deny warnings
 
       - name: Package crate
-        run: nix develop -c cargo package -p vikunja-provision --allow-dirty --list
+        run: nix develop -c cargo package -p provenance-oauth --allow-dirty --list
