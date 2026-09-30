@@ -686,7 +686,7 @@ in
 
     # The third-party adapter must derive the pink-raven rauthy users (can keyed by
     # kanidm login, eric/caroline emailed a set-password link) and the kanidm-backend
-    # OAuth2 federation client + person, all from the uniform user schema.
+    # OAuth2 federation client + host-owned group member, all from the uniform user schema.
     adapter-module-eval = let
       svc = adapterEval.config.systemd.services.rauthy-provision;
       serviceConfig = builtins.toJSON svc.serviceConfig;
@@ -695,41 +695,43 @@ in
       kanidmOauth2 = builtins.toJSON adapterEval.config.services.kanidm.provision.systems.oauth2;
       kanidmPersons = builtins.toJSON adapterEval.config.services.kanidm.provision.persons;
     in
-      runCommand "adapter-module-eval" {} ''
-        users=${lib.escapeShellArg rauthyUsers}
-        rendered_state=$(cat ${lib.escapeShellArg renderedStateFile})
-        oauth2=${lib.escapeShellArg kanidmOauth2}
-        persons=${lib.escapeShellArg kanidmPersons}
-        service=${lib.escapeShellArg serviceConfig}
-        for e in can@tartanoglu.com efirley@protonmail.com carolinestahl@gmx.net bot@example.com; do
-          printf '%s' "$users" | grep -q "$e" || { echo "adapter: rauthy user $e missing" >&2; exit 1; }
-        done
-        # eric + caroline get an emailed set-password link; can does not.
-        printf '%s' "$users" | grep -q '"sendPasswordEmail":true' \
-          || { echo "adapter: no emailed (passwordInitByEmail) rauthy user rendered" >&2; exit 1; }
-        printf '%s' "$users" | grep -q '"requiredAuthProvider":"kanidm"' \
-          || { echo "adapter: kanidmLogin user missing requiredAuthProvider marker" >&2; exit 1; }
-        ! printf '%s' "$users" | grep -oE '"efirley@protonmail.com":\{[^}]*\}' | grep -q 'requiredAuthProvider' \
-          || { echo "adapter: passwordInitByEmail user must not carry requiredAuthProvider" >&2; exit 1; }
-        printf '%s' "$rendered_state" | grep -q '"required_auth_provider":"kanidm"' \
-          || { echo "adapter: requiredAuthProvider did not render into provision state" >&2; exit 1; }
-        printf '%s' "$rendered_state" | grep -q '/run/credentials/rauthy-provision.service/password-bot' \
-          || { echo "adapter: passwordFromFile did not render runtime password path" >&2; exit 1; }
-        printf '%s' "$rendered_state" | grep -q '"initial_password_file"' \
-          || { echo "adapter: passwordFromFile did not render initial_password_file" >&2; exit 1; }
-        ! printf '%s' "$rendered_state" | grep -q '"password_file"' \
-          || { echo "adapter: passwordFromFile rendered obsolete password_file" >&2; exit 1; }
-        printf '%s' "$service" | grep -q '/run/agenix/pink-raven-bot-password' \
-          || { echo "adapter: passwordFromFile LoadCredential source missing" >&2; exit 1; }
-        printf '%s' "$rendered_state" | grep -q '"post_logout_redirect_uris":\["https://raven.tartanoglu.com/"\]' \
-          || { echo "adapter: pink-raven post-logout redirect missing" >&2; exit 1; }
-        printf '%s' "$rendered_state" | grep -q '"allowed_origins":\["https://raven.tartanoglu.com"\]' \
-          || { echo "adapter: pink-raven allowed origin missing" >&2; exit 1; }
-        # kanidm backend rendered an OAuth2 federation client + its person.
-        printf '%s' "$oauth2"  | grep -q 'internal-tool'   || { echo "adapter: kanidm oauth2 system missing" >&2; exit 1; }
-        printf '%s' "$persons" | grep -q 'dejana'          || { echo "adapter: kanidm person missing" >&2; exit 1; }
-        touch $out
-      '';
+      assert !(adapterEval.config.services.kanidm.provision.persons ? dejana);
+      assert adapterEval.config.services.kanidm.provision.groups.internal-tool-users.members == ["dejana"];
+        runCommand "adapter-module-eval" {} ''
+          users=${lib.escapeShellArg rauthyUsers}
+          rendered_state=$(cat ${lib.escapeShellArg renderedStateFile})
+          oauth2=${lib.escapeShellArg kanidmOauth2}
+          persons=${lib.escapeShellArg kanidmPersons}
+          service=${lib.escapeShellArg serviceConfig}
+          for e in can@tartanoglu.com efirley@protonmail.com carolinestahl@gmx.net bot@example.com; do
+            printf '%s' "$users" | grep -q "$e" || { echo "adapter: rauthy user $e missing" >&2; exit 1; }
+          done
+          # eric + caroline get an emailed set-password link; can does not.
+          printf '%s' "$users" | grep -q '"sendPasswordEmail":true' \
+            || { echo "adapter: no emailed (passwordInitByEmail) rauthy user rendered" >&2; exit 1; }
+          printf '%s' "$users" | grep -q '"requiredAuthProvider":"kanidm"' \
+            || { echo "adapter: kanidmLogin user missing requiredAuthProvider marker" >&2; exit 1; }
+          ! printf '%s' "$users" | grep -oE '"efirley@protonmail.com":\{[^}]*\}' | grep -q 'requiredAuthProvider' \
+            || { echo "adapter: passwordInitByEmail user must not carry requiredAuthProvider" >&2; exit 1; }
+          printf '%s' "$rendered_state" | grep -q '"required_auth_provider":"kanidm"' \
+            || { echo "adapter: requiredAuthProvider did not render into provision state" >&2; exit 1; }
+          printf '%s' "$rendered_state" | grep -q '/run/credentials/rauthy-provision.service/password-bot' \
+            || { echo "adapter: passwordFromFile did not render runtime password path" >&2; exit 1; }
+          printf '%s' "$rendered_state" | grep -q '"initial_password_file"' \
+            || { echo "adapter: passwordFromFile did not render initial_password_file" >&2; exit 1; }
+          ! printf '%s' "$rendered_state" | grep -q '"password_file"' \
+            || { echo "adapter: passwordFromFile rendered obsolete password_file" >&2; exit 1; }
+          printf '%s' "$service" | grep -q '/run/agenix/pink-raven-bot-password' \
+            || { echo "adapter: passwordFromFile LoadCredential source missing" >&2; exit 1; }
+          printf '%s' "$rendered_state" | grep -q '"post_logout_redirect_uris":\["https://raven.tartanoglu.com/"\]' \
+            || { echo "adapter: pink-raven post-logout redirect missing" >&2; exit 1; }
+          printf '%s' "$rendered_state" | grep -q '"allowed_origins":\["https://raven.tartanoglu.com"\]' \
+            || { echo "adapter: pink-raven allowed origin missing" >&2; exit 1; }
+          # Host-owned persons are attached to their group without redefining them.
+          printf '%s' "$oauth2"  | grep -q 'internal-tool'   || { echo "adapter: kanidm oauth2 system missing" >&2; exit 1; }
+          ! printf '%s' "$persons" | grep -q 'dejana'        || { echo "adapter: host-owned kanidm person was redefined" >&2; exit 1; }
+          touch $out
+        '';
 
     # The Immich patch must still apply cleanly against pkgs.immich.src.
     immich-patch-applies = runCommand "immich-patch-applies" {nativeBuildInputs = [pkgs.patch];} ''
@@ -783,6 +785,14 @@ in
       '';
   }
   // lib.optionalAttrs (system == "x86_64-linux") {
+    identity-cli-cross-kanidm-args = let
+      package = identityCrossPackageSet."identity-cli-aarch64-linux";
+    in
+      assert args.identity-cli.cargoExtraArgs == "-p identity-cli";
+      assert lib.hasInfix "-p identity-cli --no-default-features --features kanidm" package.buildPhase;
+      assert package.CARGO_BUILD_TARGET == "aarch64-unknown-linux-gnu";
+      assert package.stdenv.hostPlatform.system == "aarch64-linux";
+        runCommand "identity-cli-cross-kanidm-args" {} "touch $out";
     # Keep the target package in the ordinary flake check graph so a future
     # change cannot silently reintroduce host objects into the target linker.
     identity-cli-aarch64-linux = runCommand "identity-cli-aarch64-linux-package" {} ''

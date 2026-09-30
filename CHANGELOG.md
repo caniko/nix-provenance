@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Preserve host-owned Kanidm profiles, existing Tuwunel account reconciliation,
+  and the Kanidm-only aarch64 identity CLI configuration when consuming trunk.
 - Direnv loads the Rust tools and OpenCode LSP configuration through one shell,
   preventing repeated cache invalidation between the two shell loads.
 
