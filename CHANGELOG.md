@@ -11,6 +11,8 @@
 
 ### Added
 
+- Nullable Stalwart 0.16 listener PROXY trust overrides, with explicit set,
+  replace, unmanaged, and clear semantics and isolated HAProxy/mail fixtures.
 - A reusable treefmt module for the repository's Alejandra formatting policy.
 - Host/user-scoped OpenAI ChatGPT OAuth enrollment with serialized refresh,
   rollback fencing, encrypted recovery checkpoints, and access-only adapters for
