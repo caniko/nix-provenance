@@ -100,6 +100,40 @@ nix-provenance.fj.applicationToken = {
 };
 ```
 
+## Stalwart 0.16 listener PROXY trust
+
+On an explicitly declared listener, `proxyTrustedNetworks` restricts which
+connection sources may supply a HAProxy PROXY header:
+
+```nix
+services.stalwart016.listeners.submission = {
+  bind = ["10.77.0.2:587"];
+  protocol = "smtp";
+  useTls = true;
+  proxyTrustedNetworks = ["10.77.0.1/32"];
+};
+```
+
+Declare the other required listeners alongside it. The addresses above are
+examples; use the enrolled proxy's exact transport address and restrict listener
+admission separately in the firewall. Trusting a proxy supplies client metadata,
+not SMTP relay permission or application authentication. HAProxy sends the header
+with `send-proxy`, before STARTTLS or implicit TLS. Health probes from a trusted
+source also need that header.
+
+The option has three reconciliation states:
+
+- `null` (default): leave the listener's registry override unmanaged.
+- A nonempty list: replace `overrideProxyTrustedNetworks` with that exact set.
+- `[]`: clear the listener override and inherit
+  `SystemSettings.proxyTrustedNetworks`. Clearing does **not** disable a nonempty
+  system-wide trust policy. Keep the system setting empty for listener-only trust.
+
+`stalwart016-proxy-eval` checks serialization and invalid address rejection.
+`stalwart016-proxy-vmtest` exercises the actual Stalwart/HAProxy listeners,
+STARTTLS/IMAPS, client identity, relay rejection and set/unmanaged/replace/clear
+transitions. The fixture generates its credentials inside the test VM.
+
 ## Third-party adapter (`lib.adapter` / `nixosModules.externalApp`)
 
 For **non-OSS or out-of-scope apps that should not earn a tenant** here (e.g.

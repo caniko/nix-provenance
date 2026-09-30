@@ -16,11 +16,38 @@
   credentialPath = name: "/run/credentials/stalwart.service/${name}";
   postgres = cfg.datastore.postgresql;
 
+  octet = "(0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])";
+  proxyNetworkType = types.addCheck (types.strMatching "[0-9a-fA-F.:/]+") (value: let
+    parts = lib.splitString "/" value;
+    address = builtins.head parts;
+    v6 = lib.hasInfix ":" address;
+    validAddress =
+      if v6
+      then (builtins.tryEval (builtins.deepSeq (lib.network.ipv6.fromString address) true)).success
+      else builtins.match "${octet}\\.${octet}\\.${octet}\\.${octet}" address != null;
+    prefix = builtins.elemAt parts 1;
+  in
+    builtins.length parts
+    <= 2
+    && validAddress
+    && (builtins.length parts
+      == 1
+      || (
+        builtins.match "(0|[1-9][0-9]*)" prefix
+        != null
+        && lib.toInt prefix
+        <= (
+          if v6
+          then 128
+          else 32
+        )
+      )));
+
   bootstrapConfig = json.generate "stalwart016-bootstrap.json" {
     "@type" = "PostgreSql";
-    host = postgres.host;
-    port = postgres.port;
-    database = postgres.database;
+    inherit (postgres) host;
+    inherit (postgres) port;
+    inherit (postgres) database;
     authUsername = postgres.username;
     authSecret =
       if postgres.passwordFile == null
@@ -29,9 +56,9 @@
         "@type" = "File";
         filePath = credentialPath postgres.passwordCredential;
       };
-    useTls = postgres.useTls;
-    allowInvalidCerts = postgres.allowInvalidCerts;
-    poolMaxConnections = postgres.poolMaxConnections;
+    inherit (postgres) useTls;
+    inherit (postgres) allowInvalidCerts;
+    inherit (postgres) poolMaxConnections;
   };
 
   # JSON config for the Rust provisioner binary (generated at eval time,
@@ -46,7 +73,7 @@
     migration_apply_files = map toString migrationApplyFiles;
     stalwart_binary = lib.getExe cfg.package;
     stalwart_config = "/etc/stalwart016/config.json";
-    hostname = cfg.hostname;
+    inherit (cfg) hostname;
     stalwart_cli_binary = lib.getExe cfg.cliPackage;
     recovery_url = cfg.provision.recoveryUrl;
     recovery_admin_username = cfg.recoveryAdmin.username;
@@ -71,12 +98,15 @@
   enabledListeners =
     lib.filterAttrs (_: listener: listener.enable) cfg.listeners;
 
-  listenerCreateValue =
-    lib.mapAttrs (_: listener: {
+  listenerCreateValue = lib.mapAttrs (_: listener:
+    {
       inherit (listener) name protocol useTls tlsImplicit;
       bind = lib.genAttrs listener.bind (_: true);
+    }
+    // lib.optionalAttrs (listener.proxyTrustedNetworks != null) {
+      overrideProxyTrustedNetworks = lib.genAttrs listener.proxyTrustedNetworks (_: true);
     })
-    enabledListeners;
+  enabledListeners;
 
   listenerOps = lib.optional (listenerCreateValue != {}) {
     "@type" = "upsert";
@@ -89,12 +119,14 @@
     "@type" = "upsert";
     object = "OAuthClient";
     matchOn = ["clientId"];
-    value = lib.mapAttrs (_: client: {
-      clientId = client.clientId;
-      description = client.description;
-      redirectUris = lib.genAttrs client.redirectUris (_: true);
-      contacts = lib.genAttrs client.contacts (_: true);
-    }) cfg.oidc.clients;
+    value =
+      lib.mapAttrs (_: client: {
+        inherit (client) clientId;
+        inherit (client) description;
+        redirectUris = lib.genAttrs client.redirectUris (_: true);
+        contacts = lib.genAttrs client.contacts (_: true);
+      })
+      cfg.oidc.clients;
   };
 
   generatedPlan = listenerOps ++ cfg.provision.registryConfig ++ oauthClientOps;
@@ -323,6 +355,22 @@ in {
             type = types.bool;
             default = false;
             description = "Whether TLS is implicit rather than STARTTLS / cleartext.";
+          };
+
+          proxyTrustedNetworks = mkOption {
+            type = types.nullOr (types.listOf proxyNetworkType);
+            default = null;
+            example = ["10.77.0.1/32"];
+            description = ''
+              Sources trusted to send PROXY protocol on this listener. Null
+              leaves overrideProxyTrustedNetworks unmanaged. A nonempty list
+              replaces the listener override. An empty list clears the override
+              and inherits SystemSettings.proxyTrustedNetworks; it does not
+              disable system-level trust. Restrict origin access separately and
+              keep system-level trust empty when listener-scoped trust is used.
+              A connection from a trusted source must supply the PROXY header
+              before SMTP/IMAP and before TLS, including health probes.
+            '';
           };
         };
       }));
@@ -572,12 +620,14 @@ in {
       after = ["network.target"] ++ lib.optional postgres.createLocally "postgresql.target";
       wants = lib.optional postgres.createLocally "postgresql.target";
       bindsTo = lib.optional postgres.createLocally "postgresql.service";
-      environment = {
-        STALWART_HOSTNAME = cfg.hostname;
-        HOME = "/var/lib/stalwart016";
-      } // lib.optionalAttrs (cfg.publicUrl != null) {
-        STALWART_PUBLIC_URL = cfg.publicUrl;
-      };
+      environment =
+        {
+          STALWART_HOSTNAME = cfg.hostname;
+          HOME = "/var/lib/stalwart016";
+        }
+        // lib.optionalAttrs (cfg.publicUrl != null) {
+          STALWART_PUBLIC_URL = cfg.publicUrl;
+        };
 
       serviceConfig = {
         Type = "simple";
