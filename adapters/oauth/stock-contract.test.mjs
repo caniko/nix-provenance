@@ -12,6 +12,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { zstdDecompressSync } from "node:zlib";
 
 function run(...args) {
   const result = promisify(execFile)(...args);
@@ -67,9 +68,11 @@ test("stock OpenCode uses native ChatGPT requests with access-only credentials",
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` };
   const captured = [];
   const upstream = createServer(async (request, response) => {
-    let body = "";
-    for await (const chunk of request) body += chunk;
-    captured.push({ headers: request.headers, body: JSON.parse(body) });
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const wire = Buffer.concat(chunks);
+    const body = request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(wire) : wire;
+    captured.push({ headers: request.headers, body: JSON.parse(body.toString("utf8")) });
     const message = { id: "msg_fixture", type: "message", role: "assistant", status: "completed",
       content: [{ type: "output_text", text: "shared-oauth-ok", annotations: [] }] };
     const complete = { id: "resp_fixture", object: "response", created_at: 1, status: "completed",
@@ -138,7 +141,7 @@ export default { id: "oauth-test.capture", async setup(ctx) {
   }
 });
 
-test("stock OMP preserves Codex models and reruns the access command on auth retry", { timeout: 60000 }, async () => {
+test("stock OMP preserves Codex models and reruns the access command on forced credential refresh", { timeout: 60000 }, async () => {
   assert.ok(process.env.OMP_BIN?.startsWith("/"), "Set OMP_BIN to the original binary (without a profile wrapper)");
   const f = await fixture();
   const extension = path.join(f.root, "contract.ts");
@@ -166,4 +169,67 @@ export default function (pi) {
   assert.doesNotMatch(result.stderr, /Failed to load extension/);
   assert.match(result.stdout, /openai-codex/);
   assert.deepEqual(JSON.parse(await readFile(proof, "utf8")), { received: true, cached: true, refreshed: true });
+});
+
+test("stock OMP retries a rejected bearer through the shared access command", { timeout: 60000 }, async (t) => {
+  assert.ok(process.env.OMP_BIN?.startsWith("/"), "Set OMP_BIN to the original binary (without a profile wrapper)");
+  const f = await fixture();
+  const captured = [];
+  const upstream = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const wire = Buffer.concat(chunks);
+    const body = request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(wire) : wire;
+    captured.push({ headers: request.headers, body: JSON.parse(body.toString("utf8")) });
+    if (captured.length === 1) {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "Fixture bearer expired", type: "authentication_error" } }));
+      return;
+    }
+    const message = { id: "msg_fixture", type: "message", role: "assistant", status: "completed",
+      content: [{ type: "output_text", text: "shared-oauth-retry-ok", annotations: [] }] };
+    const complete = { id: "resp_fixture", object: "response", created_at: 1, status: "completed",
+      model: "gpt-5.5", output: [message], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+    const events = [
+      { type: "response.created", response: { ...complete, status: "in_progress", output: [] } },
+      { type: "response.output_item.added", output_index: 0, item: { ...message, status: "in_progress", content: [] } },
+      { type: "response.content_part.added", item_id: message.id, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } },
+      { type: "response.output_text.delta", item_id: message.id, output_index: 0, content_index: 0, delta: "shared-oauth-retry-ok" },
+      { type: "response.output_text.done", item_id: message.id, output_index: 0, content_index: 0, text: "shared-oauth-retry-ok" },
+      { type: "response.output_item.done", output_index: 0, item: message },
+      { type: "response.completed", response: complete },
+    ];
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(events.map((event, sequence_number) => `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`).join(""));
+  });
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  t.after(() => upstream.close());
+  const extension = path.join(f.root, "retry-contract.ts");
+  await writeFile(extension, `
+import { install } from ${JSON.stringify(path.join(adapters, "omp.mjs"))};
+export default function (pi) {
+  install(pi, ${JSON.stringify({ command: f.helper, configFile: f.configFile })});
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url !== "https://chatgpt.com/backend-api/codex/responses") throw new Error("Unexpected fixture endpoint");
+    const local = "http://127.0.0.1:${upstream.address().port}/responses";
+    return originalFetch(input instanceof Request ? new Request(local, input) : local, init);
+  };
+}
+`);
+  const result = await run(process.env.OMP_BIN, ["--print", "--no-session", "--no-title", "--no-tools", "--no-lsp", "--no-skills", "--no-rules", "--no-extensions", "--extension", extension, "--model", "openai-codex/gpt-5.5", "--thinking", "off", "Reply with the fixture text"], {
+    cwd: f.root, env: { ...f.env, PI_CODEX_WEBSOCKET: "0" }, timeout: 50000, maxBuffer: 8 * 1024 * 1024,
+  });
+  assert.match(result.stdout + result.stderr, /shared-oauth-retry-ok/);
+  assert.equal(captured.length, 2, "one rejected request followed by one successful retry");
+  assert.notEqual(captured[0].headers.authorization, captured[1].headers.authorization);
+  assert.equal(await readFile(f.countFile, "utf8"), "2", "retry reran the shared access helper");
+  for (const request of captured) {
+    assert.match(request.headers.authorization, /^Bearer fixture\./);
+    assert.equal(request.headers["chatgpt-account-id"], "fixture-account");
+    assert.equal(request.body.store, false);
+    assert.ok(Array.isArray(request.body.input));
+  }
 });

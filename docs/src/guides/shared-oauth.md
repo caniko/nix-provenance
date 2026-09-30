@@ -184,7 +184,8 @@ The opt-in `adapters/oauth/stock-contract.test.mjs` runs the actual installed
 OpenCode and OMP binaries with isolated homes and explicit test-only credentials.
 Set `OAUTH_TEST_TMPDIR`, `OPENCODE_BIN`, and `OMP_BIN` to approved scratch and
 unwrapped binary paths, then run it with `node --test`. It verifies native
-OpenCode Responses traffic against a local fixture and OMP auth-retry command
-resolution. Tested stock versions are OpenCode `f18083c78e54e65907000ab5a9ca4472b723ee7f`
+OpenCode and OMP Responses traffic against local fixtures, OMP's forced command
+refresh, and an HTTP 401 retry with a newly resolved bearer. Tested stock versions
+are OpenCode `f18083c78e54e65907000ab5a9ca4472b723ee7f`
 and OMP `18.1.16` (`61b1b8aef634334eaf1412afd003a763e1d1b9c1`). A live provider
 authorization and authenticated request remain a separate enrollment check.
