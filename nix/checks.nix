@@ -50,6 +50,7 @@
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
+  tuwunelPrivateRoomsVmTest = import ./modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
   stalwartOauthBootstrapPasswordFile = "\${XDG_RUNTIME_DIR}/agenix/stalwart_account_can";
 
@@ -642,6 +643,8 @@ in
         printf '%s' "$script" | grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token'
         touch $out
       '';
+
+    tuwunel-private-rooms-vmtest = tuwunelPrivateRoomsVmTest;
 
     tuwunel-module-eval = let
       svc = tuwunelEval.config.systemd.services.tuwunel;

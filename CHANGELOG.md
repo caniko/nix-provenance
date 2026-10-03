@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Room-owner login reuses the initialized HTTP transport so construction cannot
+  fail between login and the reconciliation/logout path.
 - Private-room verification no longer mistakes unrelated state events for
   encryption or access policy.
 - Direnv now uses the locked flake inputs without requiring a sibling
@@ -15,6 +17,8 @@
 
 ### Added
 
+- Protocol regression tests and a disposable Tuwunel VM gate cover private-room
+  creation, observed-ID pinning, unsafe-state rejection and device logout.
 - Tuwunel can create initially encrypted, invite-only rooms as a declared
   service account, verify live membership, and pin their observed room IDs.
   Reconciliation refuses alias drift and unsuitable existing rooms and logs
