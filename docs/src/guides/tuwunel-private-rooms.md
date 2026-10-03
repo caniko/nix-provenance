@@ -62,9 +62,10 @@ Qualify these exact outputs on the producer's hosted PR:
 - `.#checks.x86_64-linux.tuwunel-module-eval`
 - `.#checks.x86_64-linux.tuwunel-private-rooms-vmtest`
 
-Add those installables to `[ci].nix_builds` in `simit.toml`, retaining per-crate
-CI. The matrix policy is supported by Simit
-`beea3e284a613d46468779bd998e51be2d63566c`:
+Those installables are declared in `[ci].nix_builds` in `simit.toml`, retaining
+per-crate CI. The committed workflows were generated using native Simit 0.19.0
+at `d76c7ce0e34c0e3fa90ab0fe6010f190f49aba50` (merged PR #30), through the
+generator checkout's approved direnv environment. The matrix policy is:
 
 ```toml
 [ci.nix_build]
@@ -78,13 +79,17 @@ capture_results = true
 artifact_retention_days = 14
 ```
 
-Generate and verify workflows through that immutable generator:
+Generate and verify through a clean Simit checkout at that revision. Replace
+`/path/to/simit` with the checkout path; the working directory remains this
+repository:
 
 ```sh
-nix run github:caniko/simit/beea3e284a613d46468779bd998e51be2d63566c -- init ci --package tuwunel-provision
-nix run github:caniko/simit/beea3e284a613d46468779bd998e51be2d63566c -- init ci --package tuwunel-provision --check --diff
+direnv exec /path/to/simit cargo run --manifest-path /path/to/simit/Cargo.toml -- init ci --workspace
+direnv exec /path/to/simit cargo run --manifest-path /path/to/simit/Cargo.toml -- init ci --workspace --check --diff
 ```
 
+Use `--workspace`: package-only generation reconciles the managed workflow
+inventory to the selected package and removes the unselected member workflows.
 These are qualification instructions, not passing receipts. If the generator
 is unavailable, leave generated workflows unchanged and report the blocker.
 Consume a published revision only after the required gates pass for that exact
