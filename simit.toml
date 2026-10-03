@@ -3,9 +3,19 @@ provider = "actions"
 platform = "github"
 runtime = "nix"
 runner = "ubuntu-24.04"
-workspace = true
 publish_crates = true
 all_features = false
+nix_builds = [".#packages.x86_64-linux.tuwunel-provision", ".#checks.x86_64-linux.tuwunel-provision-test", ".#checks.x86_64-linux.tuwunel-provision-clippy", ".#checks.x86_64-linux.tuwunel-module-eval", ".#checks.x86_64-linux.tuwunel-private-rooms-vmtest"]
+workspace = true
+
+[ci.nix_build]
+kvm = true
+capture_results = true
+timeout_minutes = 90
+max_parallel = 1
+max_jobs = 1
+cores = 2
+artifact_retention_days = 14
 
 [ci.pages]
 repo = "caniko/nix-provenance"

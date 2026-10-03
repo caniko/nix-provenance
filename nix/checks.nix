@@ -50,6 +50,7 @@
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
+  tuwunelPrivateRoomsVmTest = import ./modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
   stalwartOauthBootstrapPasswordFile = "\${XDG_RUNTIME_DIR}/agenix/stalwart_account_can";
 
@@ -643,6 +644,8 @@ in
         touch $out
       '';
 
+    tuwunel-private-rooms-vmtest = tuwunelPrivateRoomsVmTest;
+
     tuwunel-module-eval = let
       svc = tuwunelEval.config.systemd.services.tuwunel;
       provisionSvc = tuwunelEval.config.systemd.services.tuwunel-provision;
@@ -681,6 +684,10 @@ in
           || { echo "tuwunel: Matrix alert room missing from provision state" >&2; exit 1; }
         grep -q '"@matrix-alerts:matrix.example.com"' "$state_file" \
           || { echo "tuwunel: Matrix alert room invite missing from provision state" >&2; exit 1; }
+        grep -q '"creator":"iris","encrypted":true' "$state_file" \
+          || { echo "tuwunel: encrypted owner-created room policy missing" >&2; exit 1; }
+        grep -q '"alias":"#hermes-iris:matrix.example.com"' "$state_file" \
+          || { echo "tuwunel: owner-created room alias missing" >&2; exit 1; }
         touch $out
       '';
 
