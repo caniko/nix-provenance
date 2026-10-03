@@ -313,9 +313,27 @@ impl RegistrationBootstrap {
         }))
     }
 
-    fn with_registration_enabled<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        self.reload_from(&self.open_config, "enable public registration")?;
-        let result = f();
+    fn with_registration_enabled<T>(&self, mut f: impl FnMut() -> Result<T>) -> Result<T> {
+        let result = (|| {
+            self.reload_from(&self.open_config, "enable public registration")?;
+            // SIGUSR2 schedules an asynchronous admin command. A fixed delay
+            // does not prove registration has opened, especially on a busy VM.
+            // Only the explicit pre-mutation refusal is safe to retry;
+            // transport errors could mean registration already succeeded.
+            let mut result = f();
+            for _ in 1..20 {
+                if !result.as_ref().err().is_some_and(|err| {
+                    err.chain()
+                        .any(|cause| cause.to_string() == "registration_disabled")
+                }) {
+                    break;
+                }
+                sleep(Duration::from_millis(250));
+                result = f();
+            }
+            result
+        })();
+        // Even a failed signal can follow writing the open runtime config.
         let restore = self.reload_from(&self.closed_config, "disable public registration");
 
         match (result, restore) {
@@ -502,4 +520,98 @@ fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn bootstrap_fixture(dir: &Path) -> RegistrationBootstrap {
+        let systemctl = dir.join("systemctl");
+        fs::write(&systemctl, "#!/usr/bin/env sh\nexit 0\n").unwrap();
+        fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o700)).unwrap();
+        let fixture = RegistrationBootstrap {
+            open_config: dir.join("open.toml"),
+            closed_config: dir.join("closed.toml"),
+            runtime_config: dir.join("runtime.toml"),
+            systemctl,
+            service: "fixture.service".into(),
+        };
+        fs::write(&fixture.open_config, "allow_registration = true").unwrap();
+        fs::write(&fixture.closed_config, "allow_registration = false").unwrap();
+        fixture
+    }
+
+    #[test]
+    fn delayed_registration_reload_succeeds_and_restores_closed_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = bootstrap_fixture(dir.path());
+        let attempts = Cell::new(0);
+        let result = fixture.with_registration_enabled(|| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 3 {
+                Err(anyhow::anyhow!("registration_disabled").context("registering fixture"))
+            } else {
+                Ok("fixture-token")
+            }
+        });
+        assert_eq!(result.unwrap(), "fixture-token");
+        assert_eq!(
+            fs::read(&fixture.runtime_config).unwrap(),
+            fs::read(&fixture.closed_config).unwrap()
+        );
+    }
+
+    #[test]
+    fn ambiguous_registration_failure_is_not_retried_and_restores_closed_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = bootstrap_fixture(dir.path());
+        let attempts = Cell::new(0);
+        let result: Result<()> = fixture.with_registration_enabled(|| {
+            attempts.set(attempts.get() + 1);
+            Err(anyhow::anyhow!(
+                "connection lost after registration request"
+            ))
+        });
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(
+            fs::read(&fixture.runtime_config).unwrap(),
+            fs::read(&fixture.closed_config).unwrap()
+        );
+    }
+
+    #[test]
+    fn registration_never_opens_fails_within_bound_and_restores_closed_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = bootstrap_fixture(dir.path());
+        let attempts = Cell::new(0);
+        let result: Result<()> = fixture.with_registration_enabled(|| {
+            attempts.set(attempts.get() + 1);
+            Err(anyhow::anyhow!("registration_disabled"))
+        });
+        assert!(registration_required(&result.unwrap_err()));
+        assert!(attempts.get() > 1 && attempts.get() <= 20);
+        assert_eq!(
+            fs::read(&fixture.runtime_config).unwrap(),
+            fs::read(&fixture.closed_config).unwrap()
+        );
+    }
+
+    #[test]
+    fn failed_open_signal_still_restores_closed_runtime_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = bootstrap_fixture(dir.path());
+        fs::write(&fixture.systemctl, "#!/usr/bin/env sh\nexit 1\n").unwrap();
+        let result: Result<()> = fixture.with_registration_enabled(|| {
+            panic!("must not register after failing to signal the server");
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(&fixture.runtime_config).unwrap(),
+            fs::read(&fixture.closed_config).unwrap()
+        );
+    }
 }

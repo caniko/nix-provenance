@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Tuwunel registration bootstrap tolerates delayed asynchronous config reloads
+  with bounded retries of explicit registration-disabled refusals, attempts to
+  restore the closed config after failures, and never retries ambiguous
+  transport errors.
 - Identity CLI featureless and Bitwarden-only builds no longer pull in the
   Kanidm-only generated-secret dependency and its TLS-dependent HTTP helper;
   the Forgejo OIDC secret binary correctly requires the Kanidm feature.

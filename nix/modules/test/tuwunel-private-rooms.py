@@ -57,6 +57,15 @@ def assert_no_provisioning_device(token):
     assert all(device["device_id"] != "TUWUNEL_PROVISION" for device in devices)
 
 
+def assert_registration_closed():
+    denied = api(
+        "POST", "/register",
+        body={"username": "must-not-register", "password": "fixture-unused-password"},
+        expected=403,
+    )
+    assert denied["errcode"] == "M_FORBIDDEN"
+
+
 def main():
     command = subprocess.check_output(
         ["systemctl", "show", "tuwunel-provision.service", "-p", "ExecStart", "--value"],
@@ -99,6 +108,7 @@ def main():
             assert result.returncode != 0, "unsafe reconciliation unexpectedly succeeded"
             assert expected_error in result.stderr, result.stderr
 
+    assert_registration_closed()
     tokens = {user: login(user) for user in ["iris", "argus", "can", "matrix-admin"]}
     try:
         rooms = {}
@@ -151,6 +161,7 @@ def main():
             ["systemctl", "restart", "tuwunel-provision.service"],
             check=True, timeout=60,
         )
+        assert_registration_closed()
         reconcile(state)
         for user in ["iris", "argus"]:
             assert_no_provisioning_device(tokens[user])
