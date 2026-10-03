@@ -681,6 +681,10 @@ in
           || { echo "tuwunel: Matrix alert room missing from provision state" >&2; exit 1; }
         grep -q '"@matrix-alerts:matrix.example.com"' "$state_file" \
           || { echo "tuwunel: Matrix alert room invite missing from provision state" >&2; exit 1; }
+        grep -q '"creator":"iris","encrypted":true' "$state_file" \
+          || { echo "tuwunel: encrypted owner-created room policy missing" >&2; exit 1; }
+        grep -q '"alias":"#hermes-iris:matrix.example.com"' "$state_file" \
+          || { echo "tuwunel: owner-created room alias missing" >&2; exit 1; }
         touch $out
       '';
 

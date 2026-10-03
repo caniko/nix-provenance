@@ -53,6 +53,24 @@
         default = [];
         description = "Matrix user IDs to invite to the room.";
       };
+      creator = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Localpart of a provisioned user that creates and reconciles the room.
+          Use this for private rooms whose membership must exclude the provisioning admin.
+        '';
+      };
+      encrypted = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Require encryption in the initial room state and verify it on reconciliation.";
+      };
+      expectedRoomId = mkOption {
+        type = types.nullOr (types.strMatching "^![^:]+:.+$");
+        default = null;
+        description = "Live room ID pinned after bootstrap; fail if this alias resolves elsewhere.";
+      };
     };
   };
 
@@ -127,7 +145,7 @@
         credential_name = passwords.credentialName name;
       })
       pcfg.users;
-    rooms = pcfg.rooms;
+    inherit (pcfg) rooms;
   });
   registrationBootstrapClosedConfig = toml.generate "tuwunel-provision-registration-closed.toml" {
     global = cfg.settings.global;
@@ -219,7 +237,7 @@ in {
       ];
       identity_provider = lib.mapAttrs (name: provider:
         {
-          brand = provider.brand;
+          inherit (provider) brand;
           client_id = provider.clientId;
           client_secret_file = "/run/credentials/tuwunel.service/${oidcCredentialName name}";
           issuer_url = provider.issuerUrl;

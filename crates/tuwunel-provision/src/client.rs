@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
@@ -45,11 +46,43 @@ struct CreateRoomRequest<'a> {
     room_alias_name: Option<&'a str>,
     visibility: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    preset: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     topic: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     invite: Vec<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    initial_state: Vec<serde_json::Value>,
+}
+
+impl<'a> CreateRoomRequest<'a> {
+    fn new(
+        alias_localpart: &'a str,
+        name: Option<&'a str>,
+        topic: Option<&'a str>,
+        invite: &'a [String],
+        encrypted: bool,
+    ) -> Self {
+        Self {
+            room_alias_name: Some(alias_localpart),
+            visibility: "private",
+            preset: encrypted.then_some("private_chat"),
+            name,
+            topic,
+            invite: invite.iter().map(String::as_str).collect(),
+            initial_state: if encrypted {
+                vec![
+                    serde_json::json!({"type": "m.room.join_rules", "state_key": "", "content": {"join_rule": "invite"}}),
+                    serde_json::json!({"type": "m.room.guest_access", "state_key": "", "content": {"guest_access": "forbidden"}}),
+                    serde_json::json!({"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}}),
+                ]
+            } else {
+                Vec::new()
+            },
+        }
+    }
 }
 
 impl TuwunelClient {
@@ -121,7 +154,18 @@ impl TuwunelClient {
     }
 
     pub fn login_password(&self, localpart: &str, password: &str) -> Result<String> {
-        let body = serde_json::json!({
+        self.login_password_with_device(localpart, password, None)
+    }
+
+    /// Reuse one bounded provisioning device per service account rather than
+    /// creating another Matrix device on every declarative reconciliation.
+    pub fn login_password_with_device(
+        &self,
+        localpart: &str,
+        password: &str,
+        device_id: Option<&str>,
+    ) -> Result<String> {
+        let mut body = serde_json::json!({
             "type": "m.login.password",
             "identifier": {
                 "type": "m.id.user",
@@ -129,6 +173,10 @@ impl TuwunelClient {
             },
             "password": password,
         });
+        if let Some(device_id) = device_id {
+            body["device_id"] = device_id.into();
+            body["initial_device_display_name"] = "Tuwunel room provisioning".into();
+        }
 
         let resp = self
             .req_auth(Method::POST, "/_matrix/client/v3/login")
@@ -361,15 +409,10 @@ impl TuwunelClient {
         name: Option<&str>,
         topic: Option<&str>,
         invite: &[String],
+        encrypted: bool,
     ) -> Result<String> {
         let alias_localpart = alias_localpart(alias)?;
-        let body = CreateRoomRequest {
-            room_alias_name: Some(alias_localpart),
-            visibility: "private",
-            name,
-            topic,
-            invite: invite.iter().map(String::as_str).collect(),
-        };
+        let body = CreateRoomRequest::new(alias_localpart, name, topic, invite, encrypted);
 
         let resp = self
             .req_auth(Method::POST, "/_matrix/client/v3/createRoom")
@@ -382,6 +425,45 @@ impl TuwunelClient {
             return Ok(data.room_id);
         }
         bail!("createRoom returned {status} for {alias}");
+    }
+
+    /// Read live state as the declared room creator. An admin alias lookup
+    /// alone does not establish encryption, join rules, or who can read it.
+    pub fn private_room_members(
+        &self,
+        room_id: &str,
+        creator: &str,
+        invite: &[String],
+        encrypted: bool,
+    ) -> Result<BTreeSet<String>> {
+        let path = format!("/_matrix/client/v3/rooms/{}/state", percent_encode(room_id));
+        let response = self
+            .req_auth(Method::GET, &path)
+            .send()
+            .with_context(|| format!("reading state of room {room_id}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!(
+                "room state returned {status} for {room_id}; the declared creator must be joined"
+            );
+        }
+        let events: Vec<serde_json::Value> =
+            response.json().context("decoding Matrix room state")?;
+        verify_private_room_state(&events, creator, invite, encrypted)
+    }
+
+    pub fn logout(&self) -> Result<()> {
+        let response = self
+            .req_auth(Method::POST, "/_matrix/client/v3/logout")
+            .send()
+            .context("logging out room provisioning device")?;
+        if !response.status().is_success() {
+            bail!(
+                "room provisioning device logout returned {}",
+                response.status()
+            );
+        }
+        Ok(())
     }
 
     pub fn invite_user_to_room(&self, room_id: &str, user_id: &str) -> Result<()> {
@@ -404,6 +486,141 @@ impl TuwunelClient {
             return Ok(());
         }
         bail!("room invite returned {status} for {user_id} in {room_id}");
+    }
+}
+
+fn verify_private_room_state(
+    events: &[serde_json::Value],
+    creator: &str,
+    invite: &[String],
+    encrypted: bool,
+) -> Result<BTreeSet<String>> {
+    let mut join_rule = None;
+    let mut guest_access = None;
+    let mut algorithm = None;
+    let mut members = BTreeMap::new();
+    for event in events {
+        match event.get("type").and_then(serde_json::Value::as_str) {
+            Some("m.room.join_rules") => join_rule = event["content"]["join_rule"].as_str(),
+            Some("m.room.guest_access") => guest_access = event["content"]["guest_access"].as_str(),
+            Some("m.room.encryption") => algorithm = event["content"]["algorithm"].as_str(),
+            Some("m.room.member") => {
+                if let (Some(user), Some(membership)) = (
+                    event["state_key"].as_str(),
+                    event["content"]["membership"].as_str(),
+                ) {
+                    members.insert(user.to_owned(), membership.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    if join_rule != Some("invite") || guest_access != Some("forbidden") {
+        bail!("room is not invite-only with guest access forbidden");
+    }
+    if encrypted && algorithm != Some("m.megolm.v1.aes-sha2") {
+        bail!(
+            "room is missing the required Matrix encryption state; refusing to retrofit encryption"
+        );
+    }
+    if members.get(creator).map(String::as_str) != Some("join") {
+        bail!("declared room creator is not joined");
+    }
+    let allowed: BTreeSet<&str> = std::iter::once(creator)
+        .chain(invite.iter().map(String::as_str))
+        .collect();
+    let mut present = BTreeSet::new();
+    for (user, membership) in members {
+        if matches!(membership.as_str(), "join" | "invite" | "knock") {
+            if !allowed.contains(user.as_str()) || membership == "knock" {
+                bail!("room contains an undeclared active member or invitation: {user}");
+            }
+            present.insert(user);
+        }
+    }
+    Ok(present)
+}
+
+#[cfg(test)]
+mod private_room_tests {
+    use super::*;
+
+    fn state() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({"type":"m.room.join_rules", "content":{"join_rule":"invite"}}),
+            serde_json::json!({"type":"m.room.guest_access", "content":{"guest_access":"forbidden"}}),
+            serde_json::json!({"type":"m.room.encryption", "content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
+            serde_json::json!({"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}),
+            serde_json::json!({"type":"m.room.member", "state_key":"@can:example.test", "content":{"membership":"invite"}}),
+        ]
+    }
+
+    #[test]
+    fn encrypted_room_is_private_before_the_first_invitation() {
+        let invited = vec!["@can:example.test".to_owned()];
+        let request =
+            CreateRoomRequest::new("hermes-iris", Some("hermes-iris"), None, &invited, true);
+        let body = serde_json::to_value(request).unwrap();
+        assert_eq!(body["visibility"], "private");
+        assert_eq!(body["preset"], "private_chat");
+        assert_eq!(body["invite"], serde_json::json!(["@can:example.test"]));
+        assert_eq!(body["initial_state"][0]["content"]["join_rule"], "invite");
+        assert_eq!(
+            body["initial_state"][1]["content"]["guest_access"],
+            "forbidden"
+        );
+        assert_eq!(
+            body["initial_state"][2]["content"]["algorithm"],
+            "m.megolm.v1.aes-sha2"
+        );
+    }
+
+    fn verify(events: &[serde_json::Value]) -> Result<BTreeSet<String>> {
+        verify_private_room_state(
+            events,
+            "@iris:example.test",
+            &["@can:example.test".into()],
+            true,
+        )
+    }
+
+    #[test]
+    fn only_creator_and_invited_human_may_be_present() {
+        let members = verify(&state()).unwrap();
+        assert_eq!(
+            members,
+            BTreeSet::from(["@iris:example.test".into(), "@can:example.test".into()])
+        );
+        let mut events = state();
+        events.push(serde_json::json!({"type":"m.room.member", "state_key":"@matrix-admin:example.test", "content":{"membership":"join"}}));
+        assert!(verify(&events).is_err());
+        events.pop();
+        events.push(serde_json::json!({"type":"m.room.member", "state_key":"@other:example.test", "content":{"membership":"invite"}}));
+        assert!(verify(&events).is_err());
+    }
+
+    #[test]
+    fn refuses_unencrypted_or_public_existing_room() {
+        let mut events = state();
+        events.retain(|event| event["type"] != "m.room.encryption");
+        assert!(verify(&events).is_err());
+        events = state();
+        events[0]["content"]["join_rule"] = "public".into();
+        assert!(verify(&events).is_err());
+        events = state();
+        events[1]["content"]["guest_access"] = "can_join".into();
+        assert!(verify(&events).is_err());
+    }
+
+    #[test]
+    fn accepts_missing_invitation_to_reconcile_and_departed_members() {
+        let mut events = state();
+        events.pop();
+        events.push(serde_json::json!({"type":"m.room.member", "state_key":"@old:example.test", "content":{"membership":"leave"}}));
+        assert_eq!(
+            verify(&events).unwrap(),
+            BTreeSet::from(["@iris:example.test".into()])
+        );
     }
 }
 

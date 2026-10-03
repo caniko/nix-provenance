@@ -30,6 +30,16 @@ pub struct RoomSpec {
     pub topic: Option<String>,
     #[serde(default)]
     pub invite: Vec<String>,
+    /// Localpart of a provisioned account that creates and reconciles this room.
+    /// Unlike the legacy admin-created rooms, the admin is never a member.
+    #[serde(default)]
+    pub creator: Option<String>,
+    /// Encryption must be present in the room's initial state; it cannot safely
+    /// be added after a room has already accepted messages.
+    #[serde(default)]
+    pub encrypted: bool,
+    #[serde(default, rename = "expectedRoomId")]
+    pub expected_room_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -115,5 +125,28 @@ mod tests {
         assert_eq!(room.alias, "#canix-alerts:matrix.tartanoglu.com");
         assert_eq!(room.name.as_deref(), Some("canix-alerts"));
         assert_eq!(room.invite, ["@matrix-alerts:matrix.tartanoglu.com"]);
+        assert!(room.creator.is_none());
+        assert!(!room.encrypted);
+        assert!(room.expected_room_id.is_none());
+    }
+
+    #[test]
+    fn parses_private_encrypted_room() {
+        let s: State = serde_json::from_str(
+            r##"{
+                "server_name": "matrix.example.test", "port": 6167,
+                "admin_token_user": "matrix-admin", "users": {},
+                "rooms": {"iris": {
+                    "alias": "#hermes-iris:matrix.example.test", "name": "hermes-iris",
+                    "creator": "iris", "invite": ["@can:matrix.example.test"],
+                    "encrypted": true
+                }}
+            }"##,
+        )
+        .unwrap();
+        let room = &s.rooms["iris"];
+        assert_eq!(room.creator.as_deref(), Some("iris"));
+        assert!(room.encrypted);
+        assert!(room.expected_room_id.is_none());
     }
 }
