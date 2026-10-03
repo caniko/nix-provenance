@@ -528,10 +528,21 @@ mod tests {
     use std::cell::Cell;
     use std::os::unix::fs::PermissionsExt;
 
+    fn write_systemctl_fixture(path: &Path, exit_code: u8) {
+        // Nix sandboxes have sh on PATH but no /usr/bin/env interpreter.
+        let search_path = std::env::var_os("PATH").expect("fixture requires PATH");
+        let shell = std::env::split_paths(&search_path)
+            .map(|dir| dir.join("sh"))
+            .find(|path| path.is_file())
+            .expect("fixture requires sh on PATH");
+        let shell = fs::canonicalize(shell).unwrap();
+        fs::write(path, format!("#!{}\nexit {exit_code}\n", shell.display())).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     fn bootstrap_fixture(dir: &Path) -> RegistrationBootstrap {
         let systemctl = dir.join("systemctl");
-        fs::write(&systemctl, "#!/usr/bin/env sh\nexit 0\n").unwrap();
-        fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o700)).unwrap();
+        write_systemctl_fixture(&systemctl, 0);
         let fixture = RegistrationBootstrap {
             open_config: dir.join("open.toml"),
             closed_config: dir.join("closed.toml"),
@@ -604,7 +615,7 @@ mod tests {
     fn failed_open_signal_still_restores_closed_runtime_config() {
         let dir = tempfile::tempdir().unwrap();
         let fixture = bootstrap_fixture(dir.path());
-        fs::write(&fixture.systemctl, "#!/usr/bin/env sh\nexit 1\n").unwrap();
+        write_systemctl_fixture(&fixture.systemctl, 1);
         let result: Result<()> = fixture.with_registration_enabled(|| {
             panic!("must not register after failing to signal the server");
         });

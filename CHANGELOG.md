@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Tuwunel bootstrap fixtures resolve their shell from the test environment so
+  lifecycle tests run in Nix sandboxes without `/usr/bin/env`.
 - Tuwunel registration bootstrap tolerates delayed asynchronous config reloads
   with bounded retries of explicit registration-disabled refusals, attempts to
   restore the closed config after failures, and never retries ambiguous
