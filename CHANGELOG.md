@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Identity CLI featureless and Bitwarden-only builds no longer pull in the
+  Kanidm-only generated-secret dependency and its TLS-dependent HTTP helper;
+  the Forgejo OIDC secret binary correctly requires the Kanidm feature.
 - Room-owner login reuses the initialized HTTP transport so construction cannot
   fail between login and the reconciliation/logout path.
 - Private-room verification no longer mistakes unrelated state events for
