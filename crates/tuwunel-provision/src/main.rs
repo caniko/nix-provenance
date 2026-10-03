@@ -182,7 +182,7 @@ fn main() -> Result<()> {
             let token = probe_client
                 .login_password_with_device(creator, &password, Some("TUWUNEL_PROVISION"))
                 .with_context(|| format!("logging in Matrix room {name} creator"))?;
-            Some(TuwunelClient::new(&base_url, &token)?)
+            Some(probe_client.with_token(&token))
         } else {
             None
         };

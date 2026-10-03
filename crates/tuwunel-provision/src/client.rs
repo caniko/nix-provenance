@@ -104,6 +104,17 @@ impl TuwunelClient {
         })
     }
 
+    /// Attach a login token without rebuilding the HTTP transport. In particular,
+    /// room provisioning must not introduce a fallible constructor after login
+    /// but before its reconciliation/logout path.
+    pub fn with_token(&self, token: &str) -> Self {
+        Self {
+            http: self.http.clone(),
+            base: self.base.clone(),
+            auth: Some(format!("Bearer {token}")),
+        }
+    }
+
     fn req_auth(&self, method: Method, path: &str) -> RequestBuilder {
         let mut req = self.http.request(method, format!("{}{path}", self.base));
         if let Some(ref token) = self.auth {
