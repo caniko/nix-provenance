@@ -501,9 +501,15 @@ fn verify_private_room_state(
     let mut members = BTreeMap::new();
     for event in events {
         match event.get("type").and_then(serde_json::Value::as_str) {
-            Some("m.room.join_rules") => join_rule = event["content"]["join_rule"].as_str(),
-            Some("m.room.guest_access") => guest_access = event["content"]["guest_access"].as_str(),
-            Some("m.room.encryption") => algorithm = event["content"]["algorithm"].as_str(),
+            Some("m.room.join_rules") if event["state_key"].as_str() == Some("") => {
+                join_rule = event["content"]["join_rule"].as_str();
+            }
+            Some("m.room.guest_access") if event["state_key"].as_str() == Some("") => {
+                guest_access = event["content"]["guest_access"].as_str();
+            }
+            Some("m.room.encryption") if event["state_key"].as_str() == Some("") => {
+                algorithm = event["content"]["algorithm"].as_str();
+            }
             Some("m.room.member") => {
                 if let (Some(user), Some(membership)) = (
                     event["state_key"].as_str(),
@@ -547,9 +553,9 @@ mod private_room_tests {
 
     fn state() -> Vec<serde_json::Value> {
         vec![
-            serde_json::json!({"type":"m.room.join_rules", "content":{"join_rule":"invite"}}),
-            serde_json::json!({"type":"m.room.guest_access", "content":{"guest_access":"forbidden"}}),
-            serde_json::json!({"type":"m.room.encryption", "content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
+            serde_json::json!({"type":"m.room.join_rules", "state_key":"", "content":{"join_rule":"invite"}}),
+            serde_json::json!({"type":"m.room.guest_access", "state_key":"", "content":{"guest_access":"forbidden"}}),
+            serde_json::json!({"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@can:example.test", "content":{"membership":"invite"}}),
         ]
@@ -610,6 +616,15 @@ mod private_room_tests {
         events = state();
         events[1]["content"]["guest_access"] = "can_join".into();
         assert!(verify(&events).is_err());
+    }
+
+    #[test]
+    fn nonempty_state_keys_cannot_prove_private_room_policy() {
+        for index in 0..3 {
+            let mut events = state();
+            events[index]["state_key"] = "unrelated".into();
+            assert!(verify(&events).is_err());
+        }
     }
 
     #[test]
