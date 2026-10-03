@@ -180,7 +180,15 @@ def main():
         unsafe_alias = "#unsafe:example.test"
         unsafe = api(
             "POST", "/createRoom", tokens["iris"],
-            {"room_alias_name": "unsafe", "preset": "private_chat"},
+            {
+                "room_alias_name": "unsafe", "preset": "private_chat",
+                # private_chat permits guests on Tuwunel. Isolate missing
+                # encryption from the independent guest-access refusal.
+                "initial_state": [{
+                    "type": "m.room.guest_access", "state_key": "",
+                    "content": {"guest_access": "forbidden"},
+                }],
+            },
         )["room_id"]
         candidate = json.loads(json.dumps(state))
         candidate["rooms"] = {
