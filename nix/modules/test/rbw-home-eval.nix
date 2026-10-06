@@ -13,7 +13,7 @@
     postBuild = "ln -s rbw $out/bin/rbw-agent";
     meta.mainProgram = "rbw";
   };
-  evaluate = enabled:
+  evaluate = package: enabled:
     lib.evalModules {
       specialArgs = {inherit pkgs;};
       modules = [
@@ -59,13 +59,19 @@
           };
           config.nix-provenance.rbw = {
             enable = enabled;
-            package = fakeRbw;
+            inherit package;
           };
         })
       ];
     };
-  enabled = (evaluate true).config;
-  disabled = (evaluate false).config;
+  enabled = (evaluate fakeRbw true).config;
+  disabled = (evaluate fakeRbw false).config;
+  realClient = (evaluate pkgs.rbw true).config.programs.rbw.package;
+  clientConfig = pkgs.writeText "rbw-fixture-config.json" (builtins.toJSON {
+    email = "fixture@example.invalid";
+    pinentry = "${pkgs.coreutils}/bin/false";
+    sync_interval = 0;
+  });
   manifest = enabled.nix-provenance.rbw.managedPackage.manifest;
 in
   assert lib.all (item: item.assertion) enabled.assertions;
@@ -95,5 +101,34 @@ in
       test -f /build/state/nix-provenance/rbw/data/rbw/device_id
       ${lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.provenance-rbw} --config ${manifest} status > status.json
       grep -Fq '"vaultDatabases": 1' status.json
+
+      # Exercise the real daemon too: a restart and loss of disposable cache /
+      # runtime directories must preserve the migrated database and device ID.
+      export RBW_PROFILE=
+      export XDG_CONFIG_HOME=/build/rbw-config
+      export XDG_RUNTIME_DIR=/build/rbw-runtime
+      mkdir -m 700 -p "$XDG_CONFIG_HOME/rbw" "$XDG_RUNTIME_DIR"
+      cp ${clientConfig} "$XDG_CONFIG_HOME/rbw/config.json"
+      cp /build/state/nix-provenance/rbw/cache/rbw/fixture.json fixture-db-before
+      cp /build/state/nix-provenance/rbw/data/rbw/device_id fixture-device-before
+      trap 'timeout 10 ${realClient}/bin/rbw stop-agent' EXIT
+      timeout 10 ${realClient}/bin/rbw-agent
+      test -S "$XDG_RUNTIME_DIR/rbw/socket"
+      if timeout 10 ${realClient}/bin/rbw unlocked 2> lock-status; then
+        echo 'Unenrolled fixture unexpectedly unlocked' >&2
+        exit 1
+      else
+        test "$?" = 1
+        grep -Fq 'agent is locked' lock-status
+      fi
+      timeout 10 ${realClient}/bin/rbw stop-agent
+      rm -rf "$XDG_RUNTIME_DIR/rbw" /build/legacy-cache
+      timeout 10 ${realClient}/bin/rbw-agent
+      test -S "$XDG_RUNTIME_DIR/rbw/socket"
+      timeout 10 ${realClient}/bin/rbw stop-agent
+      cmp fixture-db-before /build/state/nix-provenance/rbw/cache/rbw/fixture.json
+      cmp fixture-device-before /build/state/nix-provenance/rbw/data/rbw/device_id
+      test -f /build/state/nix-provenance/rbw/data/rbw/agent.err
+      test ! -e /build/legacy-cache/rbw
       touch $out
     ''
