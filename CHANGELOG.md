@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Vikunja project and label response IDs remain available to reconciliation
+  logging when combining the durable rbw and Proton VPN integration branches.
 - The development environment fails closed on shell-loading errors and watches
   optional Cargo configuration without requiring a pre-existing `.cargo` directory.
 - Tuwunel bootstrap fixtures resolve their shell from the test environment so

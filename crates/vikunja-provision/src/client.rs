@@ -64,8 +64,7 @@ pub struct TeamRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 pub struct ProjectSummary {
-    #[serde(rename = "id")]
-    pub _id: i64,
+    pub id: i64,
     pub title: String,
 }
 
@@ -78,8 +77,7 @@ struct ProjectRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 pub struct LabelSummary {
-    #[serde(rename = "id")]
-    pub _id: i64,
+    pub id: i64,
     pub title: String,
 }
 
