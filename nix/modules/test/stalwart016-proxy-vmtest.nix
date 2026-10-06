@@ -210,6 +210,7 @@ in
 
       start_all()
       for host in [mail, proxy, client]:
+          host.wait_for_unit("multi-user.target", timeout=180)
           host.wait_until_succeeds("ip -o -4 addr show dev eth1 | grep -q '192.0.2.'", timeout=30)
       mail.wait_for_unit("stalwart.service")
       proxy.wait_for_unit("haproxy.service")
