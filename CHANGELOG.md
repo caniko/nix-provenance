@@ -11,6 +11,8 @@
 
 ### Added
 
+- A Home Manager rbw adapter with durable private login state, guarded legacy
+  migration, shared client/agent paths, and metadata-only recovery diagnostics.
 - Nullable Stalwart 0.16 listener PROXY trust overrides, with explicit set,
   replace, unmanaged, and clear semantics and isolated HAProxy/mail fixtures.
 - A reusable treefmt module for the repository's Alejandra formatting policy.
