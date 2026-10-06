@@ -3909,6 +3909,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "proton-vpn-auth"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "data-encoding",
+ "hmac 0.12.1",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "provenance-core"
 version = "0.1.0"
 dependencies = [

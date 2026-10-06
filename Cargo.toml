@@ -12,6 +12,7 @@ members = [
   "crates/provenance-oauth",
   "crates/stalwart016-provision",
   "crates/stalwart-oauth-bootstrap",
+  "crates/proton-vpn-auth",
   "crates/tuwunel-provision",
 ]
 

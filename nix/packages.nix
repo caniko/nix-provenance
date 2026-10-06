@@ -41,6 +41,7 @@
   forgejoArgs = mkArgs "forgejo-provision";
   identityArgs = mkArgs "identity-cli";
   oauthArgs = mkArgs "provenance-oauth";
+  protonVpnAuthArgs = mkArgs "proton-vpn-auth";
   # stalwart016-provision uses explicit version because crateNameFromCargoToml
   # may not resolve the cargoToml path across evaluation contexts.
   stalwartProvisionArgs = buildArgs "stalwart016-provision" "0.1.0";
@@ -60,6 +61,7 @@
   forgejoDeps = craneLib.buildDepsOnly forgejoArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
   oauthDeps = craneLib.buildDepsOnly oauthArgs;
+  protonVpnAuthDeps = craneLib.buildDepsOnly protonVpnAuthArgs;
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
   stalwartOauthBootstrapDeps = craneLib.buildDepsOnly stalwartOauthBootstrapArgs;
   tuwunelDeps = craneLib.buildDepsOnly tuwunelArgs;
@@ -73,6 +75,7 @@ in {
     forgejo-provision = forgejoArgs;
     identity-cli = identityArgs;
     provenance-oauth = oauthArgs;
+    proton-vpn-auth = protonVpnAuthArgs;
     stalwart016-provision = stalwartProvisionArgs;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapArgs;
     tuwunel-provision = tuwunelArgs;
@@ -87,12 +90,23 @@ in {
     forgejo-provision = forgejoDeps;
     identity-cli = identityDeps;
     provenance-oauth = oauthDeps;
+    proton-vpn-auth = protonVpnAuthDeps;
     stalwart016-provision = stalwartProvisionDeps;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapDeps;
     tuwunel-provision = tuwunelDeps;
   };
 
   packages = {
+    proton-vpn-auth = craneLib.buildPackage (protonVpnAuthArgs
+      // {
+        cargoArtifacts = protonVpnAuthDeps;
+        meta = {
+          description = "Runtime credential and TOTP login adapter for Proton VPN";
+          mainProgram = "proton-vpn-auth";
+          license = with lib.licenses; [mit asl20];
+          platforms = lib.platforms.linux;
+        };
+      });
     provenance-oauth = craneLib.buildPackage (oauthArgs
       // {
         cargoArtifacts = oauthDeps;

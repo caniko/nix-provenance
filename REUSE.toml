@@ -1,5 +1,10 @@
 version = 1
 
+[[annotations]]
+path = ["crates/proton-vpn-auth/**", "nix/modules/home/proton-vpn.nix", "nix/modules/test/proton-vpn-home-eval.nix", "docs/src/guides/proton-vpn.md"]
+SPDX-FileCopyrightText = "Can H. Tartanoglu"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
 # REUSE 3.0 per-path SPDX. When a path matches multiple annotations, the LAST
 # matching annotation wins — so origin-specific blocks precede the catch-all.
 

@@ -1,0 +1,25 @@
+[package]
+name = "proton-vpn-auth"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Runtime credential and TOTP login adapter for the official Proton VPN clients"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+clap.workspace = true
+data-encoding = "2"
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+sha1 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

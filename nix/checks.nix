@@ -100,7 +100,17 @@
 
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in
-  {
+  lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    proton-vpn-auth = packages.proton-vpn-auth;
+    proton-vpn-auth-clippy = mkClippy "proton-vpn-auth";
+    proton-vpn-auth-test = craneLib.cargoTest (args.proton-vpn-auth
+      // {
+        cargoArtifacts = cargoArtifacts.proton-vpn-auth;
+        nativeBuildInputs = args.proton-vpn-auth.nativeBuildInputs ++ [pkgs.python3 pkgs.util-linux];
+      });
+    proton-vpn-module-eval = import ./modules/test/proton-vpn-home-eval.nix {inherit pkgs self;};
+  }
+  // {
     # Build all crates.
     identity-cli = runCommand "identity-cli-package" {} ''
       test -x ${packages.identity-cli}/bin/forgejo-oidc-secret

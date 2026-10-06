@@ -57,6 +57,10 @@ tenant taxonomy and the add-a-tenant checklist.
 
 ## Flake outputs
 
+- `homeModules.proton-vpn` installs the official Proton VPN GUI/CLI and can enroll
+  an account from a runtime credential file, including encrypted TOTP material.
+  See [Proton VPN account login](docs/src/guides/proton-vpn.md).
+
 - `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,stalwart016-provision,forgejo-cli,forgejo-cli-nushell-completion,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)

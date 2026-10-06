@@ -27,6 +27,10 @@ jobs:
           - ".#checks.x86_64-linux.tuwunel-provision-clippy"
           - ".#checks.x86_64-linux.tuwunel-module-eval"
           - ".#checks.x86_64-linux.tuwunel-private-rooms-vmtest"
+          - ".#packages.x86_64-linux.proton-vpn-auth"
+          - ".#checks.x86_64-linux.proton-vpn-auth-test"
+          - ".#checks.x86_64-linux.proton-vpn-auth-clippy"
+          - ".#checks.x86_64-linux.proton-vpn-module-eval"
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:

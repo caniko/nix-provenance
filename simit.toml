@@ -5,7 +5,17 @@ runtime = "nix"
 runner = "ubuntu-24.04"
 publish_crates = true
 all_features = false
-nix_builds = [".#packages.x86_64-linux.tuwunel-provision", ".#checks.x86_64-linux.tuwunel-provision-test", ".#checks.x86_64-linux.tuwunel-provision-clippy", ".#checks.x86_64-linux.tuwunel-module-eval", ".#checks.x86_64-linux.tuwunel-private-rooms-vmtest"]
+nix_builds = [
+  ".#packages.x86_64-linux.tuwunel-provision",
+  ".#checks.x86_64-linux.tuwunel-provision-test",
+  ".#checks.x86_64-linux.tuwunel-provision-clippy",
+  ".#checks.x86_64-linux.tuwunel-module-eval",
+  ".#checks.x86_64-linux.tuwunel-private-rooms-vmtest",
+  ".#packages.x86_64-linux.proton-vpn-auth",
+  ".#checks.x86_64-linux.proton-vpn-auth-test",
+  ".#checks.x86_64-linux.proton-vpn-auth-clippy",
+  ".#checks.x86_64-linux.proton-vpn-module-eval",
+]
 workspace = true
 
 [ci.nix_build]
