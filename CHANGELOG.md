@@ -29,6 +29,8 @@
 - Official Proton VPN clients can enroll an existing account from a private
   runtime credential document through a Home Manager module and Rust adapter,
   including TOTP, session reuse, bounded retries, and redacted errors.
+- `proton-vpn-auth enroll` securely prompts for existing account credentials and
+  creates a private runtime document for a consumer's secret-manager import.
 - Protocol regression tests and a disposable Tuwunel VM gate cover private-room
   creation, observed-ID pinning, unsafe-state rejection and device logout.
 - Tuwunel can create initially encrypted, invite-only rooms as a declared

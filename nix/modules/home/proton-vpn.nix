@@ -67,7 +67,7 @@ in {
           message = "nix-provenance.proton-vpn requires Linux and a graphical Secret Service session.";
         }
       ];
-      home.packages = [cfg.package cfg.cliPackage];
+      home.packages = [cfg.package cfg.cliPackage cfg.login.package];
     })
     (mkIf cfg.login.enable {
       assertions = [
@@ -84,7 +84,6 @@ in {
           message = "Proton login requires credentialsFile to reference a private runtime file.";
         }
       ];
-      home.packages = [cfg.login.package];
       systemd.user.services.${unitName} = {
         Unit = {
           Description = "Enroll the declared Proton VPN account session";
@@ -99,6 +98,7 @@ in {
           LoadCredential = ["account:${credentialPath}"];
           ExecStart = lib.concatStringsSep " " [
             (lib.escapeShellArg (lib.getExe cfg.login.package))
+            "login"
             "--credentials-file %d/account"
             "--cli ${lib.escapeShellArg (lib.getExe cfg.cliPackage)}"
             "--setsid ${lib.escapeShellArg "${pkgs.util-linux}/bin/setsid"}"

@@ -57,6 +57,7 @@ in
   assert !(builtins.all (a: a.assertion) bad.assertions);
   assert disabled.home.packages == [] && disabled.systemd.user.services == {};
   assert service.Service.LoadCredential == ["account:%t/agenix/proton_vpn"];
+  assert lib.hasInfix " login --credentials-file %d/account" service.Service.ExecStart;
   assert enabled.systemd.user.paths.nix-provenance-proton-vpn-login.Path.PathChanged == "%t/agenix/proton_vpn";
   assert builtins.elem "agenix.service" service.Unit.After;
   assert builtins.elem "oo7-daemon.service" service.Unit.After;

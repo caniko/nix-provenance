@@ -23,8 +23,24 @@ The username/password must belong to the existing Proton account, not its
 OpenVPN credentials. This integration authenticates clients; it does not create
 or reset Proton accounts.
 
+## Interactive credential enrollment
+
+The package also installs `proton-vpn-auth enroll --out /run/user/<uid>/account.json`.
+It prompts on the controlling terminal with echo disabled for the existing
+username, password and password confirmation, then the existing base32
+authenticator seed and seed confirmation. `--password-only` explicitly omits
+TOTP for an account without that second factor. Credential values have no CLI
+flags and are never printed. The helper disables core dumps and creates a new
+mode-0600 document only under a private, user-owned `$XDG_RUNTIME_DIR`, refusing
+existing files and destinations outside it. The consuming secret manager must
+encrypt and remove this transient document; nix-provenance owns neither downstream
+account selection nor encrypted source storage. Canix exposes this workflow as
+`canix secret proton-vpn enroll ACCOUNT` and performs encryption, cleanup and rekey.
+
+## Session authentication
+
 The user service loads the JSON using systemd credentials, invokes
-`proton-vpn-auth`, and passes the password and challenge-time TOTP to the stock
+`proton-vpn-auth login`, and passes the password and challenge-time TOTP to the stock
 `protonvpn` client through private pipes. `setsid` prevents Python `getpass` from
 reading an unrelated controlling terminal. The helper suppresses arbitrary
 client output, including errors that could contain credential material. Exit 2

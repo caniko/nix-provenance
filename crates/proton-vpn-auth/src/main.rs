@@ -1,8 +1,8 @@
 //! Drive the stock client over private pipes; Proton owns SRP and session storage.
-use clap::Parser;
+use clap::{Args as ClapArgs, Parser, Subcommand};
 use data_encoding::BASE32_NOPAD;
 use hmac::{Hmac, Mac};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -15,8 +15,24 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const MAX_BYTES: usize = 65_536;
 
+mod enrollment;
+
 #[derive(Parser)]
 #[command(version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: AuthCommand,
+}
+
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Enroll the declared account in the official Proton client session.
+    Login(Args),
+    /// Prompt securely and create a private runtime credential document.
+    Enroll(enrollment::EnrollArgs),
+}
+
+#[derive(ClapArgs)]
 struct Args {
     /// Private runtime JSON containing username, password, and optional totpSecret.
     #[arg(long)]
@@ -32,7 +48,7 @@ struct Args {
     timeout_seconds: u64,
 }
 
-#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Account {
     username: String,
@@ -88,20 +104,27 @@ fn read_account(path: &Path) -> Result<Account> {
             "Invalid Proton credential JSON; expected username, password, and optional totpSecret",
         )
     })?;
-    if account.username.is_empty()
-        || account.username.len() > 254
-        || account.username.chars().any(char::is_control)
-        || account.username.trim() != account.username
-        || account.password.is_empty()
-        || account.password.len() > 1024
-        || account.password.contains(['\r', '\n'])
-    {
-        return Err(Failure::permanent("Invalid Proton username or password"));
-    }
-    if let Some(seed) = &account.totp_secret {
-        let _ = decode_seed(seed)?;
-    }
+    account.validate()?;
     Ok(account)
+}
+
+impl Account {
+    fn validate(&self) -> Result<()> {
+        if self.username.is_empty()
+            || self.username.len() > 254
+            || self.username.chars().any(char::is_control)
+            || self.username.trim() != self.username
+            || self.password.is_empty()
+            || self.password.len() > 1024
+            || self.password.contains(['\r', '\n'])
+        {
+            return Err(Failure::permanent("Invalid Proton username or password"));
+        }
+        if let Some(seed) = &self.totp_secret {
+            let _ = decode_seed(seed)?;
+        }
+        Ok(())
+    }
 }
 
 fn decode_seed(seed: &str) -> Result<Zeroizing<Vec<u8>>> {
@@ -374,7 +397,12 @@ fn run(args: &Args) -> Result<()> {
 }
 
 fn main() {
-    if let Err(error) = run(&Args::parse()) {
+    let cli = Cli::parse();
+    let result = enrollment::disable_core_dumps().and_then(|()| match cli.command {
+        AuthCommand::Login(args) => run(&args),
+        AuthCommand::Enroll(args) => enrollment::run(&args),
+    });
+    if let Err(error) = result {
         eprintln!("proton-vpn-auth: {}", error.message);
         std::process::exit(if error.retry { 75 } else { 2 });
     }

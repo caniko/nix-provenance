@@ -83,6 +83,7 @@ impl Fixture {
 
     fn run(&self, scenario: &str) -> Output {
         Command::new(env!("CARGO_BIN_EXE_proton-vpn-auth"))
+            .arg("login")
             .arg("--credentials-file")
             .arg(self.path().join("account.json"))
             .arg("--cli")
