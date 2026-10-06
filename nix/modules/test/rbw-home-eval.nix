@@ -57,7 +57,7 @@
               default = {};
             };
           };
-          nix-provenance.rbw = {
+          config.nix-provenance.rbw = {
             enable = enabled;
             package = fakeRbw;
           };
