@@ -114,6 +114,7 @@ in
     inherit (packages) stalwart016-provision;
     inherit (packages) stalwart-oauth-bootstrap;
     inherit (packages) tuwunel-provision;
+    inherit (packages) provenance-rbw;
     inherit docs;
     site = docs;
     inherit (packages) forgejo-cli;
@@ -226,6 +227,7 @@ in
     # Lint each crate against its isolated deps.
     identity-clippy = mkClippy "identity-cli";
     oauth-clippy = mkClippy "provenance-oauth";
+    rbw-clippy = mkClippy "provenance-rbw";
     immich-clippy = mkClippy "immich-provision";
     kanidm-state-render-clippy = mkClippy "kanidm-state-render";
     rauthy-state-render-clippy = mkClippy "rauthy-state-render";
@@ -237,6 +239,10 @@ in
     tuwunel-provision-clippy = mkClippy "tuwunel-provision";
 
     # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
+    rbw-test = craneLib.cargoTest (
+      args.provenance-rbw // {cargoArtifacts = cargoArtifacts.provenance-rbw;}
+    );
+    rbw-home-module-eval = import ./modules/test/rbw-home-eval.nix {inherit pkgs self;};
     identity-test = craneLib.cargoTest (
       args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;}
     );

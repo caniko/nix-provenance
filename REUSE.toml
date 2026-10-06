@@ -14,7 +14,12 @@ SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MPL-2.0"
 
 [[annotations]]
-path = ["nix/lib/immich.nix", "nix/modules/service-oidc/immich.nix", "nix/modules/test/immich-eval.nix", "docs/kanidm-oidc-migration.md"]
+path = [
+  "nix/lib/immich.nix",
+  "nix/modules/service-oidc/immich.nix",
+  "nix/modules/test/immich-eval.nix",
+  "docs/kanidm-oidc-migration.md",
+]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "AGPL-3.0-only"
 
@@ -24,12 +29,20 @@ SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "AGPL-3.0-only"
 
 [[annotations]]
-path = ["nix/lib/vikunja.nix", "nix/modules/config-only/vikunja.nix", "nix/modules/test/vikunja-eval.nix"]
+path = [
+  "nix/lib/vikunja.nix",
+  "nix/modules/config-only/vikunja.nix",
+  "nix/modules/test/vikunja-eval.nix",
+]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "AGPL-3.0-only"
 
 [[annotations]]
-path = ["crates/vikunja-provision/**", "nix/modules/service-oidc/vikunja.nix", "nix/modules/test/vikunja-provision-eval.nix"]
+path = [
+  "crates/vikunja-provision/**",
+  "nix/modules/service-oidc/vikunja.nix",
+  "nix/modules/test/vikunja-provision-eval.nix",
+]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
@@ -39,19 +52,32 @@ SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
-path = ["nix/lib/forgejo.nix", "nix/modules/service-oidc/forgejo.nix", "nix/modules/test/forgejo-eval.nix"]
+path = [
+  "nix/lib/forgejo.nix",
+  "nix/modules/service-oidc/forgejo.nix",
+  "nix/modules/test/forgejo-eval.nix",
+]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "AGPL-3.0-only"
 
 [[annotations]]
-path = ["nix/lib/stalwart.nix", "nix/modules/ldap/stalwart.nix", "nix/modules/test/stalwart-eval.nix"]
+path = [
+  "nix/lib/stalwart.nix",
+  "nix/modules/ldap/stalwart.nix",
+  "nix/modules/test/stalwart-eval.nix",
+]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 # Third-party identity adapter — pure-Nix wiring over the rauthy/kanidm
 # provisioners, so permissive (no AGPL crate involved).
 [[annotations]]
-path = ["nix/lib/adapter.nix", "nix/modules/adapter/external-app.nix", "nix/modules/test/adapter-eval.nix", "docs/adapter-external-apps.md"]
+path = [
+  "nix/lib/adapter.nix",
+  "nix/modules/adapter/external-app.nix",
+  "nix/modules/test/adapter-eval.nix",
+  "docs/adapter-external-apps.md",
+]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
@@ -61,18 +87,66 @@ SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
-path = ["nix/lib/rauthy.nix", "nix/modules/idp/rauthy.nix", "nix/modules/test/rauthy-eval.nix"]
+path = [
+  "nix/lib/rauthy.nix",
+  "nix/modules/idp/rauthy.nix",
+  "nix/modules/test/rauthy-eval.nix",
+]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 # Catch-all for new, shared, permissive files. Listed LAST so docs/architecture.md
 # overrides the AGPL docs/** rule above.
 [[annotations]]
-path = ["crates/provenance-oauth/**", "adapters/oauth/**", "nix/modules/oauth.nix", "nix/modules/home/oauth.nix", "nix/modules/test/oauth-eval.nix", "nix/modules/test/oauth-home-eval.nix", "docs/src/guides/shared-oauth.md"]
+path = [
+  "crates/provenance-rbw/**",
+  "nix/modules/home/rbw.nix",
+  "nix/modules/test/rbw-home-eval.nix",
+  "docs/src/guides/rbw-state.md",
+]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
-path = ["flake.nix", "flake.lock", "Cargo.toml", "Cargo.lock", "README.md", "LICENSING.md", "REUSE.toml", ".gitignore", "nix/lib/default.nix", "nix/lib/passwords.nix", "nix/packages.nix", "nix/checks.nix", "nix/modules/config-only/.gitkeep", "nix/modules/ldap/.gitkeep", "crates/provenance-core/**", "docs/book.toml", "docs/architecture.md", "docs/planning/**", "docs/src/SUMMARY.md", "docs/src/introduction.md", "docs/src/getting-started/development.md", "docs/src/concepts/architecture.md", "docs/src/guides/external-apps.md", "docs/src/reference/licensing.md", ".forgejo/**"]
+path = [
+  "crates/provenance-oauth/**",
+  "adapters/oauth/**",
+  "nix/modules/oauth.nix",
+  "nix/modules/home/oauth.nix",
+  "nix/modules/test/oauth-eval.nix",
+  "nix/modules/test/oauth-home-eval.nix",
+  "docs/src/guides/shared-oauth.md",
+]
+SPDX-FileCopyrightText = "Can H. Tartanoglu"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
+path = [
+  "flake.nix",
+  "flake.lock",
+  "Cargo.toml",
+  "Cargo.lock",
+  "README.md",
+  "LICENSING.md",
+  "REUSE.toml",
+  ".gitignore",
+  "nix/lib/default.nix",
+  "nix/lib/passwords.nix",
+  "nix/packages.nix",
+  "nix/checks.nix",
+  "nix/modules/config-only/.gitkeep",
+  "nix/modules/ldap/.gitkeep",
+  "crates/provenance-core/**",
+  "docs/book.toml",
+  "docs/architecture.md",
+  "docs/planning/**",
+  "docs/src/SUMMARY.md",
+  "docs/src/introduction.md",
+  "docs/src/getting-started/development.md",
+  "docs/src/concepts/architecture.md",
+  "docs/src/guides/external-apps.md",
+  "docs/src/reference/licensing.md",
+  ".forgejo/**",
+]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"

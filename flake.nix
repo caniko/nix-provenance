@@ -222,6 +222,7 @@
       };
 
       homeModules = {
+        rbw = import ./nix/modules/home/rbw.nix {inherit self;};
         oauth = import ./nix/modules/home/oauth.nix {inherit self;};
         rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
         fj = import ./nix/modules/home/fj.nix {inherit self;};
