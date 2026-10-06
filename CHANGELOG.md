@@ -26,6 +26,9 @@
 
 ### Added
 
+- `proton-vpn-auth enroll --stdin --stdout` validates credential documents through
+  private pipes for direct vault-to-encryption imports, including base32 and
+  compatible authenticator URI normalization without plaintext files.
 - Official Proton VPN clients can enroll an existing account from a private
   runtime credential document through a Home Manager module and Rust adapter,
   including TOTP, session reuse, bounded retries, and redacted errors.
