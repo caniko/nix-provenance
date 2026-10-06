@@ -54,7 +54,7 @@ jobs:
           fi
 
           # cargo pkgid scopes the version lookup to the crate this workflow publishes.
-          version="$(nix develop -c cargo pkgid -p provenance-core | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)"
+          version="$(nix develop -c cargo pkgid -p provenance-rbw | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)"
           if [ -z "$version" ]; then
             echo "Could not read package version from cargo pkgid" >&2
             exit 1
@@ -86,20 +86,20 @@ jobs:
         run: nix flake check
 
       - name: Test
-        run: nix develop -c cargo test -p provenance-core
+        run: nix develop -c cargo test -p provenance-rbw
 
       - name: Clippy
-        run: nix develop -c cargo clippy -p provenance-core --all-targets -- --deny warnings
+        run: nix develop -c cargo clippy -p provenance-rbw --all-targets -- --deny warnings
 
       - name: Dry-run publish
-        run: nix develop -c cargo publish -p provenance-core --dry-run
+        run: nix develop -c cargo publish -p provenance-rbw --dry-run
 
       - name: Publish
         env:
           CRATES_IO_API_TOKEN: ${{ secrets.CRATES_IO_API_TOKEN }}
         run: |
           set -euo pipefail
-          crate_name='provenance-core'
+          crate_name='provenance-rbw'
           version="${GITHUB_REF_NAME:-${FORGE_REF_NAME:-${CODEBERG_REF_NAME:-}}}"
           if [ -z "$version" ]; then
             ref="${GITHUB_REF:-${FORGE_REF:-${CODEBERG_REF:-}}}"
@@ -138,4 +138,4 @@ jobs:
             exit 1
           fi
           export CARGO_REGISTRY_TOKEN="${CARGO_REGISTRY_TOKEN:-$CRATES_IO_API_TOKEN}"
-          nix develop -c cargo publish -p provenance-core
+          nix develop -c cargo publish -p provenance-rbw

@@ -16,6 +16,8 @@
 - [Immich Kanidm OIDC Migration](./guides/kanidm-oidc-migration.md)
 - [Shared Provider OAuth](./guides/shared-oauth.md)
 - [Durable rbw Login State](./guides/rbw-state.md)
+- [Proton VPN Account Login](./guides/proton-vpn.md)
+- [Tuwunel Private Rooms](./guides/tuwunel-private-rooms.md)
 
 # Reference
 

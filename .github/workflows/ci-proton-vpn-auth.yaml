@@ -46,10 +46,7 @@ jobs:
         run: nix flake check
 
       - name: Test
-        run: nix develop -c cargo test -p provenance-core
+        run: nix develop -c cargo test -p proton-vpn-auth
 
       - name: Clippy
-        run: nix develop -c cargo clippy -p provenance-core --all-targets -- --deny warnings
-
-      - name: Package crate
-        run: nix develop -c cargo package -p provenance-core --allow-dirty --list
+        run: nix develop -c cargo clippy -p proton-vpn-auth --all-targets -- --deny warnings

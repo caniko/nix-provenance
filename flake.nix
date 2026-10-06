@@ -171,7 +171,7 @@
 
         devShells.default = harbor-rs.lib.mkDevShell {
           inherit pkgs craneLib cross;
-          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook pkgs.dbus];
+          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.treefmt pkgs.mdbook pkgs.dbus pkgs.python3 pkgs.util-linux];
           extraShellHook = opencodeLspShell.shellHook;
           cargoConfig = harbor-rs.lib.mkCargoConfig {
             inherit pkgs;
@@ -191,7 +191,11 @@
           domain = "nix-provenance.tartanoglu.com";
         };
 
-        formatter = pkgs.alejandra;
+        formatter = pkgs.writeShellApplication {
+          name = "treefmt";
+          runtimeInputs = [pkgs.treefmt pkgs.alejandra rustToolchain];
+          text = ''exec treefmt "$@"'';
+        };
       }
     )
     // {
@@ -223,6 +227,7 @@
 
       homeModules = {
         rbw = import ./nix/modules/home/rbw.nix {inherit self;};
+        proton-vpn = import ./nix/modules/home/proton-vpn.nix {inherit self;};
         oauth = import ./nix/modules/home/oauth.nix {inherit self;};
         rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
         fj = import ./nix/modules/home/fj.nix {inherit self;};
