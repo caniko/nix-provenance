@@ -206,6 +206,7 @@ in
       client.imports = [(common "192.0.2.3")];
     };
     testScript = ''
+      import datetime
       import shlex
 
       start_all()
@@ -215,8 +216,8 @@ in
       mail.wait_for_unit("stalwart.service")
       proxy.wait_for_unit("haproxy.service")
       for port in [25, 587, 993]:
-          mail.wait_for_open_port(port, timeout=30)
-          proxy.wait_for_open_port(port, timeout=30)
+          mail.wait_for_open_port(port, addr="192.0.2.1", timeout=datetime.timedelta(seconds=30))
+          proxy.wait_for_open_port(port, addr="192.0.2.2", timeout=datetime.timedelta(seconds=30))
       cert = mail.succeed("cat /run/stalwart-proxy-fixture/ca.pem")
       client.succeed("printf %s " + shlex.quote(cert) + " > /run/mail-fixture.pem")
       probe = "python ${./stalwart016-proxy-client.py}"
@@ -233,7 +234,7 @@ in
           # Type=simple reaches active before Stalwart reopens its listeners.
           # Keep each trust assertion single-shot after bounded readiness.
           for port in [25, 587, 993]:
-              mail.wait_for_open_port(port, timeout=30)
+              mail.wait_for_open_port(port, addr="192.0.2.1", timeout=datetime.timedelta(seconds=30))
 
       # Null preserves existing registry trust; it must not silently clear it.
       activate("unmanaged")
