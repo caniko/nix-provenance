@@ -37,6 +37,28 @@ encrypt and remove this transient document; nix-provenance owns neither downstre
 account selection nor encrypted source storage. Canix exposes this workflow as
 `canix secret proton-vpn enroll ACCOUNT` and performs encryption, cleanup and rekey.
 
+## Pipe-only credential documents
+
+Secret-manager integrations can invoke `proton-vpn-auth enroll --stdin --stdout`
+with private pipes. Input is one JSON object containing `username`, `password`,
+and `totpSecret`; stdout contains only the validated canonical account document.
+This mode needs no runtime directory and creates no plaintext file. It refuses
+terminal input/output, unknown JSON fields, and input over 64 KiB. Child callers
+must bound execution and output, suppress arbitrary diagnostics, and encrypt the
+returned bytes before persisting anything.
+
+`totpSecret` accepts a base32 seed or an `otpauth://totp/` URI. Enrollment
+normalizes the seed to uppercase unpadded base32. URI parameters must select
+SHA-1, six digits, and a 30-second period; omitted parameters use that standard
+TOTP profile. Duplicate, malformed, unknown, or incompatible parameters fail
+without output. A generated one-time code is not an enrollment seed.
+`--password-only` requires the seed to be absent; it never silently discards 2FA.
+Interactive enrollment uses the same seed normalization.
+
+Vault lookup, field selection, account bindings, encryption, rotation, and rekey
+remain the consuming secret manager's responsibility. The helper only creates
+the document for an existing external Proton account.
+
 ## Session authentication
 
 The user service loads the JSON using systemd credentials, invokes
