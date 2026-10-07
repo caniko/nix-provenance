@@ -33,22 +33,42 @@ impl LogindFixture {
     pub fn with_sleep_state(sleeping: bool) -> Self {
         let directory = tempfile::tempdir().expect("private bus directory");
         let address = format!("unix:path={}", directory.path().join("bus").display());
+        let config = directory.path().join("bus.conf");
+        // Nix's dbus-daemon --session expects /etc/dbus-1/session.conf, which
+        // is not the hosted Ubuntu runner's configuration path. This synthetic
+        // bus needs no host configuration, service activation or credentials.
+        std::fs::write(
+            &config,
+            r#"<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir=/tmp</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>
+"#,
+        )
+        .expect("isolated fixture bus configuration");
         let mut daemon = Command::new("dbus-daemon")
-            .args([
-                "--session",
-                "--nofork",
-                "--print-address",
-                "--address",
-                &address,
-            ])
+            .arg("--config-file")
+            .arg(config)
+            .args(["--nofork", "--print-address", "--address", &address])
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .spawn()
             .expect("private dbus daemon");
         let mut announced = String::new();
         BufReader::new(daemon.stdout.take().expect("bus address pipe"))
             .read_line(&mut announced)
             .expect("bus address");
+        assert!(
+            !announced.trim().is_empty(),
+            "private fixture bus did not announce an address"
+        );
         let mut channel = Channel::open_private(announced.trim()).expect("connect fixture bus");
         channel.register().expect("register bus connection");
         let connection = Connection::from(channel);
