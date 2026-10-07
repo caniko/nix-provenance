@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Kanidm credential wiring checks read the built script directly, avoiding
+  early pipe closure failures while preserving every configuration assertion.
 - Vikunja project and label response IDs remain available to reconciliation
   logging when combining the durable rbw and Proton VPN integration branches.
 - The development environment fails closed on shell-loading errors and watches

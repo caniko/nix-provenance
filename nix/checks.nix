@@ -649,16 +649,18 @@ in
       runCommand "kanidm-credentials-module-eval" {} ''
         test -n ${lib.escapeShellArg serviceConfig}
         test -x ${svc.serviceConfig.ExecStart}
-        script=$(cat ${svc.serviceConfig.ExecStart})
-        printf '%s' "$script" | grep -q 'set-ldap-unix-bind true'
-        printf '%s' "$script" | grep -q 'set-initial-primary-password can --primary-from'
-        printf '%s' "$script" | grep -q 'ssh-public-key ensure can hm-identity'
-        printf '%s' "$script" | grep -q 'set-posix-password noreply'
+        # Read the script directly: grep -q may close a printf pipe early,
+        # making a successful assertion fail with SIGPIPE under pipefail.
+        script=${svc.serviceConfig.ExecStart}
+        grep -q 'set-ldap-unix-bind true' "$script"
+        grep -q 'set-initial-primary-password can --primary-from' "$script"
+        grep -q 'ssh-public-key ensure can hm-identity' "$script"
+        grep -q 'set-posix-password noreply' "$script"
         printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/primary-can' \
           || { echo "kanidm-credentials: initial primary password LoadCredential missing" >&2; exit 1; }
-        printf '%s' "$script" | grep -q 'service-account create stalwart-ldap'
-        printf '%s' "$script" | grep -q 'group-add-members idm_people_pii_read stalwart-ldap'
-        printf '%s' "$script" | grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token'
+        grep -q 'service-account create stalwart-ldap' "$script"
+        grep -q 'group-add-members idm_people_pii_read stalwart-ldap' "$script"
+        grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token' "$script"
         touch $out
       '';
 
