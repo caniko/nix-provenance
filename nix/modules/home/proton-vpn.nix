@@ -8,9 +8,9 @@
   cfg = config.nix-provenance.proton-vpn;
   unitName = "nix-provenance-proton-vpn-login";
   credentialPath =
-    if cfg.login.credentialsFile == null
+    if cfg.login.encryptedFile == null
     then ""
-    else builtins.replaceStrings ["\${XDG_RUNTIME_DIR}"] ["%t"] cfg.login.credentialsFile;
+    else builtins.replaceStrings ["\${XDG_RUNTIME_DIR}"] ["%t"] cfg.login.encryptedFile;
 in {
   options.nix-provenance.proton-vpn = {
     enable = mkEnableOption "the official Proton VPN GUI and CLI";
@@ -26,15 +26,20 @@ in {
     };
     login = {
       enable = mkEnableOption "automatic Proton account login at graphical session startup";
-      credentialsFile = mkOption {
+      encryptedFile = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = ''
-          Private runtime JSON file with username, password and optional totpSecret
-          (base32 TOTP seed). Pass an agenix path, never a store file or plaintext.
+          Rekeyed age ciphertext with username, password and optional totpSecret.
+          Disable agenix runtime installation and pass its encrypted file instead.
           Account definitions may reuse an encrypted source across system users;
           Proton's per-user session and keyring remain independent.
         '';
+      };
+      identityPaths = mkOption {
+        type = types.listOf types.str;
+        default = [];
+        description = "Private SSH or X25519 identity paths for the rekeyed home recipient. Identity contents are never rendered.";
       };
       package = mkOption {
         type = types.package;
@@ -77,11 +82,11 @@ in {
         }
         {
           assertion =
-            cfg.login.credentialsFile
+            cfg.login.encryptedFile
             != null
             && (lib.hasPrefix "/" credentialPath || lib.hasPrefix "%t/" credentialPath)
-            && !(lib.hasPrefix "/nix/store/" credentialPath);
-          message = "Proton login requires credentialsFile to reference a private runtime file.";
+            && cfg.login.identityPaths != [];
+          message = "Proton login requires encryptedFile and the declared home identityPaths.";
         }
       ];
       systemd.user.services.${unitName} = {
@@ -95,11 +100,12 @@ in {
         };
         Service = {
           Type = "oneshot";
-          LoadCredential = ["account:${credentialPath}"];
+          LoadCredential = ["account.age:${credentialPath}"];
           ExecStart = lib.concatStringsSep " " [
             (lib.escapeShellArg (lib.getExe cfg.login.package))
             "login"
-            "--credentials-file %d/account"
+            "--encrypted-file %d/account.age"
+            (lib.concatMapStringsSep " " (path: "--identity ${lib.escapeShellArg path}") cfg.login.identityPaths)
             "--cli ${lib.escapeShellArg (lib.getExe cfg.cliPackage)}"
             "--setsid ${lib.escapeShellArg "${pkgs.util-linux}/bin/setsid"}"
             "--timeout-seconds ${toString cfg.login.timeoutSeconds}"
@@ -110,6 +116,11 @@ in {
           RestartPreventExitStatus = 2;
           UMask = "0077";
           LimitCORE = 0;
+          CoredumpFilter = "0x0";
+          LimitMEMLOCK = "8M";
+          MemorySwapMax = 0;
+          KillMode = "control-group";
+          TimeoutStopSec = 10;
         };
         Install.WantedBy = ["graphical-session.target"];
       };

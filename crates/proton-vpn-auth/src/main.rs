@@ -4,10 +4,11 @@ use data_encoding::BASE32_NOPAD;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, SyncSender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,7 +16,9 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const MAX_BYTES: usize = 65_536;
 
+mod encrypted_account;
 mod enrollment;
+mod protection;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -28,15 +31,18 @@ struct Cli {
 enum AuthCommand {
     /// Enroll the declared account in the official Proton client session.
     Login(Args),
-    /// Prompt securely and create a private runtime credential document.
+    /// Prompt securely and stream the account document to an encryption consumer.
     Enroll(enrollment::EnrollArgs),
 }
 
 #[derive(ClapArgs)]
 struct Args {
-    /// Private runtime JSON containing username, password, and optional totpSecret.
+    /// Rekeyed age ciphertext containing the account JSON; never a plaintext file.
     #[arg(long)]
-    credentials_file: PathBuf,
+    encrypted_file: PathBuf,
+    /// Private age or SSH identity used by agenix-rekey for this home recipient.
+    #[arg(long, required = true)]
+    identity: Vec<PathBuf>,
     /// Official protonvpn executable, including its Nix wrapper.
     #[arg(long)]
     cli: PathBuf,
@@ -80,34 +86,6 @@ impl Failure {
 
 type Result<T> = std::result::Result<T, Failure>;
 
-fn read_account(path: &Path) -> Result<Account> {
-    let file = File::open(path)
-        .map_err(|_| Failure::permanent("Proton credential file is unavailable"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| Failure::permanent("Cannot inspect Proton credential file"))?;
-    if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
-        return Err(Failure::permanent(
-            "Proton credentials require a private regular file (0400 or 0600)",
-        ));
-    }
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take((MAX_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| Failure::permanent("Cannot read Proton credential file"))?;
-    if bytes.len() > MAX_BYTES {
-        return Err(Failure::permanent("Proton credential file is too large"));
-    }
-    // Never forward serde errors: unknown field names can themselves be secrets.
-    let account: Account = serde_json::from_slice(&bytes).map_err(|_| {
-        Failure::permanent(
-            "Invalid Proton credential JSON; expected username, password, and optional totpSecret",
-        )
-    })?;
-    account.validate()?;
-    Ok(account)
-}
-
 impl Account {
     fn validate(&self) -> Result<()> {
         if self.username.is_empty()
@@ -149,7 +127,7 @@ fn totp(seed: &str, seconds: u64, digits: u32) -> Result<Zeroizing<String>> {
     let mut mac = Hmac::<Sha1>::new_from_slice(&secret)
         .map_err(|_| Failure::permanent("Invalid Proton TOTP key"))?;
     mac.update(&(seconds / 30).to_be_bytes());
-    let digest = mac.finalize().into_bytes();
+    let digest = Zeroizing::new(mac.finalize().into_bytes().to_vec());
     let offset = usize::from(digest[19] & 0xf);
     let value = ((u32::from(digest[offset]) & 0x7f) << 24)
         | (u32::from(digest[offset + 1]) << 16)
@@ -178,35 +156,43 @@ enum Event {
     ReadFailed,
 }
 
-fn read_stream(mut stream: impl Read + Send + 'static, stderr: bool, tx: SyncSender<Event>) {
-    std::thread::spawn(move || {
-        let mut buffer = Zeroizing::new([0_u8; 4096]);
-        loop {
-            match stream.read(buffer.as_mut()) {
-                Ok(0) => {
-                    let _ = tx.send(Event::Closed);
-                    break;
-                }
-                Ok(count) => {
-                    if tx
-                        .send(Event::Bytes(
-                            stderr,
-                            Zeroizing::new(buffer[..count].to_vec()),
-                        ))
-                        .is_err()
-                    {
+fn read_stream(
+    mut stream: impl Read + Send + 'static,
+    stderr: bool,
+    tx: SyncSender<Event>,
+) -> Result<()> {
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let mut buffer = Zeroizing::new([0_u8; 4096]);
+            loop {
+                match stream.read(buffer.as_mut()) {
+                    Ok(0) => {
+                        let _ = tx.send(Event::Closed);
                         break;
                     }
-                    buffer.zeroize();
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    let _ = tx.send(Event::ReadFailed);
-                    break;
+                    Ok(count) => {
+                        if tx
+                            .send(Event::Bytes(
+                                stderr,
+                                Zeroizing::new(buffer[..count].to_vec()),
+                            ))
+                            .is_err()
+                        {
+                            break;
+                        }
+                        buffer.zeroize();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => {
+                        let _ = tx.send(Event::ReadFailed);
+                        break;
+                    }
                 }
             }
-        }
-    });
+        })
+        .map_err(|_| Failure::permanent("Cannot start a protected credential reader"))?;
+    Ok(())
 }
 
 struct Output {
@@ -243,14 +229,30 @@ impl Output {
     }
 }
 
-fn invoke(args: &Args, command: &[&str], account: Option<&Account>) -> Result<Output> {
+fn invoke(args: &Args, command: &[&str], mut account: Option<&mut Account>) -> Result<Output> {
+    let mut process = Command::new(&args.setsid);
+    process
+        .arg(&args.cli)
+        .args(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let parent = std::process::id();
+    // SAFETY: the post-fork closure uses only async-signal-safe libc calls and
+    // immutable integers. It never allocates or accesses Rust synchronization.
+    unsafe {
+        process.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() as u32 != parent {
+                return Err(std::io::Error::from_raw_os_error(libc::ECANCELED));
+            }
+            Ok(())
+        });
+    }
     let mut client = Client(
-        Command::new(&args.setsid)
-            .arg(&args.cli)
-            .args(command)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        process
             .spawn()
             .map_err(|_| Failure::permanent("Cannot launch the official Proton client"))?,
     );
@@ -265,10 +267,10 @@ fn invoke(args: &Args, command: &[&str], account: Option<&Account>) -> Result<Ou
         .stderr
         .take()
         .ok_or_else(|| Failure::permanent("Missing Proton stderr pipe"))?;
-    read_stream(stdout, false, tx.clone());
-    read_stream(stderr, true, tx);
-    let mut out = Zeroizing::new(Vec::new());
-    let mut err = Zeroizing::new(Vec::new());
+    read_stream(stdout, false, tx.clone())?;
+    read_stream(stderr, true, tx)?;
+    let mut out = Zeroizing::new(Vec::with_capacity(MAX_BYTES));
+    let mut err = Zeroizing::new(Vec::with_capacity(MAX_BYTES));
     let mut password_sent = false;
     let mut totp_sent = false;
     let mut closed = 0;
@@ -293,7 +295,7 @@ fn invoke(args: &Args, command: &[&str], account: Option<&Account>) -> Result<Ou
                 } else {
                     out.extend_from_slice(&bytes);
                 }
-                if let Some(account) = account {
+                if let Some(account) = account.as_deref_mut() {
                     let prompts = String::from_utf8_lossy(&err);
                     if !password_sent && prompts.contains("Password: ") {
                         let stdin = client
@@ -303,6 +305,7 @@ fn invoke(args: &Args, command: &[&str], account: Option<&Account>) -> Result<Ou
                             .ok_or_else(|| Failure::permanent("Missing Proton input pipe"))?;
                         writeln!(stdin, "{}", account.password)
                             .map_err(|_| Failure::permanent("Cannot deliver Proton password"))?;
+                        account.password.zeroize();
                         password_sent = true;
                     }
                     if prompts.matches("2FA Token: ").count() > 1 {
@@ -311,15 +314,17 @@ fn invoke(args: &Args, command: &[&str], account: Option<&Account>) -> Result<Ou
                         ));
                     }
                     if !totp_sent && prompts.contains("2FA Token: ") {
-                        let seed = account.totp_secret.as_deref()
+                        let seed = account.totp_secret.take()
                             .ok_or_else(|| Failure::permanent("Proton requires 2FA; enroll totpSecret in the encrypted credential document"))?;
+                        let seed = Zeroizing::new(seed);
                         let seconds = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map_err(|_| {
                                 Failure::permanent("System clock is unavailable for Proton TOTP")
                             })?
                             .as_secs();
-                        let code = totp(seed, seconds, 6)?;
+                        let code = totp(&seed, seconds, 6)?;
+                        drop(seed);
                         let stdin = client
                             .0
                             .stdin
@@ -380,12 +385,25 @@ fn run(args: &Args) -> Result<()> {
         .map_err(|_| Failure::permanent("Cannot open Proton login lock"))?;
     lock.try_lock()
         .map_err(|_| Failure::retry("Another Proton login attempt is running"))?;
-    let account = read_account(&args.credentials_file)?;
-    if signed_in(&invoke(args, &["info"], None)?, &account.username)? {
+    // Validate ciphertext first, then drop the seed/password before potentially
+    // slow network/keyring probes. Decrypt again only if authentication is needed.
+    let username = {
+        let mut account = encrypted_account::read(args)?;
+        Zeroizing::new(std::mem::take(&mut account.username))
+    };
+    if signed_in(&invoke(args, &["info"], None)?, &username)? {
         println!("Proton account session is already enrolled");
         return Ok(());
     }
-    let login = invoke(args, &["signin", "--", &account.username], Some(&account))?;
+    let mut account = encrypted_account::read(args)?;
+    if account.username != *username {
+        return Err(Failure::permanent(
+            "Encrypted Proton account changed during login; retry",
+        ));
+    }
+    let login = invoke(args, &["signin", "--", &username], Some(&mut account))?;
+    account.password.zeroize();
+    account.totp_secret.zeroize();
     login.check()?;
     if !signed_in(&invoke(args, &["info"], None)?, &account.username)? {
         return Err(Failure::permanent(
@@ -398,7 +416,7 @@ fn run(args: &Args) -> Result<()> {
 
 fn main() {
     let cli = Cli::parse();
-    let result = enrollment::disable_core_dumps().and_then(|()| match cli.command {
+    let result = protection::Protection::acquire().and_then(|_protection| match cli.command {
         AuthCommand::Login(args) => run(&args),
         AuthCommand::Enroll(args) => enrollment::run(&args),
     });

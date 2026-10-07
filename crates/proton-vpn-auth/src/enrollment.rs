@@ -3,86 +3,21 @@ use super::{Account, Failure, MAX_BYTES, Result, decode_seed};
 use clap::Args;
 use data_encoding::BASE32_NOPAD;
 use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
 use std::io::{IsTerminal, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 #[derive(Args)]
 pub(super) struct EnrollArgs {
-    /// New JSON file under the current user's private XDG_RUNTIME_DIR.
-    #[arg(long, required_unless_present = "stdout", conflicts_with = "stdout")]
-    pub out: Option<PathBuf>,
     /// Read a bounded credential JSON document from a private stdin pipe.
-    #[arg(long, requires = "stdout")]
+    #[arg(long)]
     pub stdin: bool,
     /// Write the validated canonical document to a private stdout pipe.
-    #[arg(long, requires = "stdin", conflicts_with = "out")]
+    /// Without --stdin, prompt on the controlling terminal.
+    #[arg(long, required = true)]
     pub stdout: bool,
     /// Explicitly enroll an account without TOTP; the default requires its existing seed.
     #[arg(long)]
     pub password_only: bool,
-}
-
-pub(super) fn disable_core_dumps() -> Result<()> {
-    let limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: setrlimit reads a valid stack-allocated rlimit; it retains no pointer.
-    if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } != 0 {
-        return Err(Failure::permanent(
-            "Cannot disable credential-process core dumps",
-        ));
-    }
-    Ok(())
-}
-
-fn private_directory(path: &Path) -> Result<PathBuf> {
-    let path = fs::canonicalize(path).map_err(|_| {
-        Failure::permanent("Credential output requires an existing private runtime directory")
-    })?;
-    let metadata = fs::metadata(&path)
-        .map_err(|_| Failure::permanent("Cannot inspect credential runtime directory"))?;
-    // SAFETY: geteuid takes no arguments and has no preconditions.
-    let uid = unsafe { libc::geteuid() };
-    if !metadata.is_dir() || metadata.uid() != uid || metadata.permissions().mode() & 0o077 != 0 {
-        return Err(Failure::permanent(
-            "Credential runtime directory must be user-owned and mode 0700",
-        ));
-    }
-    Ok(path)
-}
-
-fn output_path(path: &Path) -> Result<PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| Failure::permanent("Credential enrollment requires XDG_RUNTIME_DIR"))?;
-    let runtime = private_directory(Path::new(&runtime))?;
-    if !path.is_absolute() {
-        return Err(Failure::permanent(
-            "Credential output must be an absolute runtime path",
-        ));
-    }
-    let parent = private_directory(
-        path.parent()
-            .ok_or_else(|| Failure::permanent("Credential output has no parent directory"))?,
-    )?;
-    if !parent.starts_with(runtime) {
-        return Err(Failure::permanent(
-            "Credential output must stay under XDG_RUNTIME_DIR",
-        ));
-    }
-    let path = parent.join(
-        path.file_name()
-            .ok_or_else(|| Failure::permanent("Credential output has no file name"))?,
-    );
-    if path.symlink_metadata().is_ok() {
-        return Err(Failure::permanent(
-            "Credential output already exists; choose a new runtime file",
-        ));
-    }
-    Ok(path)
 }
 
 fn prompt(label: &str) -> Result<Zeroizing<String>> {
@@ -93,29 +28,15 @@ fn prompt(label: &str) -> Result<Zeroizing<String>> {
         })
 }
 
-fn write_document(path: &Path, account: &Account) -> Result<()> {
+fn write_document(account: &Account) -> Result<()> {
     account.validate()?;
     let bytes = Zeroizing::new(
         serde_json::to_vec(account)
             .map_err(|_| Failure::permanent("Cannot encode Proton credential document"))?,
     );
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|_| Failure::permanent("Cannot create a new private credential document"))?;
-    if file
+    std::io::stdout()
         .write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .is_err()
-    {
-        let _ = fs::remove_file(path);
-        return Err(Failure::permanent(
-            "Cannot persist Proton credential document",
-        ));
-    }
-    Ok(())
+        .map_err(|_| Failure::permanent("Cannot write Proton credential output"))
 }
 
 fn decode_parameter(input: &str) -> Result<Zeroizing<String>> {
@@ -224,25 +145,28 @@ fn pipe_document(password_only: bool) -> Result<()> {
         )
     })?;
     let account = prepare_account(account, password_only)?;
-    let document = Zeroizing::new(
-        serde_json::to_vec(&account)
-            .map_err(|_| Failure::permanent("Cannot encode Proton credential document"))?,
-    );
-    std::io::stdout()
-        .write_all(&document)
-        .map_err(|_| Failure::permanent("Cannot write Proton credential output"))
+    write_document(&account)
 }
 
 pub(super) fn run(args: &EnrollArgs) -> Result<()> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: fstat writes a complete stat on success to this valid allocation.
+    let inspected = unsafe { libc::fstat(libc::STDOUT_FILENO, metadata.as_mut_ptr()) } == 0;
+    if !inspected {
+        return Err(Failure::permanent(
+            "Cannot inspect the credential output pipe",
+        ));
+    }
+    // SAFETY: successful fstat initialized the complete stat above.
+    let kind = unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT;
+    if !matches!(kind, libc::S_IFIFO | libc::S_IFSOCK) {
+        return Err(Failure::permanent(
+            "Credential enrollment requires a private stdout pipe",
+        ));
+    }
     if args.stdin && args.stdout {
         return pipe_document(args.password_only);
     }
-    // Validate the destination before requesting any credentials.
-    let path = output_path(
-        args.out
-            .as_deref()
-            .ok_or_else(|| Failure::permanent("Enrollment requires an output destination"))?,
-    )?;
     let username = prompt("Proton account username: ")?;
     let password = prompt("Proton account password: ")?;
     let confirmation = prompt("Repeat password: ")?;
@@ -271,48 +195,33 @@ pub(super) fn run(args: &EnrollArgs) -> Result<()> {
         },
         args.password_only,
     )?;
-    write_document(&path, &account)?;
-    eprintln!(
-        "Private Proton credential document created; encrypt it through your secret manager and remove the runtime file"
-    );
-    Ok(())
+    write_document(&account)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
-    fn document_creation_is_private_and_never_replaces_existing_material() {
-        let directory = tempdir().expect("private fixture directory");
-        let path = directory.path().join("account.json");
+    fn password_only_document_preserves_credentials() {
         let account = Account {
             username: "fixture".into(),
             password: "private fixture".into(),
             totp_secret: None,
         };
-        assert!(write_document(&path, &account).is_ok());
-        assert_eq!(
-            fs::metadata(&path).expect("metadata").permissions().mode() & 0o777,
-            0o600
-        );
-        let before = fs::read(&path).expect("document");
-        assert!(write_document(&path, &account).is_err());
-        assert_eq!(fs::read(&path).expect("preserved document"), before);
-        assert!(super::super::read_account(&path).is_ok());
+        let account = prepare_account(account, true).unwrap_or_else(|_| panic!("valid account"));
+        assert_eq!(account.username, "fixture");
+        assert_eq!(account.password, "private fixture");
+        assert!(account.totp_secret.is_none());
     }
 
     #[test]
-    fn invalid_credentials_create_no_file() {
-        let directory = tempdir().expect("private fixture directory");
-        let path = directory.path().join("account.json");
+    fn invalid_credentials_are_rejected_before_output() {
         let account = Account {
             username: "fixture".into(),
             password: "private fixture".into(),
             totp_secret: Some("invalid!".into()),
         };
-        assert!(write_document(&path, &account).is_err());
-        assert!(!path.exists());
+        assert!(prepare_account(account, false).is_err());
     }
 }

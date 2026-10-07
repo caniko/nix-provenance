@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- Proton VPN accounts stay age-encrypted at rest and decrypt natively only in
+  short-lived locked, non-dumpable memory with a logind sleep inhibitor. Home
+  login now uses `encryptedFile` and `identityPaths`; agenix plaintext installation
+  must be disabled. Enrollment streams to an encryption pipe and rejects file output.
+
 - Stalwart proxy fixtures wait for listener readiness after configuration
   switches before checking trust replacement and clearing.
 - Kanidm credential wiring checks read the built script directly, avoiding

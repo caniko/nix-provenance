@@ -10,7 +10,9 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+age = { version = "0.11", features = ["ssh"] }
 clap.workspace = true
+dbus = { version = "0.9", features = ["vendored"] }
 data-encoding = "2"
 hmac = "0.12"
 libc = "0.2"

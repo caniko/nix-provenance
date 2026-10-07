@@ -37,7 +37,8 @@
       login = {
         enable = true;
         package = pkgs.writeShellScriptBin "proton-vpn-auth" "exit 0";
-        credentialsFile = "\${XDG_RUNTIME_DIR}/agenix/proton_vpn";
+        encryptedFile = "/nix/store/fixture/proton_vpn.age";
+        identityPaths = ["/home/fixture user/.ssh/id_ed25519"];
         keyringServiceUnit = "oo7-daemon.service";
         credentialServiceUnits = ["agenix.service"];
       };
@@ -48,7 +49,7 @@
       enable = true;
       login = {
         enable = true;
-        credentialsFile = "/nix/store/invalid-account";
+        encryptedFile = "/nix/store/invalid-account";
       };
     }).config;
   service = enabled.systemd.user.services.nix-provenance-proton-vpn-login;
@@ -56,9 +57,11 @@ in
   assert builtins.all (a: a.assertion) enabled.assertions;
   assert !(builtins.all (a: a.assertion) bad.assertions);
   assert disabled.home.packages == [] && disabled.systemd.user.services == {};
-  assert service.Service.LoadCredential == ["account:%t/agenix/proton_vpn"];
-  assert lib.hasInfix " login --credentials-file %d/account" service.Service.ExecStart;
-  assert enabled.systemd.user.paths.nix-provenance-proton-vpn-login.Path.PathChanged == "%t/agenix/proton_vpn";
+  assert service.Service.LoadCredential == ["account.age:/nix/store/fixture/proton_vpn.age"];
+  assert lib.hasInfix " login --encrypted-file %d/account.age" service.Service.ExecStart;
+  assert lib.hasInfix "--identity '/home/fixture user/.ssh/id_ed25519'" service.Service.ExecStart;
+  assert service.Service.MemorySwapMax == 0 && service.Service.LimitMEMLOCK == "8M";
+  assert enabled.systemd.user.paths.nix-provenance-proton-vpn-login.Path.PathChanged == "/nix/store/fixture/proton_vpn.age";
   assert builtins.elem "agenix.service" service.Unit.After;
   assert builtins.elem "oo7-daemon.service" service.Unit.After;
   assert service.Service.RestartPreventExitStatus == 2;
