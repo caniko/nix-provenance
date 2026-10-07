@@ -1,6 +1,8 @@
 [advisories]
 # RUSTSEC-2023-0071: rsa Marvin Attack (medium, no fix)
-# Transitive through kanidm_client. Monitor kanidm releases.
+# Transitive through kanidm_client. Monitor kanidm releases. age's SSH feature
+# also compiles RSA support; proton-vpn-auth rejects RSA identities before any
+# private-key decryption and permits only SSH-ed25519/X25519 recipients.
 ignore = ["RUSTSEC-2023-0071"]
 
 [[licenses.exceptions]]
