@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Stalwart proxy fixtures wait for listener readiness after configuration
+  switches before checking trust replacement and clearing.
 - Kanidm credential wiring checks read the built script directly, avoiding
   early pipe closure failures while preserving every configuration assertion.
 - Vikunja project and label response IDs remain available to reconciliation
