@@ -8,7 +8,7 @@ nix-provenance.proton-vpn = {
   enable = true;
   login = {
     enable = true;
-    encryptedFile = toString config.age.secrets.proton-account.file;
+    encryptedFile = "${config.age.secrets.proton-account.file}";
     identityPaths = config.age.identityPaths;
     keyringServiceUnit = "oo7-daemon.service";
   };
@@ -23,6 +23,8 @@ real credentials through your secret manager; never render their values in Nix.
 The username/password must belong to the existing Proton account, not its
 OpenVPN credentials. This integration authenticates clients; it does not create
 or reset Proton accounts.
+Interpolate a Nix path as shown so the ciphertext retains its store context and
+belongs to the home closure even while agenix plaintext installation is disabled.
 
 ## Interactive credential enrollment
 
