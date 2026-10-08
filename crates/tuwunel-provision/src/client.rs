@@ -74,7 +74,8 @@ impl<'a> CreateRoomRequest<'a> {
             name,
             topic,
             invite: invite.iter().map(String::as_str).collect(),
-            power_level_content_override: encrypted.then(|| serde_json::json!({"invite":100})),
+            power_level_content_override: encrypted
+                .then(|| serde_json::json!({"invite":100,"events":{"m.room.redaction":100}})),
             initial_state: if encrypted {
                 vec![
                     serde_json::json!({"type": "m.room.join_rules", "state_key": "", "content": {"join_rule": "invite"}}),
@@ -642,20 +643,41 @@ fn verify_private_room_state(
             bail!("nonowner can change room policy through {key}");
         }
     }
-    if let Some(events) = powers.get("events") {
-        for (kind, value) in events.as_object().context("invalid event power levels")? {
-            let required = level(Some(value), 0)?;
-            if owner_power < required {
-                bail!("declared owner cannot control all room event types");
-            }
-            // Only known timeline messages may bypass owner-only state control.
-            if !matches!(
-                kind.as_str(),
-                "m.room.message" | "m.room.encrypted" | "m.reaction" | "m.sticker"
-            ) && nonowner_power >= required
-            {
-                bail!("nonowner can change room policy through {kind}");
-            }
+    let events = match powers.get("events") {
+        Some(value) => value.as_object().context("invalid event power levels")?,
+        None => &empty,
+    };
+    // In v12, redaction authorization uses the event threshold, not `redact`.
+    if version >= 12 {
+        let required = match events.get("m.room.redaction") {
+            Some(value) => level(Some(value), 0)?,
+            None => level(powers.get("events_default"), 0)?,
+        };
+        if nonowner_power >= required {
+            bail!("nonowner can change room policy through m.room.redaction");
+        }
+    }
+    for (kind, value) in events {
+        let required = level(Some(value), 0)?;
+        if owner_power < required {
+            bail!("declared owner cannot control all room event types");
+        }
+        // Only known timeline messages may bypass owner-only state control.
+        if !matches!(
+            kind.as_str(),
+            "m.room.message"
+                | "m.room.encrypted"
+                | "m.reaction"
+                | "m.sticker"
+                | "m.poll.start"
+                | "m.poll.response"
+                | "m.poll.end"
+                | "org.matrix.msc3381.poll.start"
+                | "org.matrix.msc3381.poll.response"
+                | "org.matrix.msc3381.poll.end"
+        ) && nonowner_power >= required
+        {
+            bail!("nonowner can change room policy through {kind}");
         }
     }
     if members.get(creator).map(String::as_str) != Some("join") {
@@ -703,6 +725,10 @@ mod private_room_tests {
         assert_eq!(body["preset"], "private_chat");
         assert_eq!(body["invite"], serde_json::json!(["@can:example.test"]));
         assert_eq!(body["power_level_content_override"]["invite"], 100);
+        assert_eq!(
+            body["power_level_content_override"]["events"]["m.room.redaction"],
+            100
+        );
         assert_eq!(body["initial_state"][0]["content"]["join_rule"], "invite");
         assert_eq!(
             body["initial_state"][1]["content"]["guest_access"],
@@ -800,8 +826,7 @@ mod private_room_tests {
         assert!(verify(&events).is_err());
         events = state();
         events[4]["content"]["room_version"] = "12".into();
-        events[5]["content"] =
-            serde_json::json!({"users":{},"invite":100,"events":{"m.room.tombstone":150}});
+        events[5]["content"] = serde_json::json!({"users":{},"invite":100,"events":{"m.room.tombstone":150,"m.room.redaction":100}});
         assert!(verify(&events).is_ok());
         events[4]["content"]["additional_creators"] = serde_json::json!(["@other:example.test"]);
         assert!(verify(&events).is_err());
@@ -848,6 +873,47 @@ mod private_room_tests {
             verify(&events).is_ok(),
             "ordinary encrypted messages remain allowed"
         );
+    }
+
+    #[test]
+    fn v12_redaction_requires_owner_only_effective_event_power() {
+        for levels in [
+            serde_json::json!({"invite":100}),
+            serde_json::json!({"invite":100,"events_default":0}),
+            serde_json::json!({"invite":100,"events_default":100,"events":{"m.room.redaction":0}}),
+            serde_json::json!({"invite":100,"users_default":10,"events_default":10}),
+            serde_json::json!({"invite":100,"users":{"@can:example.test":10},"events_default":10}),
+        ] {
+            let mut events = state();
+            events[4]["content"]["room_version"] = "12".into();
+            events[5]["content"] = levels;
+            assert!(verify(&events).is_err());
+        }
+        for levels in [
+            serde_json::json!({"invite":100,"events_default":50}),
+            serde_json::json!({"invite":100,"events_default":0,"events":{"m.room.redaction":100}}),
+        ] {
+            let mut events = state();
+            events[4]["content"]["room_version"] = "12".into();
+            events[5]["content"] = levels;
+            assert!(verify(&events).is_ok());
+        }
+    }
+
+    #[test]
+    fn ordinary_poll_events_do_not_grant_room_policy_control() {
+        for kind in [
+            "m.poll.start",
+            "m.poll.response",
+            "m.poll.end",
+            "org.matrix.msc3381.poll.start",
+            "org.matrix.msc3381.poll.response",
+            "org.matrix.msc3381.poll.end",
+        ] {
+            let mut events = state();
+            events[5]["content"]["events"][kind] = 0.into();
+            assert!(verify(&events).is_ok(), "rejected timeline event {kind}");
+        }
     }
 
     #[test]

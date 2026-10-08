@@ -157,6 +157,14 @@ def main():
             api("GET", room_path(room, "state"), tokens[other], expected=403)
             api("POST", room_path(room, "join"), tokens["matrix-admin"], {}, expected=403)
             api("POST", room_path(room, "join"), tokens["can"], {})
+            owner_event = api(
+                "PUT", room_path(room, "send/m.room.message/owner-probe"), tokens[user],
+                {"msgtype": "m.notice", "body": "VM redaction authorization probe"},
+            )["event_id"]
+            api(
+                "PUT", room_path(room, f"redact/{encoded(owner_event)}/participant-probe"),
+                tokens["can"], {}, expected=403,
+            )
             api(
                 "PUT", room_path(room, "state/m.room.join_rules"), tokens["can"],
                 {"join_rule": "public"}, expected=403,

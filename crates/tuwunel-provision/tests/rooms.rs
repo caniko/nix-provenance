@@ -277,6 +277,10 @@ fn creates_encrypted_room_as_owner_and_revokes_provisioning_session() {
     assert_eq!(create.body["preset"], "private_chat");
     assert_eq!(create.body["invite"], json!(["@can:example.test"]));
     assert_eq!(create.body["power_level_content_override"]["invite"], 100);
+    assert_eq!(
+        create.body["power_level_content_override"]["events"]["m.room.redaction"],
+        100
+    );
     assert_eq!(create.body["initial_state"][2]["state_key"], "");
     assert_eq!(
         create.body["initial_state"][2]["content"]["algorithm"],
@@ -528,6 +532,30 @@ fn logout_recovery_preserves_the_original_reconciliation_failure() {
         if logout_status == 500 {
             assert!(stderr.contains("same-device cleanup also failed"));
         }
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn v12_redaction_and_poll_powers_are_verified_before_inviting() {
+    for safe in [false, true] {
+        let mut state = private_state();
+        state[4]["content"]["room_version"] = "12".into();
+        state[5]["content"] = json!({"invite":100,"events":{"m.poll.response":0}});
+        if safe {
+            state[5]["content"]["events"]["m.room.redaction"] = 100.into();
+        }
+        let (output, requests) = run(Scenario {
+            state,
+            ..Scenario::default()
+        });
+        assert_eq!(
+            output.status.success(),
+            safe,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(requests.iter().any(|r| r.path.ends_with("/invite")), safe);
         assert_logged_out(&requests);
     }
 }

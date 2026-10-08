@@ -67,9 +67,9 @@
         description = "Require encryption in the initial room state and verify it on reconciliation.";
       };
       expectedRoomId = mkOption {
-        type = types.nullOr (types.strMatching "^![^:]+:.+$");
+        type = types.nullOr (types.strMatching "^!([^:]+:.+|[A-Za-z0-9_-]{43})$");
         default = null;
-        description = "Live room ID pinned after bootstrap; fail if this alias resolves elsewhere.";
+        description = "Live room ID (legacy domain-qualified or v12 hash-based) pinned after bootstrap; fail if this alias resolves elsewhere.";
       };
     };
   };
