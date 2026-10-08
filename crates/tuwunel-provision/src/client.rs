@@ -206,6 +206,10 @@ impl TuwunelClient {
             return Ok(data.access_token);
         }
 
+        // Preserve the HTTP status in the error chain so callers distinguish
+        // definitive authentication refusals from potentially committed logins.
+        resp.error_for_status()
+            .with_context(|| format!("password login returned HTTP {status}"))?;
         bail!("password login returned HTTP {status}");
     }
 
@@ -588,13 +592,34 @@ fn verify_private_room_state(
     if !(1..=12).contains(&version) {
         bail!("unsupported Matrix room version: {version}");
     }
-    let level = |value: Option<&serde_json::Value>, default: i64| -> Result<i64> {
+    // Order exact integers first, then any legacy float overflow beyond i64.
+    // This preserves integer precision without saturating distinct finite legacy
+    // powers or rounding their comparisons through f64 in modern rooms.
+    let level = |value: Option<&serde_json::Value>, default: i64| -> Result<(i64, f64)> {
         match value {
-            Some(serde_json::Value::String(value)) if version < 10 => {
-                value.trim().parse().context("invalid Matrix power level")
+            Some(serde_json::Value::String(value)) if version < 10 => value
+                .trim()
+                .parse()
+                .map(|n| (n, 0.0))
+                .context("invalid Matrix power level"),
+            Some(value) if version < 6 && value.is_f64() => {
+                let n = value
+                    .as_f64()
+                    .filter(|n| n.is_finite())
+                    .context("invalid Matrix power level")?
+                    .trunc();
+                let overflow = if n >= i64::MAX as f64 || n < i64::MIN as f64 {
+                    n
+                } else {
+                    0.0
+                };
+                Ok((n as i64, overflow))
             }
-            Some(value) => value.as_i64().context("invalid Matrix power level"),
-            None => Ok(default),
+            Some(value) => value
+                .as_i64()
+                .map(|n| (n, 0.0))
+                .context("invalid Matrix power level"),
+            None => Ok((default, 0.0)),
         }
     };
     let empty = serde_json::Map::new();
@@ -613,11 +638,13 @@ fn verify_private_room_state(
     // event give the creation sender 100. These are protocol defaults, not
     // inferred ownership or fabricated state.
     let owner_power = if version >= 12 {
-        i64::MAX
+        (i64::MAX, f64::INFINITY)
     } else if power_levels.is_none() {
-        100
+        (100, 0.0)
     } else {
-        level(users.get(creator), default_user)?
+        users
+            .get(creator)
+            .map_or(Ok(default_user), |value| level(Some(value), 0))?
     };
     if owner_power <= default_user {
         bail!("declared owner does not control room power levels");
@@ -625,7 +652,10 @@ fn verify_private_room_state(
     let mut nonowner_power = default_user;
     for (user, value) in users {
         if user != creator {
-            nonowner_power = nonowner_power.max(level(Some(value), 0)?);
+            let power = level(Some(value), 0)?;
+            if power > nonowner_power {
+                nonowner_power = power;
+            }
         }
     }
     if nonowner_power >= owner_power {
@@ -959,7 +989,6 @@ mod private_room_tests {
                 serde_json::json!("9223372036854775808"),
                 serde_json::json!(true),
                 serde_json::json!(null),
-                serde_json::json!(100.0),
                 serde_json::json!({}),
             ] {
                 let mut events = state();
@@ -976,6 +1005,74 @@ mod private_room_tests {
                 events[5]["content"] = levels;
                 let error = verify(&events).unwrap_err().to_string();
                 assert!(!error.contains("invalid Matrix power level"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_float_powers_follow_version_rules_and_truncate_towards_zero() {
+        for version in 1..=12 {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.to_string().into();
+            events[5]["content"] = serde_json::json!({
+                "users":{"@iris:example.test":100.9}, "users_default":-0.9,
+                "state_default":50.9, "invite":100.5, "kick":50.9, "ban":50.9, "redact":50.9,
+                "events":{"m.room.redaction":100.5}
+            });
+            assert_eq!(
+                verify(&events).is_ok(),
+                version < 6,
+                "room version {version}"
+            );
+            events[5]["content"]["events"]["m.room.redaction"] = 0.9.into();
+            assert!(
+                verify(&events).is_err(),
+                "nonowner can send redactions after truncation"
+            );
+        }
+        for version in 1..=5 {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.to_string().into();
+            events[5]["content"]["users"]["@iris:example.test"] = 1e100.into();
+            events[5]["content"]["events"]["m.room.redaction"] = 5e99.into();
+            assert!(
+                verify(&events).is_ok(),
+                "finite powers beyond i64 remain comparable"
+            );
+            events[5]["content"]["users"]["@can:example.test"] = 1e100.into();
+            assert!(
+                verify(&events).is_err(),
+                "equal legacy controller power is refused"
+            );
+        }
+    }
+
+    #[test]
+    fn integer_power_comparisons_remain_exact_above_f64_precision() {
+        for version in 1..=11 {
+            for strings in [false, true] {
+                let power = |n: i64| {
+                    if strings {
+                        serde_json::json!(n.to_string())
+                    } else {
+                        serde_json::json!(n)
+                    }
+                };
+                let mut events = state();
+                events[4]["content"]["room_version"] = version.to_string().into();
+                let owner = power(9_007_199_254_740_993);
+                events[5]["content"] = serde_json::json!({
+                    "users":{"@iris:example.test":owner,"@can:example.test":power(9_007_199_254_740_992)},
+                    "users_default":-1, "state_default":owner, "invite":owner,
+                    "kick":owner, "ban":owner, "redact":owner,
+                    "events":{"m.room.redaction":owner}
+                });
+                assert_eq!(verify(&events).is_ok(), !strings || version < 10);
+                events[5]["content"]["events"]["m.room.redaction"] = power(9_007_199_254_740_994);
+                assert!(
+                    verify(&events).is_err(),
+                    "owner cannot meet a strictly greater threshold"
+                );
             }
         }
     }

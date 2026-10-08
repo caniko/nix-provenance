@@ -185,6 +185,19 @@ fn main() -> Result<()> {
                 Some("TUWUNEL_PROVISION"),
             ) {
                 Ok(token) => token,
+                Err(login_error)
+                    if login_error
+                        .downcast_ref::<reqwest::Error>()
+                        .and_then(reqwest::Error::status)
+                        .is_some_and(|status| {
+                            status.is_client_error()
+                                && status != reqwest::StatusCode::REQUEST_TIMEOUT
+                        }) =>
+                {
+                    return Err(login_error).with_context(|| {
+                        format!("logging in Matrix room {name} creator was refused")
+                    });
+                }
                 Err(login_error) => {
                     // The server may have created the device before its response
                     // was lost. Recover this same device once solely to revoke it;

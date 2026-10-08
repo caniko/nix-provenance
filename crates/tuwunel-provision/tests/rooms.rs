@@ -40,6 +40,7 @@ struct Scenario {
     legacy: bool,
     lost_login_response: bool,
     malformed_login_response: bool,
+    first_login_status: u16,
     lost_logout_response: bool,
     fail_first_logout: bool,
 }
@@ -56,6 +57,7 @@ impl Default for Scenario {
             legacy: false,
             lost_login_response: false,
             malformed_login_response: false,
+            first_login_status: 200,
             lost_logout_response: false,
             fail_first_logout: false,
         }
@@ -133,7 +135,16 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
                 ("GET", "/_matrix/client/versions") => (200, json!({"versions":["v1.11"]})),
                 ("POST", "/_synapse/admin/v2/users/@iris:example.test") => (200, json!({})),
                 ("POST", "/_matrix/client/v3/login") => {
-                    if scenario.malformed_login_response
+                    if scenario.first_login_status != 200
+                        && !requests
+                            .iter()
+                            .any(|r: &Request| r.path.ends_with("/login"))
+                    {
+                        (
+                            scenario.first_login_status,
+                            json!({"errcode":"M_FORBIDDEN","error":"fixture refusal"}),
+                        )
+                    } else if scenario.malformed_login_response
                         && !requests
                             .iter()
                             .any(|r: &Request| r.path.ends_with("/login"))
@@ -389,6 +400,52 @@ fn ambiguous_login_failure_recovers_and_revokes_the_same_device() {
 }
 
 #[test]
+fn explicit_login_refusals_do_not_repeat_credentials() {
+    for status in [400, 401, 403, 404, 405, 409, 429] {
+        let (output, requests) = run(Scenario {
+            first_login_status: status,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/login"))
+                .count(),
+            1
+        );
+        assert!(!requests.iter().any(|r| r.path.ends_with("/logout")
+            || r.path.contains("/rooms/")
+            || r.path.ends_with("/createRoom")));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("HTTP {status}")));
+    }
+}
+
+#[test]
+fn ambiguous_http_login_failure_only_recovers_for_revocation() {
+    for status in [408, 500, 502, 503] {
+        let (output, requests) = run(Scenario {
+            first_login_status: status,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/login"))
+                .count(),
+            2
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|r| r.path.contains("/rooms/") || r.path.ends_with("/createRoom"))
+        );
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
 fn existing_room_with_public_history_or_wrong_owner_is_not_adopted() {
     for bad_state in [
         json!({"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"world_readable"}}),
@@ -602,6 +659,37 @@ fn legacy_string_powers_are_versioned_and_checked_before_inviting() {
                     "{stderr}"
                 );
             }
+            assert_logged_out(&requests);
+        }
+    }
+}
+
+#[test]
+fn legacy_float_powers_are_versioned_and_truncated_before_inviting() {
+    for version in 1..=12 {
+        for safe in [false, true] {
+            let mut state = private_state();
+            state[4]["content"]["room_version"] = version.to_string().into();
+            state[5]["content"] = json!({
+                "users":{"@iris:example.test":100.9}, "users_default":-0.9,
+                "state_default":50.9, "invite":100.5, "kick":50.9, "ban":50.9, "redact":50.9,
+                "events":{"m.room.redaction":if safe { 100.5 } else { 0.9 }}
+            });
+            let (output, requests) = run(Scenario {
+                state,
+                ..Scenario::default()
+            });
+            let expected = version < 6 && safe;
+            assert_eq!(
+                output.status.success(),
+                expected,
+                "room version {version}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                requests.iter().any(|r| r.path.ends_with("/invite")),
+                expected
+            );
             assert_logged_out(&requests);
         }
     }
