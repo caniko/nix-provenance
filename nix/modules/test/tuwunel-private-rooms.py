@@ -3,6 +3,7 @@
 import json
 import pathlib
 import re
+import secrets
 import subprocess
 import sys
 import urllib.error
@@ -38,7 +39,7 @@ def login(user):
         body={
             "type": "m.login.password",
             "identifier": {"type": "m.id.user", "user": user},
-            "password": f"fixture-{user}-password",
+            "password": (pathlib.Path("/run/test-matrix-passwords") / user).read_text(),
             "device_id": "VM_OBSERVER",
         },
     )["access_token"]
@@ -60,7 +61,7 @@ def assert_no_provisioning_device(token):
 def assert_registration_closed():
     denied = api(
         "POST", "/register",
-        body={"username": "must-not-register", "password": "fixture-unused-password"},
+        body={"username": "must-not-register", "password": secrets.token_urlsafe(32)},
         expected=403,
     )
     assert denied["errcode"] == "M_FORBIDDEN"
@@ -78,8 +79,11 @@ def main():
     credentials = pathlib.Path("/run/test-provision-credentials")
     credentials.mkdir(mode=0o700)
     for user, spec in state["users"].items():
+        source = pathlib.Path("/run/test-matrix-passwords") / user
+        assert source.stat().st_mode & 0o777 == 0o600
+        assert len(source.read_text()) >= 32
         path = credentials / spec["credential_name"]
-        path.write_text(f"fixture-{user}-password")
+        path.write_text(source.read_text())
         path.chmod(0o600)
 
     def reconcile(candidate, expected_error=None):
@@ -153,9 +157,32 @@ def main():
             api("GET", room_path(room, "state"), tokens[other], expected=403)
             api("POST", room_path(room, "join"), tokens["matrix-admin"], {}, expected=403)
             api("POST", room_path(room, "join"), tokens["can"], {})
+            api(
+                "PUT", room_path(room, "state/m.room.join_rules"), tokens["can"],
+                {"join_rule": "public"}, expected=403,
+            )
+            api(
+                "POST", room_path(room, "invite"), tokens["can"],
+                {"user_id": "@matrix-admin:example.test"}, expected=403,
+            )
             spec["expectedRoomId"] = room
 
         assert rooms["iris"] != rooms["argus"]
+        powers = api(
+            "GET", room_path(rooms["iris"], "state/m.room.power_levels"), tokens["iris"],
+        )
+        unsafe_powers = json.loads(json.dumps(powers))
+        unsafe_powers.setdefault("users", {})["@can:example.test"] = 50
+        api(
+            "PUT", room_path(rooms["iris"], "state/m.room.power_levels"), tokens["iris"],
+            unsafe_powers,
+        )
+        reconcile(state, "nonowner can change room policy")
+        assert_no_provisioning_device(tokens["iris"])
+        api(
+            "PUT", room_path(rooms["iris"], "state/m.room.power_levels"), tokens["iris"],
+            powers,
+        )
         # Repeat the actual oneshot, then reconcile with observed IDs pinned.
         subprocess.run(
             ["systemctl", "restart", "tuwunel-provision.service"],
