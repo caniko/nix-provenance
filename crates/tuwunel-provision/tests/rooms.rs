@@ -566,6 +566,48 @@ fn every_room_version_checks_redaction_before_inviting() {
 }
 
 #[test]
+fn legacy_string_powers_are_versioned_and_checked_before_inviting() {
+    for version in 1..=12 {
+        for safe in [false, true] {
+            let mut state = private_state();
+            state[4]["content"]["room_version"] = version.to_string().into();
+            state[5]["content"] = json!({
+                "users":{"@iris:example.test":" +00100 ","@can:example.test":" -01 "},
+                "users_default":"-01", "events_default":"000", "state_default":"+050",
+                "invite":" 100 ", "kick":"50", "ban":"50", "redact":"50",
+                "events":{"m.room.redaction":if safe { "\t+100\n" } else { "-01" },"m.room.encrypted":"0"}
+            });
+            let (output, requests) = run(Scenario {
+                state,
+                ..Scenario::default()
+            });
+            let expected = version < 10 && safe;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.success(),
+                expected,
+                "room version {version}: {stderr}"
+            );
+            assert_eq!(
+                requests.iter().any(|r| r.path.ends_with("/invite")),
+                expected
+            );
+            if !expected {
+                assert!(
+                    stderr.contains(if version < 10 {
+                        "nonowner can change room policy through m.room.redaction"
+                    } else {
+                        "invalid Matrix power level"
+                    }),
+                    "{stderr}"
+                );
+            }
+            assert_logged_out(&requests);
+        }
+    }
+}
+
+#[test]
 fn nonowner_policy_power_and_third_party_invites_are_rejected_before_inviting() {
     for bad_state in [
         json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100,"@can:example.test":50},"invite":100}}),

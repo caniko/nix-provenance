@@ -590,6 +590,9 @@ fn verify_private_room_state(
     }
     let level = |value: Option<&serde_json::Value>, default: i64| -> Result<i64> {
         match value {
+            Some(serde_json::Value::String(value)) if version < 10 => {
+                value.trim().parse().context("invalid Matrix power level")
+            }
             Some(value) => value.as_i64().context("invalid Matrix power level"),
             None => Ok(default),
         }
@@ -920,6 +923,61 @@ mod private_room_tests {
             verify(&events).is_ok(),
             "explicit threshold overrides default"
         );
+    }
+
+    #[test]
+    fn legacy_string_power_levels_follow_room_version_rules() {
+        for version in 1..=12 {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.to_string().into();
+            events[5]["content"] = serde_json::json!({
+                "users":{"@iris:example.test":" +00100 ","@can:example.test":" -01 "},
+                "users_default":"-01", "events_default":"000", "state_default":"+050",
+                "invite":" 100 ", "kick":"50", "ban":"50", "redact":"50",
+                "events":{"m.room.redaction":"\t+100\n","m.room.encrypted":"0","m.room.power_levels":"100"}
+            });
+            assert_eq!(
+                verify(&events).is_ok(),
+                version < 10,
+                "room version {version}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_power_parsing_rejects_malformed_values_and_preserves_policy() {
+        for version in 1..=9 {
+            for invalid in [
+                serde_json::json!(""),
+                serde_json::json!("+"),
+                serde_json::json!("-"),
+                serde_json::json!("1.0"),
+                serde_json::json!("1e2"),
+                serde_json::json!("0x64"),
+                serde_json::json!("1 00"),
+                serde_json::json!("100abc"),
+                serde_json::json!("9223372036854775808"),
+                serde_json::json!(true),
+                serde_json::json!(null),
+                serde_json::json!(100.0),
+                serde_json::json!({}),
+            ] {
+                let mut events = state();
+                events[4]["content"]["room_version"] = version.to_string().into();
+                events[5]["content"]["events"]["m.room.redaction"] = invalid;
+                assert!(verify(&events).is_err(), "room version {version}");
+            }
+            for levels in [
+                serde_json::json!({"users":{"@iris:example.test":"100"},"invite":"100","events":{"m.room.redaction":"0"}}),
+                serde_json::json!({"users":{"@iris:example.test":"100","@can:example.test":"100"},"invite":"100","events":{"m.room.redaction":"100"}}),
+            ] {
+                let mut events = state();
+                events[4]["content"]["room_version"] = version.to_string().into();
+                events[5]["content"] = levels;
+                let error = verify(&events).unwrap_err().to_string();
+                assert!(!error.contains("invalid Matrix power level"), "{error}");
+            }
+        }
     }
 
     #[test]
