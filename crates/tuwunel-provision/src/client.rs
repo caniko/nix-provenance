@@ -668,6 +668,10 @@ fn verify_private_room_state(
         ("ban", 50),
         ("redact", 50),
     ] {
+        if key == "redact" && version >= 12 {
+            // v12 redaction sending is controlled by the event threshold below.
+            continue;
+        }
         let required = level(powers.get(key), default)?;
         if owner_power < required {
             bail!("declared owner lacks room control for {key}");
@@ -1078,6 +1082,25 @@ mod private_room_tests {
     }
 
     #[test]
+    fn v12_ignores_redact_but_requires_owner_only_redaction_events() {
+        for version in 1..=12 {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.to_string().into();
+            events[5]["content"]["redact"] = 0.into();
+            assert_eq!(
+                verify(&events).is_ok(),
+                version == 12,
+                "room version {version}"
+            );
+            events[5]["content"]["events"]["m.room.redaction"] = 0.into();
+            assert!(
+                verify(&events).is_err(),
+                "redaction sending power must still exclude nonowners"
+            );
+        }
+    }
+
+    #[test]
     fn ordinary_poll_events_do_not_grant_room_policy_control() {
         for kind in [
             "m.poll.start",
@@ -1130,7 +1153,7 @@ fn is_user_in_use(err: &anyhow::Error) -> bool {
         .any(|msg| msg.starts_with("user_in_use:"))
 }
 
-fn alias_localpart(alias: &str) -> Result<&str> {
+pub(crate) fn alias_localpart(alias: &str) -> Result<&str> {
     let Some(rest) = alias.strip_prefix('#') else {
         bail!("Matrix room alias must start with '#': {alias}");
     };

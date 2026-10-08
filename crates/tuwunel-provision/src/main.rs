@@ -71,6 +71,26 @@ fn main() -> Result<()> {
     let state: State = serde_json::from_str(&raw)
         .with_context(|| format!("parsing state file {}", cli.state.display()))?;
 
+    // Validate every declaration before any readiness, bootstrap or user work:
+    // a bad later room must not leave earlier accounts or markers mutated.
+    for (name, room) in &state.rooms {
+        client::alias_localpart(&room.alias)
+            .with_context(|| format!("validating Matrix room {name} alias"))?;
+        if room.encrypted != room.creator.is_some() {
+            bail!(
+                "Matrix room {name} requires both creator and encrypted for private owner reconciliation"
+            );
+        }
+        if let Some(creator) = &room.creator {
+            if !room.alias.ends_with(&format!(":{}", state.server_name)) {
+                bail!("Matrix room {name} alias does not belong to the provisioned server");
+            }
+            if !state.users.contains_key(creator) {
+                bail!("Matrix room {name} creator {creator} is not a provisioned user");
+            }
+        }
+    }
+
     let base_url = format!("http://127.0.0.1:{}", state.port);
     let registration_bootstrap = RegistrationBootstrap::from_cli(&cli)?;
     let cred_dir = cli.credential_dir;
@@ -165,15 +185,7 @@ fn main() -> Result<()> {
         // Private assistant rooms are created with the assistant's own Matrix
         // identity, so neither the provisioning admin nor a third-party bot
         // ever joins their encrypted conversation.
-        if room.encrypted != room.creator.is_some() {
-            bail!(
-                "Matrix room {name} requires both creator and encrypted for private owner reconciliation"
-            );
-        }
         let creator_client = if let Some(creator) = &room.creator {
-            if !room.alias.ends_with(&format!(":{}", state.server_name)) {
-                bail!("Matrix room {name} alias does not belong to the provisioned server");
-            }
             let user = state.users.get(creator).with_context(|| {
                 format!("Matrix room {name} creator {creator} is not a provisioned user")
             })?;

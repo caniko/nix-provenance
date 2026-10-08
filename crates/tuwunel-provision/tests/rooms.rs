@@ -41,6 +41,7 @@ struct Scenario {
     lost_login_response: bool,
     malformed_login_response: bool,
     first_login_status: u16,
+    room_declarations: Option<Value>,
     lost_logout_response: bool,
     fail_first_logout: bool,
 }
@@ -58,6 +59,7 @@ impl Default for Scenario {
             lost_login_response: false,
             malformed_login_response: false,
             first_login_status: 200,
+            room_declarations: None,
             lost_logout_response: false,
             fail_first_logout: false,
         }
@@ -71,7 +73,7 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("iris-password"), "fixture-password").unwrap();
     std::fs::write(temp.path().join("admin-token"), "fixture-admin").unwrap();
-    let state = json!({
+    let mut state = json!({
         "server_name":"example.test", "port":port, "admin_token_user":null,
         "users":{"iris":{"admin":false,"credential_name":"iris-password"}},
         "rooms":{"iris":{
@@ -81,6 +83,9 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
             "invite":["@can:example.test"]
         }}
     });
+    if let Some(rooms) = &scenario.room_declarations {
+        state["rooms"] = rooms.clone();
+    }
     std::fs::write(temp.path().join("state.json"), state.to_string()).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let server_stop = stop.clone();
@@ -247,6 +252,13 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
     let output = child.wait_with_output().unwrap();
     stop.store(true, Ordering::Release);
     let requests = server.join().unwrap();
+    if requests.is_empty() {
+        assert!(!temp.path().join("markers").exists());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("admin-token")).unwrap(),
+            "fixture-admin"
+        );
+    }
     assert!(
         !timed_out,
         "provisioner exceeded fixture deadline: {}",
@@ -680,6 +692,66 @@ fn legacy_float_powers_are_versioned_and_truncated_before_inviting() {
                 ..Scenario::default()
             });
             let expected = version < 6 && safe;
+            assert_eq!(
+                output.status.success(),
+                expected,
+                "room version {version}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                requests.iter().any(|r| r.path.ends_with("/invite")),
+                expected
+            );
+            assert_logged_out(&requests);
+        }
+    }
+}
+
+#[test]
+fn every_room_declaration_is_validated_before_network_or_local_mutation() {
+    let valid = json!({
+        "alias":"#hermes-iris:example.test", "creator":"iris", "encrypted":true,
+        "invite":["@can:example.test"]
+    });
+    for patch in [
+        json!({"encrypted":false}),
+        json!({"creator":null}),
+        json!({"alias":"#hermes-iris:other.test"}),
+        json!({"creator":"missing"}),
+        json!({"alias":"hermes-iris:example.test"}),
+        json!({"alias":"#hermes-iris"}),
+        json!({"alias":"#:example.test"}),
+    ] {
+        let mut invalid = valid.clone();
+        for (key, value) in patch.as_object().unwrap() {
+            invalid[key] = value.clone();
+        }
+        let (output, requests) = run(Scenario {
+            room_declarations: Some(json!({"a-valid":valid,"z-invalid":invalid})),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "invalid later declaration must precede even readiness/bootstrap/user requests"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Matrix room z-invalid"));
+    }
+}
+
+#[test]
+fn v12_ignores_obsolete_redact_without_relaxing_event_control() {
+    for version in [11, 12] {
+        for safe in [false, true] {
+            let mut state = private_state();
+            state[4]["content"]["room_version"] = version.to_string().into();
+            state[5]["content"]["redact"] = 0.into();
+            state[5]["content"]["events"]["m.room.redaction"] = if safe { 100 } else { 0 }.into();
+            let (output, requests) = run(Scenario {
+                state,
+                ..Scenario::default()
+            });
+            let expected = version == 12 && safe;
             assert_eq!(
                 output.status.success(),
                 expected,
