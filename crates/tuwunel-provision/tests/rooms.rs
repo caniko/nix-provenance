@@ -25,7 +25,7 @@ fn private_state() -> Value {
         {"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}},
         {"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"joined"}},
         {"type":"m.room.create", "state_key":"", "sender":"@iris:example.test", "content":{}},
-        {"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":100}},
+        {"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":100,"events":{"m.room.redaction":100}}},
         {"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}
     ])
 }
@@ -537,26 +537,31 @@ fn logout_recovery_preserves_the_original_reconciliation_failure() {
 }
 
 #[test]
-fn v12_redaction_and_poll_powers_are_verified_before_inviting() {
-    for safe in [false, true] {
-        let mut state = private_state();
-        state[4]["content"]["room_version"] = "12".into();
-        state[5]["content"] = json!({"invite":100,"events":{"m.poll.response":0}});
-        if safe {
-            state[5]["content"]["events"]["m.room.redaction"] = 100.into();
+fn every_room_version_checks_redaction_before_inviting() {
+    for version in 1..=12 {
+        for safe in [false, true] {
+            let mut state = private_state();
+            state[4]["content"]["room_version"] = version.to_string().into();
+            state[5]["content"] = json!({"invite":100,"events":{"m.poll.response":0}});
+            if version < 12 {
+                state[5]["content"]["users"]["@iris:example.test"] = 100.into();
+            }
+            if safe {
+                state[5]["content"]["events"]["m.room.redaction"] = 100.into();
+            }
+            let (output, requests) = run(Scenario {
+                state,
+                ..Scenario::default()
+            });
+            assert_eq!(
+                output.status.success(),
+                safe,
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(requests.iter().any(|r| r.path.ends_with("/invite")), safe);
+            assert_logged_out(&requests);
         }
-        let (output, requests) = run(Scenario {
-            state,
-            ..Scenario::default()
-        });
-        assert_eq!(
-            output.status.success(),
-            safe,
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(requests.iter().any(|r| r.path.ends_with("/invite")), safe);
-        assert_logged_out(&requests);
     }
 }
 

@@ -647,15 +647,17 @@ fn verify_private_room_state(
         Some(value) => value.as_object().context("invalid event power levels")?,
         None => &empty,
     };
-    // In v12, redaction authorization uses the event threshold, not `redact`.
-    if version >= 12 {
-        let required = match events.get("m.room.redaction") {
-            Some(value) => level(Some(value), 0)?,
-            None => level(powers.get("events_default"), 0)?,
-        };
-        if nonowner_power >= required {
-            bail!("nonowner can change room policy through m.room.redaction");
-        }
+    // Every supported version checks the redaction event's sending threshold;
+    // `redact` alone cannot stop redaction of another local user's event.
+    let required = match events.get("m.room.redaction") {
+        Some(value) => level(Some(value), 0)?,
+        None => level(powers.get("events_default"), 0)?,
+    };
+    if owner_power < required {
+        bail!("declared owner lacks room control for m.room.redaction");
+    }
+    if nonowner_power >= required {
+        bail!("nonowner can change room policy through m.room.redaction");
     }
     for (kind, value) in events {
         let required = level(Some(value), 0)?;
@@ -709,7 +711,7 @@ mod private_room_tests {
             serde_json::json!({"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
             serde_json::json!({"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"joined"}}),
             serde_json::json!({"type":"m.room.create", "state_key":"", "sender":"@iris:example.test", "content":{}}),
-            serde_json::json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":100}}),
+            serde_json::json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":100,"events":{"m.room.redaction":100}}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@can:example.test", "content":{"membership":"invite"}}),
         ]
@@ -876,28 +878,48 @@ mod private_room_tests {
     }
 
     #[test]
-    fn v12_redaction_requires_owner_only_effective_event_power() {
-        for levels in [
-            serde_json::json!({"invite":100}),
-            serde_json::json!({"invite":100,"events_default":0}),
-            serde_json::json!({"invite":100,"events_default":100,"events":{"m.room.redaction":0}}),
-            serde_json::json!({"invite":100,"users_default":10,"events_default":10}),
-            serde_json::json!({"invite":100,"users":{"@can:example.test":10},"events_default":10}),
-        ] {
-            let mut events = state();
-            events[4]["content"]["room_version"] = "12".into();
-            events[5]["content"] = levels;
-            assert!(verify(&events).is_err());
+    fn every_supported_version_requires_owner_only_effective_redaction_power() {
+        for version in 1..=12 {
+            for (mut levels, safe) in [
+                (serde_json::json!({"invite":100}), false),
+                (serde_json::json!({"invite":100,"events_default":0}), false),
+                (
+                    serde_json::json!({"invite":100,"events_default":100,"events":{"m.room.redaction":0}}),
+                    false,
+                ),
+                (
+                    serde_json::json!({"invite":100,"users_default":10,"events_default":10}),
+                    false,
+                ),
+                (
+                    serde_json::json!({"invite":100,"users":{"@can:example.test":10},"events_default":10}),
+                    false,
+                ),
+                (serde_json::json!({"invite":100,"events_default":50}), true),
+                (
+                    serde_json::json!({"invite":100,"events_default":0,"events":{"m.room.redaction":100}}),
+                    true,
+                ),
+            ] {
+                if version < 12 {
+                    levels["users"]["@iris:example.test"] = 100.into();
+                }
+                let mut events = state();
+                events[4]["content"]["room_version"] = version.to_string().into();
+                events[5]["content"] = levels;
+                assert_eq!(verify(&events).is_ok(), safe, "room version {version}");
+            }
         }
-        for levels in [
-            serde_json::json!({"invite":100,"events_default":50}),
-            serde_json::json!({"invite":100,"events_default":0,"events":{"m.room.redaction":100}}),
-        ] {
-            let mut events = state();
-            events[4]["content"]["room_version"] = "12".into();
-            events[5]["content"] = levels;
-            assert!(verify(&events).is_ok());
-        }
+        let mut events = state();
+        events[4]["content"]["room_version"] = "11".into();
+        events[5]["content"]["events"] = serde_json::json!({});
+        events[5]["content"]["events_default"] = 101.into();
+        assert!(verify(&events).is_err(), "owner cannot send redactions");
+        events[5]["content"]["events"]["m.room.redaction"] = 100.into();
+        assert!(
+            verify(&events).is_ok(),
+            "explicit threshold overrides default"
+        );
     }
 
     #[test]
