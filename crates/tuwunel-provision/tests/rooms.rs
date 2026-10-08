@@ -23,6 +23,9 @@ fn private_state() -> Value {
         {"type":"m.room.join_rules", "state_key":"", "content":{"join_rule":"invite"}},
         {"type":"m.room.guest_access", "state_key":"", "content":{"guest_access":"forbidden"}},
         {"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}},
+        {"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"joined"}},
+        {"type":"m.room.create", "state_key":"", "sender":"@iris:example.test", "content":{}},
+        {"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100}}},
         {"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}
     ])
 }
@@ -35,6 +38,8 @@ struct Scenario {
     logout_status: u16,
     invite_status: u16,
     legacy: bool,
+    lost_login_response: bool,
+    malformed_login_response: bool,
 }
 
 impl Default for Scenario {
@@ -47,6 +52,8 @@ impl Default for Scenario {
             logout_status: 200,
             invite_status: 200,
             legacy: false,
+            lost_login_response: false,
+            malformed_login_response: false,
         }
     }
 }
@@ -122,7 +129,15 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
                 ("GET", "/_matrix/client/versions") => (200, json!({"versions":["v1.11"]})),
                 ("POST", "/_synapse/admin/v2/users/@iris:example.test") => (200, json!({})),
                 ("POST", "/_matrix/client/v3/login") => {
-                    (200, json!({"access_token":"fixture-owner"}))
+                    if scenario.malformed_login_response
+                        && !requests
+                            .iter()
+                            .any(|r: &Request| r.path.ends_with("/login"))
+                    {
+                        (200, json!({}))
+                    } else {
+                        (200, json!({"access_token":"fixture-owner"}))
+                    }
                 }
                 ("GET", path) if path.starts_with("/_matrix/client/v3/directory/room/") => (
                     scenario.alias_status,
@@ -152,6 +167,16 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
                 auth,
                 body,
             });
+            if scenario.lost_login_response
+                && requests.last().unwrap().path.ends_with("/login")
+                && requests
+                    .iter()
+                    .filter(|r| r.path.ends_with("/login"))
+                    .count()
+                    == 1
+            {
+                continue;
+            }
             let response = response.to_string();
             write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
         }
@@ -304,6 +329,56 @@ fn alias_lookup_failure_still_revokes_the_owner_session() {
     });
     assert!(!output.status.success());
     assert_logged_out(&requests);
+}
+
+#[test]
+fn ambiguous_login_failure_recovers_and_revokes_the_same_device() {
+    for lost_login_response in [false, true] {
+        let (output, requests) = run(Scenario {
+            lost_login_response,
+            malformed_login_response: !lost_login_response,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        let logins: Vec<_> = requests
+            .iter()
+            .filter(|r| r.path.ends_with("/login"))
+            .collect();
+        assert_eq!(logins.len(), 2);
+        for login in logins {
+            assert_eq!(login.body["device_id"], "TUWUNEL_PROVISION");
+        }
+        assert!(
+            !requests
+                .iter()
+                .any(|r| r.path.ends_with("/createRoom") || r.path.ends_with("/invite"))
+        );
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn existing_room_with_public_history_or_wrong_owner_is_not_adopted() {
+    for bad_state in [
+        json!({"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"world_readable"}}),
+        json!({"type":"m.room.create", "state_key":"", "sender":"@other:example.test", "content":{}}),
+        json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":0}}}),
+        json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100, "@other:example.test":100}}}),
+    ] {
+        let mut state = private_state();
+        for event in state.as_array_mut().unwrap() {
+            if event["type"] == bad_state["type"] {
+                *event = bad_state.clone();
+            }
+        }
+        let (output, requests) = run(Scenario {
+            state,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(!requests.iter().any(|r| r.path.ends_with("/invite")));
+        assert_logged_out(&requests);
+    }
 }
 
 #[test]

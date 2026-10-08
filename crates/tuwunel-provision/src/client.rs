@@ -77,6 +77,7 @@ impl<'a> CreateRoomRequest<'a> {
                     serde_json::json!({"type": "m.room.join_rules", "state_key": "", "content": {"join_rule": "invite"}}),
                     serde_json::json!({"type": "m.room.guest_access", "state_key": "", "content": {"guest_access": "forbidden"}}),
                     serde_json::json!({"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}}),
+                    serde_json::json!({"type": "m.room.history_visibility", "state_key": "", "content": {"history_visibility": "joined"}}),
                 ]
             } else {
                 Vec::new()
@@ -509,6 +510,9 @@ fn verify_private_room_state(
     let mut join_rule = None;
     let mut guest_access = None;
     let mut algorithm = None;
+    let mut history_visibility = None;
+    let mut creation = None;
+    let mut power_levels = None;
     let mut members = BTreeMap::new();
     for event in events {
         match event.get("type").and_then(serde_json::Value::as_str) {
@@ -520,6 +524,15 @@ fn verify_private_room_state(
             }
             Some("m.room.encryption") if event["state_key"].as_str() == Some("") => {
                 algorithm = event["content"]["algorithm"].as_str();
+            }
+            Some("m.room.history_visibility") if event["state_key"].as_str() == Some("") => {
+                history_visibility = event["content"]["history_visibility"].as_str();
+            }
+            Some("m.room.create") if event["state_key"].as_str() == Some("") => {
+                creation = Some(event);
+            }
+            Some("m.room.power_levels") if event["state_key"].as_str() == Some("") => {
+                power_levels = Some(&event["content"]);
             }
             Some("m.room.member") => {
                 if let (Some(user), Some(membership)) = (
@@ -539,6 +552,87 @@ fn verify_private_room_state(
         bail!(
             "room is missing the required Matrix encryption state; refusing to retrofit encryption"
         );
+    }
+    if !matches!(history_visibility, Some("joined" | "invited" | "shared")) {
+        bail!("room history is not restricted to members");
+    }
+    let creation = creation.context("room is missing its canonical creation event")?;
+    if creation["sender"].as_str() != Some(creator) {
+        bail!("room was not created by the declared owner");
+    }
+    if let Some(additional) = creation["content"].get("additional_creators") {
+        // ponytail: private rooms have one controlling owner; co-owners need an
+        // explicit ownership policy before adopting their rooms.
+        if !additional.as_array().is_some_and(Vec::is_empty) {
+            bail!("room has additional creators outside its single-owner policy");
+        }
+    }
+    let version = match creation["content"].get("room_version") {
+        Some(version) => version.as_str().context("invalid room version")?,
+        None => "1",
+    }
+    .parse::<u32>()
+    .context("unsupported room version")?;
+    if !(1..=12).contains(&version) {
+        bail!("unsupported Matrix room version: {version}");
+    }
+    let level = |value: Option<&serde_json::Value>, default: i64| -> Result<i64> {
+        match value {
+            Some(value) => value.as_i64().context("invalid Matrix power level"),
+            None => Ok(default),
+        }
+    };
+    let empty = serde_json::Map::new();
+    let powers = match power_levels {
+        Some(value) => value.as_object().context("invalid room power levels")?,
+        None => &empty,
+    };
+    let users = match powers.get("users") {
+        Some(value) => value
+            .as_object()
+            .context("invalid room user power levels")?,
+        None => &empty,
+    };
+    let default_user = level(powers.get("users_default"), 0)?;
+    // Matrix v12 creators have infinite power; older rooms without a power
+    // event give the creation sender 100. These are protocol defaults, not
+    // inferred ownership or fabricated state.
+    let owner_power = if version >= 12 {
+        i64::MAX
+    } else if power_levels.is_none() {
+        100
+    } else {
+        level(users.get(creator), default_user)?
+    };
+    if owner_power <= default_user {
+        bail!("declared owner does not control room power levels");
+    }
+    for (user, value) in users {
+        if user != creator && level(Some(value), 0)? >= owner_power {
+            bail!("room has another controlling account: {user}");
+        }
+    }
+    for (key, default) in [
+        ("state_default", 50),
+        ("invite", 0),
+        ("kick", 50),
+        ("ban", 50),
+        ("redact", 50),
+    ] {
+        if owner_power < level(powers.get(key), default)? {
+            bail!("declared owner lacks room control for {key}");
+        }
+    }
+    if let Some(events) = powers.get("events") {
+        for value in events
+            .as_object()
+            .context("invalid event power levels")?
+            .values()
+        {
+            if owner_power < level(Some(value), 0)? {
+                bail!("declared owner cannot control all room event types");
+            }
+        }
     }
     if members.get(creator).map(String::as_str) != Some("join") {
         bail!("declared room creator is not joined");
@@ -567,6 +661,9 @@ mod private_room_tests {
             serde_json::json!({"type":"m.room.join_rules", "state_key":"", "content":{"join_rule":"invite"}}),
             serde_json::json!({"type":"m.room.guest_access", "state_key":"", "content":{"guest_access":"forbidden"}}),
             serde_json::json!({"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
+            serde_json::json!({"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"joined"}}),
+            serde_json::json!({"type":"m.room.create", "state_key":"", "sender":"@iris:example.test", "content":{}}),
+            serde_json::json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100}}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@can:example.test", "content":{"membership":"invite"}}),
         ]
@@ -631,7 +728,7 @@ mod private_room_tests {
 
     #[test]
     fn nonempty_state_keys_cannot_prove_private_room_policy() {
-        for index in 0..3 {
+        for index in 0..5 {
             let mut events = state();
             events[index]["state_key"] = "unrelated".into();
             assert!(verify(&events).is_err());
@@ -647,6 +744,41 @@ mod private_room_tests {
             verify(&events).unwrap(),
             BTreeSet::from(["@iris:example.test".into()])
         );
+    }
+
+    #[test]
+    fn rejects_public_history_foreign_creator_and_lost_controlling_power() {
+        let mut events = state();
+        events[3]["content"]["history_visibility"] = "world_readable".into();
+        assert!(verify(&events).is_err());
+        events = state();
+        events[4]["sender"] = "@other:example.test".into();
+        assert!(verify(&events).is_err());
+        for levels in [
+            serde_json::json!({"users":{"@iris:example.test":0}}),
+            serde_json::json!({"users":{"@iris:example.test":100,"@other:example.test":100}}),
+            serde_json::json!({"users":{"@iris:example.test":100},"state_default":101}),
+            serde_json::json!({"users":{"@iris:example.test":100},"invite":101}),
+            serde_json::json!({"users":{"@iris:example.test":100},"users_default":100}),
+            serde_json::json!({"users":{"@iris:example.test":100},"events":{"m.room.power_levels":101}}),
+        ] {
+            events = state();
+            events[5]["content"] = levels;
+            assert!(verify(&events).is_err());
+        }
+    }
+
+    #[test]
+    fn supports_protocol_power_defaults_and_v12_single_creator() {
+        let mut events = state();
+        events.retain(|event| event["type"] != "m.room.power_levels");
+        assert!(verify(&events).is_ok());
+        events = state();
+        events[4]["content"]["room_version"] = "12".into();
+        events[5]["content"] = serde_json::json!({"users":{},"events":{"m.room.tombstone":150}});
+        assert!(verify(&events).is_ok());
+        events[4]["content"]["additional_creators"] = serde_json::json!(["@other:example.test"]);
+        assert!(verify(&events).is_err());
     }
 }
 

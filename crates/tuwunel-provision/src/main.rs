@@ -179,9 +179,25 @@ fn main() -> Result<()> {
             })?;
             let password = read_password_file(cred_dir.join(&user.credential_name))
                 .with_context(|| format!("reading credential for Matrix room {name} creator"))?;
-            let token = probe_client
-                .login_password_with_device(creator, &password, Some("TUWUNEL_PROVISION"))
-                .with_context(|| format!("logging in Matrix room {name} creator"))?;
+            let token = match probe_client.login_password_with_device(
+                creator,
+                &password,
+                Some("TUWUNEL_PROVISION"),
+            ) {
+                Ok(token) => token,
+                Err(login_error) => {
+                    // The server may have created the device before its response
+                    // was lost. Recover this same device once solely to revoke it;
+                    // never continue reconciliation after an ambiguous login.
+                    let cleanup = probe_client
+                        .login_password_with_device(creator, &password, Some("TUWUNEL_PROVISION"))
+                        .and_then(|token| probe_client.with_token(&token).logout());
+                    return Err(login_error).context(match cleanup {
+                        Ok(()) => format!("logging in Matrix room {name} creator failed; recovered provisioning device was revoked"),
+                        Err(error) => format!("logging in Matrix room {name} creator failed; provisioning device recovery/revocation also failed: {error:#}"),
+                    });
+                }
+            };
             Some(probe_client.with_token(&token))
         } else {
             None
