@@ -55,6 +55,8 @@ struct CreateRoomRequest<'a> {
     invite: Vec<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     initial_state: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    power_level_content_override: Option<serde_json::Value>,
 }
 
 impl<'a> CreateRoomRequest<'a> {
@@ -72,6 +74,7 @@ impl<'a> CreateRoomRequest<'a> {
             name,
             topic,
             invite: invite.iter().map(String::as_str).collect(),
+            power_level_content_override: encrypted.then(|| serde_json::json!({"invite":100})),
             initial_state: if encrypted {
                 vec![
                     serde_json::json!({"type": "m.room.join_rules", "state_key": "", "content": {"join_rule": "invite"}}),
@@ -534,6 +537,14 @@ fn verify_private_room_state(
             Some("m.room.power_levels") if event["state_key"].as_str() == Some("") => {
                 power_levels = Some(&event["content"]);
             }
+            Some("m.room.third_party_invite") => {
+                if !event["content"]
+                    .as_object()
+                    .is_some_and(serde_json::Map::is_empty)
+                {
+                    bail!("room contains an undeclared third-party invitation");
+                }
+            }
             Some("m.room.member") => {
                 if let (Some(user), Some(membership)) = (
                     event["state_key"].as_str(),
@@ -607,10 +618,14 @@ fn verify_private_room_state(
     if owner_power <= default_user {
         bail!("declared owner does not control room power levels");
     }
+    let mut nonowner_power = default_user;
     for (user, value) in users {
-        if user != creator && level(Some(value), 0)? >= owner_power {
-            bail!("room has another controlling account: {user}");
+        if user != creator {
+            nonowner_power = nonowner_power.max(level(Some(value), 0)?);
         }
+    }
+    if nonowner_power >= owner_power {
+        bail!("room has another controlling account");
     }
     for (key, default) in [
         ("state_default", 50),
@@ -619,18 +634,27 @@ fn verify_private_room_state(
         ("ban", 50),
         ("redact", 50),
     ] {
-        if owner_power < level(powers.get(key), default)? {
+        let required = level(powers.get(key), default)?;
+        if owner_power < required {
             bail!("declared owner lacks room control for {key}");
+        }
+        if nonowner_power >= required {
+            bail!("nonowner can change room policy through {key}");
         }
     }
     if let Some(events) = powers.get("events") {
-        for value in events
-            .as_object()
-            .context("invalid event power levels")?
-            .values()
-        {
-            if owner_power < level(Some(value), 0)? {
+        for (kind, value) in events.as_object().context("invalid event power levels")? {
+            let required = level(Some(value), 0)?;
+            if owner_power < required {
                 bail!("declared owner cannot control all room event types");
+            }
+            // Only known timeline messages may bypass owner-only state control.
+            if !matches!(
+                kind.as_str(),
+                "m.room.message" | "m.room.encrypted" | "m.reaction" | "m.sticker"
+            ) && nonowner_power >= required
+            {
+                bail!("nonowner can change room policy through {kind}");
             }
         }
     }
@@ -663,7 +687,7 @@ mod private_room_tests {
             serde_json::json!({"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
             serde_json::json!({"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"joined"}}),
             serde_json::json!({"type":"m.room.create", "state_key":"", "sender":"@iris:example.test", "content":{}}),
-            serde_json::json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100}}}),
+            serde_json::json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":100}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@can:example.test", "content":{"membership":"invite"}}),
         ]
@@ -678,6 +702,7 @@ mod private_room_tests {
         assert_eq!(body["visibility"], "private");
         assert_eq!(body["preset"], "private_chat");
         assert_eq!(body["invite"], serde_json::json!(["@can:example.test"]));
+        assert_eq!(body["power_level_content_override"]["invite"], 100);
         assert_eq!(body["initial_state"][0]["content"]["join_rule"], "invite");
         assert_eq!(
             body["initial_state"][1]["content"]["guest_access"],
@@ -769,16 +794,69 @@ mod private_room_tests {
     }
 
     #[test]
-    fn supports_protocol_power_defaults_and_v12_single_creator() {
+    fn rejects_permissive_protocol_defaults_and_supports_v12_single_creator() {
         let mut events = state();
         events.retain(|event| event["type"] != "m.room.power_levels");
-        assert!(verify(&events).is_ok());
+        assert!(verify(&events).is_err());
         events = state();
         events[4]["content"]["room_version"] = "12".into();
-        events[5]["content"] = serde_json::json!({"users":{},"events":{"m.room.tombstone":150}});
+        events[5]["content"] =
+            serde_json::json!({"users":{},"invite":100,"events":{"m.room.tombstone":150}});
         assert!(verify(&events).is_ok());
         events[4]["content"]["additional_creators"] = serde_json::json!(["@other:example.test"]);
         assert!(verify(&events).is_err());
+    }
+
+    #[test]
+    fn rejects_every_nonowner_privacy_or_membership_threshold() {
+        for key in ["state_default", "invite", "kick", "ban", "redact"] {
+            for explicit_user in [false, true] {
+                let mut events = state();
+                if explicit_user {
+                    events[5]["content"]["users"]["@can:example.test"] = 10.into();
+                } else {
+                    events[5]["content"]["users_default"] = 10.into();
+                }
+                events[5]["content"][key] = 10.into();
+                assert!(
+                    verify(&events).is_err(),
+                    "accepted {key} with nonowner power 10"
+                );
+            }
+        }
+        for kind in [
+            "m.room.power_levels",
+            "m.room.join_rules",
+            "m.room.guest_access",
+            "m.room.history_visibility",
+            "m.room.encryption",
+            "m.room.member",
+            "m.room.third_party_invite",
+            "m.room.server_acl",
+            "m.room.tombstone",
+        ] {
+            let mut events = state();
+            events[5]["content"]["events"][kind] = 0.into();
+            assert!(
+                verify(&events).is_err(),
+                "accepted nonowner control of {kind}"
+            );
+        }
+        let mut events = state();
+        events[5]["content"]["events"]["m.room.encrypted"] = 0.into();
+        assert!(
+            verify(&events).is_ok(),
+            "ordinary encrypted messages remain allowed"
+        );
+    }
+
+    #[test]
+    fn rejects_active_third_party_invitations_but_accepts_revoked_empty_state() {
+        let mut events = state();
+        events.push(serde_json::json!({"type":"m.room.third_party_invite", "state_key":"token", "content":{"display_name":"outsider","public_key":"key"}}));
+        assert!(verify(&events).is_err());
+        events.last_mut().unwrap()["content"] = serde_json::json!({});
+        assert!(verify(&events).is_ok());
     }
 }
 

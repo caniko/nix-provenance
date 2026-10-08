@@ -25,7 +25,7 @@ fn private_state() -> Value {
         {"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}},
         {"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"joined"}},
         {"type":"m.room.create", "state_key":"", "sender":"@iris:example.test", "content":{}},
-        {"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100}}},
+        {"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":100}},
         {"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}
     ])
 }
@@ -40,6 +40,8 @@ struct Scenario {
     legacy: bool,
     lost_login_response: bool,
     malformed_login_response: bool,
+    lost_logout_response: bool,
+    fail_first_logout: bool,
 }
 
 impl Default for Scenario {
@@ -54,6 +56,8 @@ impl Default for Scenario {
             legacy: false,
             lost_login_response: false,
             malformed_login_response: false,
+            lost_logout_response: false,
+            fail_first_logout: false,
         }
     }
 }
@@ -158,7 +162,19 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
                     invited = scenario.invite_status == 200;
                     (scenario.invite_status, json!({}))
                 }
-                ("POST", "/_matrix/client/v3/logout") => (scenario.logout_status, json!({})),
+                ("POST", "/_matrix/client/v3/logout") => {
+                    let first = !requests
+                        .iter()
+                        .any(|r: &Request| r.path.ends_with("/logout"));
+                    (
+                        if first && scenario.fail_first_logout {
+                            500
+                        } else {
+                            scenario.logout_status
+                        },
+                        json!({}),
+                    )
+                }
                 _ => (500, json!({"error":"Unexpected fixture request"})),
             };
             requests.push(Request {
@@ -172,6 +188,16 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
                 && requests
                     .iter()
                     .filter(|r| r.path.ends_with("/login"))
+                    .count()
+                    == 1
+            {
+                continue;
+            }
+            if scenario.lost_logout_response
+                && requests.last().unwrap().path.ends_with("/logout")
+                && requests
+                    .iter()
+                    .filter(|r| r.path.ends_with("/logout"))
                     .count()
                     == 1
             {
@@ -250,6 +276,7 @@ fn creates_encrypted_room_as_owner_and_revokes_provisioning_session() {
     assert_eq!(create.body["visibility"], "private");
     assert_eq!(create.body["preset"], "private_chat");
     assert_eq!(create.body["invite"], json!(["@can:example.test"]));
+    assert_eq!(create.body["power_level_content_override"]["invite"], 100);
     assert_eq!(create.body["initial_state"][2]["state_key"], "");
     assert_eq!(
         create.body["initial_state"][2]["content"]["algorithm"],
@@ -417,6 +444,115 @@ fn logout_failure_prevents_successful_reconciliation() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("logging out"));
     assert_logged_out(&requests);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path.ends_with("/login"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path.ends_with("/logout"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn ambiguous_logout_recovers_and_revokes_same_device_without_repeating_reconciliation() {
+    for lost_logout_response in [false, true] {
+        let (output, requests) = run(Scenario {
+            lost_logout_response,
+            fail_first_logout: !lost_logout_response,
+            ..Scenario::default()
+        });
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let logins: Vec<_> = requests
+            .iter()
+            .filter(|r| r.path.ends_with("/login"))
+            .collect();
+        assert_eq!(logins.len(), 2);
+        for login in logins {
+            assert_eq!(login.body["device_id"], "TUWUNEL_PROVISION");
+        }
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/logout"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/invite"))
+                .count(),
+            1
+        );
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn logout_recovery_preserves_the_original_reconciliation_failure() {
+    for logout_status in [200, 500] {
+        let (output, requests) = run(Scenario {
+            alias_status: 500,
+            fail_first_logout: true,
+            logout_status,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("resolving Matrix room"), "{stderr}");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/login"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/logout"))
+                .count(),
+            2
+        );
+        if logout_status == 500 {
+            assert!(stderr.contains("same-device cleanup also failed"));
+        }
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn nonowner_policy_power_and_third_party_invites_are_rejected_before_inviting() {
+    for bad_state in [
+        json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100,"@can:example.test":50},"invite":100}}),
+        json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":0}}),
+        json!({"type":"m.room.third_party_invite", "state_key":"invitation-token", "content":{"display_name":"outsider","public_key":"key"}}),
+    ] {
+        let mut state = private_state();
+        state
+            .as_array_mut()
+            .unwrap()
+            .retain(|event| event["type"] != bad_state["type"]);
+        state.as_array_mut().unwrap().push(bad_state);
+        let (output, requests) = run(Scenario {
+            state,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(!requests.iter().any(|r| r.path.ends_with("/invite")));
+        assert_logged_out(&requests);
+    }
 }
 
 #[test]

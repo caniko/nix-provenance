@@ -278,14 +278,30 @@ fn main() -> Result<()> {
         if let Some(creator_client) = &creator_client
             && let Err(err) = creator_client.logout()
         {
-            if reconciliation.is_ok() {
-                return Err(err).with_context(|| {
-                    format!("logging out Matrix room {name} provisioning device")
-                });
+            // The response may be lost before or after logout commits. Recover
+            // the fixed device once, invalidating its previous tokens, then revoke.
+            let cleanup = (|| -> Result<()> {
+                let creator = room.creator.as_ref().context("missing room creator")?;
+                let user = state
+                    .users
+                    .get(creator)
+                    .context("missing provisioned creator")?;
+                let password = read_password_file(cred_dir.join(&user.credential_name))?;
+                let token = probe_client.login_password_with_device(
+                    creator,
+                    &password,
+                    Some("TUWUNEL_PROVISION"),
+                )?;
+                probe_client.with_token(&token).logout()
+            })();
+            if let Err(cleanup_err) = cleanup {
+                eprintln!(
+                    "tuwunel-provision: logging out Matrix room {name} provisioning device failed: {err:#}; same-device cleanup also failed: {cleanup_err:#}"
+                );
+                if reconciliation.is_ok() {
+                    return Err(err).with_context(|| format!("logging out Matrix room {name} provisioning device; same-device cleanup also failed: {cleanup_err:#}"));
+                }
             }
-            eprintln!(
-                "tuwunel-provision: failed to log out Matrix room {name} provisioning device: {err:#}"
-            );
         }
         reconciliation?;
     }
