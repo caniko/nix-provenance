@@ -696,7 +696,10 @@ in
       kanidmPersons = builtins.toJSON adapterEval.config.services.kanidm.provision.persons;
     in
       assert !(adapterEval.config.services.kanidm.provision.persons ? dejana);
-      assert import ./modules/test/adapter-credentials.nix {inherit lib; adapter = self.lib.adapter;};
+      assert import ./modules/test/adapter-credentials.nix {
+        inherit lib;
+        adapter = self.lib.adapter;
+      };
       assert adapterEval.config.services.kanidm.provision.groups.internal-tool-users.members == ["dejana"];
         runCommand "adapter-module-eval" {} ''
           users=${lib.escapeShellArg rauthyUsers}

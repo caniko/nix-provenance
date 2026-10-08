@@ -203,10 +203,10 @@ in rec {
     group,
   }: let
     managedUsers = lib.filterAttrs (name: u:
-        if !isKanidmLogin u.credential
-        then throw "adapter.kanidmPersons: user '${name}' must use adapter.kanidmLogin on the kanidm backend (passwordInitByEmail and passwordFromFile are rauthy-only flows)."
-        else u.manageProfile or true)
-      users;
+      if !isKanidmLogin u.credential
+      then throw "adapter.kanidmPersons: user '${name}' must use adapter.kanidmLogin on the kanidm backend (passwordInitByEmail and passwordFromFile are rauthy-only flows)."
+      else u.manageProfile or true)
+    users;
   in
     lib.mapAttrs (
       name: u:
