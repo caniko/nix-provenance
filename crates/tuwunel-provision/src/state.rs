@@ -53,6 +53,8 @@ pub fn valid_room_id(id: &str) -> bool {
         Some((localpart, server)) => !localpart.is_empty() && valid_server_name(server),
         None => {
             opaque.len() == 43
+                // A 32-byte hash leaves two zero padding bits in the last sextet.
+                && b"AEIMQUYcgkosw048".contains(&opaque.as_bytes()[42])
                 && opaque
                     .bytes()
                     .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_' || ch == b'-')
@@ -180,6 +182,22 @@ mod tests {
         assert!(room.creator.is_none());
         assert!(!room.encrypted);
         assert!(room.expected_room_id.is_none());
+    }
+
+    #[test]
+    fn v12_hash_tail_requires_zero_base64_padding_bits() {
+        for (index, tail) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            .iter()
+            .enumerate()
+        {
+            let id = format!("!{}{}", "A".repeat(42), char::from(*tail));
+            assert_eq!(
+                valid_room_id(&id),
+                index % 4 == 0,
+                "hash tail {}",
+                char::from(*tail)
+            );
+        }
     }
 
     #[test]

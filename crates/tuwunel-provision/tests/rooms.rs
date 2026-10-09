@@ -810,6 +810,85 @@ fn duplicate_aliases_are_rejected_before_network_or_local_mutation() {
 }
 
 #[test]
+fn conflicting_duplicate_pins_are_rejected_before_mutation() {
+    let first = json!({"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"expectedRoomId":"!iris:example.test","invite":["@can:example.test"]});
+    for patch in [
+        json!({"creator":"zeta"}),
+        json!({"invite":["@other:example.test"]}),
+        json!({"creator":null,"encrypted":false}),
+    ] {
+        let mut second = first.clone();
+        second["alias"] = json!("#hermes-other:example.test");
+        for (key, value) in patch.as_object().unwrap() {
+            second[key] = value.clone();
+        }
+        let (output, requests) = run(Scenario {
+            second_creator_credential: Some("valid"),
+            room_declarations: Some(json!({"a-first":first,"z-second":second})),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "conflicting room pins must fail before readiness/users/room mutations"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("conflicting declarations for pinned Matrix room ID")
+        );
+    }
+}
+
+#[test]
+fn multiple_aliases_with_the_same_pin_and_policy_remain_valid() {
+    let first = json!({"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"expectedRoomId":"!iris:example.test","invite":["@can:example.test"]});
+    let mut second = first.clone();
+    second["alias"] = json!("#hermes-other:example.test");
+    second["invite"] = json!(["@can:example.test", "@can:example.test"]);
+    let (output, requests) = run(Scenario {
+        room_declarations: Some(json!({"a-first":first,"z-second":second})),
+        ..Scenario::default()
+    });
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path.ends_with("/invite"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path.ends_with("/logout"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn noncanonical_v12_pins_are_rejected_before_mutation() {
+    for tail in ['B', '_', '9'] {
+        let (output, requests) = run(Scenario {
+            room_declarations: Some(
+                json!({"iris":{"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"expectedRoomId":format!("!{}{}", "A".repeat(42), tail)}}),
+            ),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "noncanonical hash pin must fail before readiness/users"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("invalid Matrix room ID"));
+    }
+}
+
+#[test]
 fn malformed_room_pins_are_rejected_before_network_or_local_mutation() {
     for pin in [
         "!room:not a server".to_owned(),

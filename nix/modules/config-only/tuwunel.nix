@@ -53,7 +53,8 @@
     && (
       if legacy != null
       then validServerName (builtins.elemAt legacy 1)
-      else matches "![A-Za-z0-9_-]{43}" id
+      # A 32-byte hash leaves two zero padding bits in the final sextet.
+      else matches "![A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]" id
     );
 
   userSubmodule = types.submodule {

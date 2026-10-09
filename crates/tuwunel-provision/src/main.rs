@@ -1,7 +1,7 @@
 mod client;
 mod state;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -75,18 +75,25 @@ fn main() -> Result<()> {
     // Validate every declaration before any readiness, bootstrap or user work:
     // a bad later room must not leave earlier accounts or markers mutated.
     let mut room_aliases = BTreeSet::new();
+    let mut pinned_rooms = BTreeMap::new();
     for (name, room) in &state.rooms {
         let (_, alias_server) = client::parse_room_alias(&room.alias)
             .with_context(|| format!("validating Matrix room {name} alias"))?;
         if !room_aliases.insert(&room.alias) {
             bail!("Matrix room {name} has a duplicate Matrix room alias");
         }
-        if room
-            .expected_room_id
-            .as_deref()
-            .is_some_and(|id| !state::valid_room_id(id))
-        {
-            bail!("Matrix room {name} has an invalid Matrix room ID pin");
+        if let Some(id) = room.expected_room_id.as_deref() {
+            if !state::valid_room_id(id) {
+                bail!("Matrix room {name} has an invalid Matrix room ID pin");
+            }
+            if let Some(previous) = pinned_rooms.insert(id, room)
+                && (previous.creator != room.creator
+                    || previous.encrypted != room.encrypted
+                    || previous.invite.iter().collect::<BTreeSet<_>>()
+                        != room.invite.iter().collect::<BTreeSet<_>>())
+            {
+                bail!("Matrix room {name} has conflicting declarations for pinned Matrix room ID");
+            }
         }
         if room.encrypted != room.creator.is_some() {
             bail!(
