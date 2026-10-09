@@ -42,6 +42,7 @@ struct Scenario {
     malformed_login_response: bool,
     first_login_status: u16,
     room_declarations: Option<Value>,
+    invalid_creator_credential: Option<&'static str>,
     lost_logout_response: bool,
     fail_first_logout: bool,
 }
@@ -60,6 +61,7 @@ impl Default for Scenario {
             malformed_login_response: false,
             first_login_status: 200,
             room_declarations: None,
+            invalid_creator_credential: None,
             lost_logout_response: false,
             fail_first_logout: false,
         }
@@ -85,6 +87,18 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
     });
     if let Some(rooms) = &scenario.room_declarations {
         state["rooms"] = rooms.clone();
+    }
+    if let Some(invalid) = scenario.invalid_creator_credential {
+        state["users"]["zeta"] = json!({"admin":false,"credential_name":"zeta-password"});
+        let path = temp.path().join("zeta-password");
+        match invalid {
+            "missing" => {}
+            "directory" => std::fs::create_dir(path).unwrap(),
+            "empty" => std::fs::write(path, b"").unwrap(),
+            "whitespace" => std::fs::write(path, b" \n\t").unwrap(),
+            "invalid-utf8" => std::fs::write(path, [0xff]).unwrap(),
+            _ => panic!("unknown credential fixture"),
+        }
     }
     std::fs::write(temp.path().join("state.json"), state.to_string()).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
@@ -721,6 +735,9 @@ fn every_room_declaration_is_validated_before_network_or_local_mutation() {
         json!({"alias":"hermes-iris:example.test"}),
         json!({"alias":"#hermes-iris"}),
         json!({"alias":"#:example.test"}),
+        json!({"alias":"#hermes-iris:garbage:example.test"}),
+        json!({"alias":"#hermes-iris:example.test:"}),
+        json!({"alias":"#hermes-iris:"}),
     ] {
         let mut invalid = valid.clone();
         for (key, value) in patch.as_object().unwrap() {
@@ -736,6 +753,62 @@ fn every_room_declaration_is_validated_before_network_or_local_mutation() {
             "invalid later declaration must precede even readiness/bootstrap/user requests"
         );
         assert!(String::from_utf8_lossy(&output.stderr).contains("Matrix room z-invalid"));
+    }
+}
+
+#[test]
+fn every_creator_credential_is_validated_before_network_or_local_mutation() {
+    for invalid in [
+        "missing",
+        "directory",
+        "empty",
+        "whitespace",
+        "invalid-utf8",
+    ] {
+        let (output, requests) = run(Scenario {
+            invalid_creator_credential: Some(invalid),
+            room_declarations: Some(json!({
+                "a-valid":{"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true},
+                "z-invalid":{"alias":"#hermes-zeta:example.test","creator":"zeta","encrypted":true}
+            })),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "invalid later creator credential must precede readiness/bootstrap/user requests: {invalid}"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Matrix room z-invalid creator"));
+    }
+}
+
+#[test]
+fn unsupported_room_version_identifiers_never_invite_and_revoke_the_session() {
+    for version in [
+        "012",
+        "01",
+        "+12",
+        "+1",
+        "001",
+        "0",
+        "13",
+        "org.example.room",
+        " 12",
+        "12 ",
+        "1.0",
+    ] {
+        let mut state = private_state();
+        state[4]["content"]["room_version"] = version.into();
+        let (output, requests) = run(Scenario {
+            state,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success(), "unsupported identifier {version}");
+        assert!(!requests.iter().any(|r| r.path.ends_with("/invite")));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unsupported Matrix room version")
+        );
+        assert_logged_out(&requests);
     }
 }
 

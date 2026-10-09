@@ -431,7 +431,7 @@ impl TuwunelClient {
         invite: &[String],
         encrypted: bool,
     ) -> Result<String> {
-        let alias_localpart = alias_localpart(alias)?;
+        let (alias_localpart, _) = parse_room_alias(alias)?;
         let body = CreateRoomRequest::new(alias_localpart, name, topic, invite, encrypted);
 
         let resp = self
@@ -586,12 +586,15 @@ fn verify_private_room_state(
     let version = match creation["content"].get("room_version") {
         Some(version) => version.as_str().context("invalid room version")?,
         None => "1",
-    }
-    .parse::<u32>()
-    .context("unsupported room version")?;
-    if !(1..=12).contains(&version) {
-        bail!("unsupported Matrix room version: {version}");
-    }
+    };
+    // Room version IDs are opaque strings, not numbers to normalize.
+    let version = [
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+    ]
+    .iter()
+    .position(|&supported| supported == version)
+    .with_context(|| format!("unsupported Matrix room version: {version}"))?
+        + 1;
     // Order exact integers first, then any legacy float overflow beyond i64.
     // This preserves integer precision without saturating distinct finite legacy
     // powers or rounding their comparisons through f64 in modern rooms.
@@ -869,6 +872,33 @@ mod private_room_tests {
         assert!(verify(&events).is_ok());
         events[4]["content"]["additional_creators"] = serde_json::json!(["@other:example.test"]);
         assert!(verify(&events).is_err());
+    }
+
+    #[test]
+    fn unsupported_room_version_identifiers_do_not_inherit_standard_authority() {
+        for version in [
+            "012",
+            "01",
+            "+12",
+            "+1",
+            "001",
+            "0",
+            "13",
+            "org.example.room",
+            " 12",
+            "12 ",
+            "1.0",
+        ] {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.into();
+            assert!(verify(&events).is_err(), "unsupported identifier {version}");
+            // Unsupported v12-like identifiers must not grant creator infinity.
+            events[5]["content"]["users"] = serde_json::json!({});
+            assert!(
+                verify(&events).is_err(),
+                "unsupported creator authority {version}"
+            );
+        }
     }
 
     #[test]
@@ -1153,17 +1183,20 @@ fn is_user_in_use(err: &anyhow::Error) -> bool {
         .any(|msg| msg.starts_with("user_in_use:"))
 }
 
-pub(crate) fn alias_localpart(alias: &str) -> Result<&str> {
+pub(crate) fn parse_room_alias(alias: &str) -> Result<(&str, &str)> {
     let Some(rest) = alias.strip_prefix('#') else {
         bail!("Matrix room alias must start with '#': {alias}");
     };
-    let Some((localpart, _server)) = rest.split_once(':') else {
+    let Some((localpart, server)) = rest.split_once(':') else {
         bail!("Matrix room alias must include a server name: {alias}");
     };
     if localpart.is_empty() {
         bail!("Matrix room alias localpart is empty: {alias}");
     }
-    Ok(localpart)
+    if server.is_empty() {
+        bail!("Matrix room alias server name is empty: {alias}");
+    }
+    Ok((localpart, server))
 }
 
 fn percent_encode(value: &str) -> String {
@@ -1302,11 +1335,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_alias_localpart() {
+    fn parses_room_alias_without_dropping_the_server() {
         assert_eq!(
-            alias_localpart("#canix-alerts:matrix.tartanoglu.com").unwrap(),
-            "canix-alerts"
+            parse_room_alias("#canix-alerts:matrix.tartanoglu.com").unwrap(),
+            ("canix-alerts", "matrix.tartanoglu.com")
         );
+        for server in ["example.test:8448", "[::1]:8448"] {
+            let alias = format!("#room:{server}");
+            assert_eq!(parse_room_alias(&alias).unwrap(), ("room", server));
+        }
+        assert!(parse_room_alias("#room:").is_err());
     }
 
     #[test]

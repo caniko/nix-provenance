@@ -74,7 +74,7 @@ fn main() -> Result<()> {
     // Validate every declaration before any readiness, bootstrap or user work:
     // a bad later room must not leave earlier accounts or markers mutated.
     for (name, room) in &state.rooms {
-        client::alias_localpart(&room.alias)
+        let (_, alias_server) = client::parse_room_alias(&room.alias)
             .with_context(|| format!("validating Matrix room {name} alias"))?;
         if room.encrypted != room.creator.is_some() {
             bail!(
@@ -82,12 +82,14 @@ fn main() -> Result<()> {
             );
         }
         if let Some(creator) = &room.creator {
-            if !room.alias.ends_with(&format!(":{}", state.server_name)) {
+            if alias_server != state.server_name {
                 bail!("Matrix room {name} alias does not belong to the provisioned server");
             }
-            if !state.users.contains_key(creator) {
-                bail!("Matrix room {name} creator {creator} is not a provisioned user");
-            }
+            let user = state.users.get(creator).with_context(|| {
+                format!("Matrix room {name} creator {creator} is not a provisioned user")
+            })?;
+            read_password_file(cli.credential_dir.join(&user.credential_name))
+                .with_context(|| format!("reading credential for Matrix room {name} creator"))?;
         }
     }
 
