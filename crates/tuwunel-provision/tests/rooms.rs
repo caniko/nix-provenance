@@ -42,7 +42,7 @@ struct Scenario {
     malformed_login_response: bool,
     first_login_status: u16,
     room_declarations: Option<Value>,
-    invalid_creator_credential: Option<&'static str>,
+    second_creator_credential: Option<&'static str>,
     lost_logout_response: bool,
     fail_first_logout: bool,
 }
@@ -61,7 +61,7 @@ impl Default for Scenario {
             malformed_login_response: false,
             first_login_status: 200,
             room_declarations: None,
-            invalid_creator_credential: None,
+            second_creator_credential: None,
             lost_logout_response: false,
             fail_first_logout: false,
         }
@@ -88,7 +88,7 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
     if let Some(rooms) = &scenario.room_declarations {
         state["rooms"] = rooms.clone();
     }
-    if let Some(invalid) = scenario.invalid_creator_credential {
+    if let Some(invalid) = scenario.second_creator_credential {
         state["users"]["zeta"] = json!({"admin":false,"credential_name":"zeta-password"});
         let path = temp.path().join("zeta-password");
         match invalid {
@@ -97,6 +97,7 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
             "empty" => std::fs::write(path, b"").unwrap(),
             "whitespace" => std::fs::write(path, b" \n\t").unwrap(),
             "invalid-utf8" => std::fs::write(path, [0xff]).unwrap(),
+            "valid" => std::fs::write(path, "fixture-second-password").unwrap(),
             _ => panic!("unknown credential fixture"),
         }
     }
@@ -766,7 +767,7 @@ fn every_creator_credential_is_validated_before_network_or_local_mutation() {
         "invalid-utf8",
     ] {
         let (output, requests) = run(Scenario {
-            invalid_creator_credential: Some(invalid),
+            second_creator_credential: Some(invalid),
             room_declarations: Some(json!({
                 "a-valid":{"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true},
                 "z-invalid":{"alias":"#hermes-zeta:example.test","creator":"zeta","encrypted":true}
@@ -779,6 +780,56 @@ fn every_creator_credential_is_validated_before_network_or_local_mutation() {
             "invalid later creator credential must precede readiness/bootstrap/user requests: {invalid}"
         );
         assert!(String::from_utf8_lossy(&output.stderr).contains("Matrix room z-invalid creator"));
+    }
+}
+
+#[test]
+fn duplicate_aliases_are_rejected_before_network_or_local_mutation() {
+    let first = json!({"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"invite":["@can:example.test"]});
+    for patch in [
+        json!({}),
+        json!({"creator":"zeta"}),
+        json!({"invite":["@other:example.test"]}),
+    ] {
+        let mut second = first.clone();
+        for (key, value) in patch.as_object().unwrap() {
+            second[key] = value.clone();
+        }
+        let (output, requests) = run(Scenario {
+            second_creator_credential: Some("valid"),
+            room_declarations: Some(json!({"a-first":first,"z-second":second})),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "duplicate aliases must fail before any readiness/user/room mutation"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate Matrix room alias"));
+    }
+}
+
+#[test]
+fn malformed_room_pins_are_rejected_before_network_or_local_mutation() {
+    for pin in [
+        "!room:not a server".to_owned(),
+        "!room:example.test:garbage".to_owned(),
+        "!room:[12345::]".to_owned(),
+        format!("!{}:example.test", "é".repeat(122)),
+        "!room\0:example.test".to_owned(),
+    ] {
+        let (output, requests) = run(Scenario {
+            room_declarations: Some(
+                json!({"iris":{"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"expectedRoomId":pin}}),
+            ),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "invalid pin must fail before readiness/user mutation"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("invalid Matrix room ID"));
     }
 }
 

@@ -1,6 +1,7 @@
 mod client;
 mod state;
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -73,9 +74,20 @@ fn main() -> Result<()> {
 
     // Validate every declaration before any readiness, bootstrap or user work:
     // a bad later room must not leave earlier accounts or markers mutated.
+    let mut room_aliases = BTreeSet::new();
     for (name, room) in &state.rooms {
         let (_, alias_server) = client::parse_room_alias(&room.alias)
             .with_context(|| format!("validating Matrix room {name} alias"))?;
+        if !room_aliases.insert(&room.alias) {
+            bail!("Matrix room {name} has a duplicate Matrix room alias");
+        }
+        if room
+            .expected_room_id
+            .as_deref()
+            .is_some_and(|id| !state::valid_room_id(id))
+        {
+            bail!("Matrix room {name} has an invalid Matrix room ID pin");
+        }
         if room.encrypted != room.creator.is_some() {
             bail!(
                 "Matrix room {name} requires both creator and encrypted for private owner reconciliation"
@@ -662,7 +674,11 @@ mod tests {
             attempts.set(attempts.get() + 1);
             Err(anyhow::anyhow!("registration_disabled"))
         });
-        assert!(registration_required(&result.unwrap_err()));
+        let error = result.unwrap_err();
+        assert!(
+            registration_required(&error),
+            "unexpected bootstrap error: {error:#}"
+        );
         assert!(attempts.get() > 1 && attempts.get() <= 20);
         assert_eq!(
             fs::read(&fixture.runtime_config).unwrap(),
