@@ -1,6 +1,7 @@
 mod client;
 mod state;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,7 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use clap::Parser;
 use provenance_core::password::{PasswordMarkerStore, read_password_file};
 
@@ -70,6 +71,46 @@ fn main() -> Result<()> {
         .with_context(|| format!("reading state file {}", cli.state.display()))?;
     let state: State = serde_json::from_str(&raw)
         .with_context(|| format!("parsing state file {}", cli.state.display()))?;
+
+    // Validate every declaration before any readiness, bootstrap or user work:
+    // a bad later room must not leave earlier accounts or markers mutated.
+    let mut room_aliases = BTreeSet::new();
+    let mut pinned_rooms = BTreeMap::new();
+    for (name, room) in &state.rooms {
+        let (_, alias_server) = client::parse_room_alias(&room.alias)
+            .with_context(|| format!("validating Matrix room {name} alias"))?;
+        if !room_aliases.insert(&room.alias) {
+            bail!("Matrix room {name} has a duplicate Matrix room alias");
+        }
+        if let Some(id) = room.expected_room_id.as_deref() {
+            if !state::valid_room_id(id) {
+                bail!("Matrix room {name} has an invalid Matrix room ID pin");
+            }
+            if let Some(previous) = pinned_rooms.insert(id, room)
+                && (previous.creator != room.creator
+                    || previous.encrypted != room.encrypted
+                    || previous.invite.iter().collect::<BTreeSet<_>>()
+                        != room.invite.iter().collect::<BTreeSet<_>>())
+            {
+                bail!("Matrix room {name} has conflicting declarations for pinned Matrix room ID");
+            }
+        }
+        if room.encrypted != room.creator.is_some() {
+            bail!(
+                "Matrix room {name} requires both creator and encrypted for private owner reconciliation"
+            );
+        }
+        if let Some(creator) = &room.creator {
+            if alias_server != state.server_name {
+                bail!("Matrix room {name} alias does not belong to the provisioned server");
+            }
+            let user = state.users.get(creator).with_context(|| {
+                format!("Matrix room {name} creator {creator} is not a provisioned user")
+            })?;
+            read_password_file(cli.credential_dir.join(&user.credential_name))
+                .with_context(|| format!("reading credential for Matrix room {name} creator"))?;
+        }
+    }
 
     let base_url = format!("http://127.0.0.1:{}", state.port);
     let registration_bootstrap = RegistrationBootstrap::from_cli(&cli)?;
@@ -162,35 +203,153 @@ fn main() -> Result<()> {
     refresh_admin_token(&state, &client, &cred_dir, &cli.admin_token_file)?;
 
     for (name, room) in &state.rooms {
-        let room_id = match client
-            .resolve_room_alias(&room.alias)
-            .with_context(|| format!("resolving Matrix room {name} alias {}", room.alias))?
-        {
-            Some(room_id) => {
-                eprintln!("tuwunel-provision: room {name} already exists as {room_id}");
-                room_id
-            }
-            None => {
-                eprintln!(
-                    "tuwunel-provision: creating room {name} alias {}",
-                    room.alias
-                );
-                client
-                    .create_room(
-                        &room.alias,
-                        room.name.as_deref(),
-                        room.topic.as_deref(),
-                        &room.invite,
-                    )
-                    .with_context(|| format!("creating Matrix room {name}"))?
-            }
+        // Private assistant rooms are created with the assistant's own Matrix
+        // identity, so neither the provisioning admin nor a third-party bot
+        // ever joins their encrypted conversation.
+        let creator_client = if let Some(creator) = &room.creator {
+            let user = state.users.get(creator).with_context(|| {
+                format!("Matrix room {name} creator {creator} is not a provisioned user")
+            })?;
+            let password = read_password_file(cred_dir.join(&user.credential_name))
+                .with_context(|| format!("reading credential for Matrix room {name} creator"))?;
+            let token = match probe_client.login_password_with_device(
+                creator,
+                &password,
+                Some("TUWUNEL_PROVISION"),
+            ) {
+                Ok(token) => token,
+                Err(login_error)
+                    if login_error
+                        .downcast_ref::<reqwest::Error>()
+                        .and_then(reqwest::Error::status)
+                        .is_some_and(|status| {
+                            status.is_client_error()
+                                && status != reqwest::StatusCode::REQUEST_TIMEOUT
+                        }) =>
+                {
+                    return Err(login_error).with_context(|| {
+                        format!("logging in Matrix room {name} creator was refused")
+                    });
+                }
+                Err(login_error) => {
+                    // The server may have created the device before its response
+                    // was lost. Recover this same device once solely to revoke it;
+                    // never continue reconciliation after an ambiguous login.
+                    let cleanup = probe_client
+                        .login_password_with_device(creator, &password, Some("TUWUNEL_PROVISION"))
+                        .and_then(|token| probe_client.with_token(&token).logout());
+                    return Err(login_error).context(match cleanup {
+                        Ok(()) => format!("logging in Matrix room {name} creator failed; recovered provisioning device was revoked"),
+                        Err(error) => format!("logging in Matrix room {name} creator failed; provisioning device recovery/revocation also failed: {error:#}"),
+                    });
+                }
+            };
+            Some(probe_client.with_token(&token))
+        } else {
+            None
         };
+        let room_client = creator_client.as_ref().unwrap_or(&client);
+        let reconciliation = (|| -> Result<()> {
+            let room_id = match client
+                .resolve_room_alias(&room.alias)
+                .with_context(|| format!("resolving Matrix room {name} alias {}", room.alias))?
+            {
+                Some(room_id) => {
+                    eprintln!("tuwunel-provision: room {name} already exists as {room_id}");
+                    room_id
+                }
+                None if room.expected_room_id.is_some() => {
+                    bail!(
+                        "Matrix room {name} has a pinned ID but its alias is missing; refusing to create a replacement"
+                    );
+                }
+                None => {
+                    eprintln!(
+                        "tuwunel-provision: creating room {name} alias {}",
+                        room.alias
+                    );
+                    room_client
+                        .create_room(
+                            &room.alias,
+                            room.name.as_deref(),
+                            room.topic.as_deref(),
+                            &room.invite,
+                            room.encrypted,
+                        )
+                        .with_context(|| format!("creating Matrix room {name}"))?
+                }
+            };
 
-        for user_id in &room.invite {
-            client
-                .invite_user_to_room(&room_id, user_id)
-                .with_context(|| format!("inviting {user_id} to Matrix room {name}"))?;
+            if let Some(expected) = &room.expected_room_id
+                && &room_id != expected
+            {
+                bail!(
+                    "Matrix room {name} alias resolves to {room_id}, not its declared room ID {expected}"
+                );
+            }
+
+            if let Some(creator) = &room.creator {
+                let creator_id = format!("@{creator}:{}", state.server_name);
+                let present = room_client
+                    .private_room_members(&room_id, &creator_id, &room.invite, room.encrypted)
+                    .with_context(|| {
+                        format!("checking Matrix room {name} before reconciling invites")
+                    })?;
+                for user_id in &room.invite {
+                    if !present.contains(user_id) {
+                        room_client
+                            .invite_user_to_room(&room_id, user_id)
+                            .with_context(|| format!("inviting {user_id} to Matrix room {name}"))?;
+                    }
+                }
+                let verified = room_client
+                    .private_room_members(&room_id, &creator_id, &room.invite, room.encrypted)
+                    .with_context(|| {
+                        format!("verifying Matrix room {name} after reconciliation")
+                    })?;
+                if room.invite.iter().any(|user| !verified.contains(user)) {
+                    bail!("Matrix room {name} is missing an invited member after reconciliation");
+                }
+            } else {
+                for user_id in &room.invite {
+                    client
+                        .invite_user_to_room(&room_id, user_id)
+                        .with_context(|| format!("inviting {user_id} to Matrix room {name}"))?;
+                }
+            }
+            Ok(())
+        })();
+        // The provisioning login is only needed for reconciliation. Revoke it
+        // even if state verification or an invitation failed partway through.
+        if let Some(creator_client) = &creator_client
+            && let Err(err) = creator_client.logout()
+        {
+            // The response may be lost before or after logout commits. Recover
+            // the fixed device once, invalidating its previous tokens, then revoke.
+            let cleanup = (|| -> Result<()> {
+                let creator = room.creator.as_ref().context("missing room creator")?;
+                let user = state
+                    .users
+                    .get(creator)
+                    .context("missing provisioned creator")?;
+                let password = read_password_file(cred_dir.join(&user.credential_name))?;
+                let token = probe_client.login_password_with_device(
+                    creator,
+                    &password,
+                    Some("TUWUNEL_PROVISION"),
+                )?;
+                probe_client.with_token(&token).logout()
+            })();
+            if let Err(cleanup_err) = cleanup {
+                eprintln!(
+                    "tuwunel-provision: logging out Matrix room {name} provisioning device failed: {err:#}; same-device cleanup also failed: {cleanup_err:#}"
+                );
+                if reconciliation.is_ok() {
+                    return Err(err).with_context(|| format!("logging out Matrix room {name} provisioning device; same-device cleanup also failed: {cleanup_err:#}"));
+                }
+            }
         }
+        reconciliation?;
     }
 
     eprintln!("tuwunel-provision: done");
@@ -232,9 +391,27 @@ impl RegistrationBootstrap {
         }))
     }
 
-    fn with_registration_enabled<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        self.reload_from(&self.open_config, "enable public registration")?;
-        let result = f();
+    fn with_registration_enabled<T>(&self, mut f: impl FnMut() -> Result<T>) -> Result<T> {
+        let result = (|| {
+            self.reload_from(&self.open_config, "enable public registration")?;
+            // SIGUSR2 schedules an asynchronous admin command. A fixed delay
+            // does not prove registration has opened, especially on a busy VM.
+            // Only the explicit pre-mutation refusal is safe to retry;
+            // transport errors could mean registration already succeeded.
+            let mut result = f();
+            for _ in 1..20 {
+                if !result.as_ref().err().is_some_and(|err| {
+                    err.chain()
+                        .any(|cause| cause.to_string() == "registration_disabled")
+                }) {
+                    break;
+                }
+                sleep(Duration::from_millis(250));
+                result = f();
+            }
+            result
+        })();
+        // Even a failed signal can follow writing the open runtime config.
         let restore = self.reload_from(&self.closed_config, "disable public registration");
 
         match (result, restore) {
@@ -421,4 +598,113 @@ fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn write_systemctl_fixture(path: &Path, exit_code: u8) {
+        // Nix sandboxes have sh on PATH but no /usr/bin/env interpreter.
+        let search_path = std::env::var_os("PATH").expect("fixture requires PATH");
+        let shell = std::env::split_paths(&search_path)
+            .map(|dir| dir.join("sh"))
+            .find(|path| path.is_file())
+            .expect("fixture requires sh on PATH");
+        let shell = fs::canonicalize(shell).unwrap();
+        fs::write(path, format!("#!{}\nexit {exit_code}\n", shell.display())).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    fn bootstrap_fixture(dir: &Path) -> RegistrationBootstrap {
+        let systemctl = dir.join("systemctl");
+        write_systemctl_fixture(&systemctl, 0);
+        let fixture = RegistrationBootstrap {
+            open_config: dir.join("open.toml"),
+            closed_config: dir.join("closed.toml"),
+            runtime_config: dir.join("runtime.toml"),
+            systemctl,
+            service: "fixture.service".into(),
+        };
+        fs::write(&fixture.open_config, "allow_registration = true").unwrap();
+        fs::write(&fixture.closed_config, "allow_registration = false").unwrap();
+        fixture
+    }
+
+    #[test]
+    fn delayed_registration_reload_succeeds_and_restores_closed_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = bootstrap_fixture(dir.path());
+        let attempts = Cell::new(0);
+        let result = fixture.with_registration_enabled(|| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 3 {
+                Err(anyhow::anyhow!("registration_disabled").context("registering fixture"))
+            } else {
+                Ok("fixture-token")
+            }
+        });
+        assert_eq!(result.unwrap(), "fixture-token");
+        assert_eq!(
+            fs::read(&fixture.runtime_config).unwrap(),
+            fs::read(&fixture.closed_config).unwrap()
+        );
+    }
+
+    #[test]
+    fn ambiguous_registration_failure_is_not_retried_and_restores_closed_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = bootstrap_fixture(dir.path());
+        let attempts = Cell::new(0);
+        let result: Result<()> = fixture.with_registration_enabled(|| {
+            attempts.set(attempts.get() + 1);
+            Err(anyhow::anyhow!(
+                "connection lost after registration request"
+            ))
+        });
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(
+            fs::read(&fixture.runtime_config).unwrap(),
+            fs::read(&fixture.closed_config).unwrap()
+        );
+    }
+
+    #[test]
+    fn registration_never_opens_fails_within_bound_and_restores_closed_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = bootstrap_fixture(dir.path());
+        let attempts = Cell::new(0);
+        let result: Result<()> = fixture.with_registration_enabled(|| {
+            attempts.set(attempts.get() + 1);
+            Err(anyhow::anyhow!("registration_disabled"))
+        });
+        let error = result.unwrap_err();
+        assert!(
+            registration_required(&error),
+            "unexpected bootstrap error: {error:#}"
+        );
+        assert!(attempts.get() > 1 && attempts.get() <= 20);
+        assert_eq!(
+            fs::read(&fixture.runtime_config).unwrap(),
+            fs::read(&fixture.closed_config).unwrap()
+        );
+    }
+
+    #[test]
+    fn failed_open_signal_still_restores_closed_runtime_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = bootstrap_fixture(dir.path());
+        write_systemctl_fixture(&fixture.systemctl, 1);
+        let result: Result<()> = fixture.with_registration_enabled(|| {
+            panic!("must not register after failing to signal the server");
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(&fixture.runtime_config).unwrap(),
+            fs::read(&fixture.closed_config).unwrap()
+        );
+    }
 }

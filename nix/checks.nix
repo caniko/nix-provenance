@@ -50,6 +50,7 @@
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
+  tuwunelPrivateRoomsVmTest = import ./modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
   stalwartOauthBootstrapPasswordFile = "\${XDG_RUNTIME_DIR}/agenix/stalwart_account_can";
 
@@ -643,46 +644,54 @@ in
         touch $out
       '';
 
+    tuwunel-private-rooms-vmtest = tuwunelPrivateRoomsVmTest;
+
     tuwunel-module-eval = let
       svc = tuwunelEval.config.systemd.services.tuwunel;
       provisionSvc = tuwunelEval.config.systemd.services.tuwunel-provision;
       serviceConfig = builtins.toJSON svc.serviceConfig;
       settings = builtins.toJSON tuwunelEval.config.services.matrix-tuwunel.settings.global.identity_provider.kanidm;
       provisionConfig = builtins.toJSON provisionSvc.serviceConfig;
+      roomIdType = (tuwunelEval.options.services.matrix-tuwunel.provision.rooms.type.getSubOptions []).expectedRoomId.type;
     in
-      runCommand "tuwunel-module-eval" {} ''
-        settings=${lib.escapeShellArg settings}
-        service=${lib.escapeShellArg serviceConfig}
-        provision=${lib.escapeShellArg provisionConfig}
-        printf '%s' "$settings" | grep -q '"client_id":"matrix"' \
-          || { echo "tuwunel: OIDC client_id missing" >&2; exit 1; }
-        printf '%s' "$settings" | grep -q '"issuer_url":"https://auth.example.com/oauth2/openid/matrix"' \
-          || { echo "tuwunel: OIDC issuer_url missing" >&2; exit 1; }
-        printf '%s' "$settings" | grep -q '"callback_url":"https://matrix.example.com/_matrix/client/unstable/login/sso/callback/matrix"' \
-          || { echo "tuwunel: OIDC callback_url missing" >&2; exit 1; }
-        printf '%s' "$settings" | grep -q '"userid_claims":\["preferred_username"\]' \
-          || { echo "tuwunel: OIDC userid_claims missing" >&2; exit 1; }
-        printf '%s' "$settings" | grep -q '"unique_id_fallbacks":false' \
-          || { echo "tuwunel: unique_id_fallbacks false missing" >&2; exit 1; }
-        printf '%s' "$settings" | grep -q '/run/credentials/tuwunel.service/password-oidc-kanidm-' \
-          || { echo "tuwunel: OIDC client_secret_file must point at runtime credential" >&2; exit 1; }
-        printf '%s' "$service" | grep -q '/run/agenix/matrix-oidc-client-secret' \
-          || { echo "tuwunel: OIDC LoadCredential source missing" >&2; exit 1; }
-        if printf '%s' "$settings" | grep -q '/run/agenix/matrix-oidc-client-secret'; then
-          echo "tuwunel: rendered settings must not contain agenix source path" >&2
-          exit 1
-        fi
-        printf '%s' "$provision" | grep -q '/run/agenix/matrix-admin-password' \
-          || { echo "tuwunel: matrix-admin password LoadCredential missing" >&2; exit 1; }
-        state_file=$(printf '%s' ${lib.escapeShellArg provisionSvc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*tuwunel-provision-state.json')
-        grep -q '"admin_token_user":"matrix-admin"' "$state_file" \
-          || { echo "tuwunel: admin_token_user missing from provision state" >&2; exit 1; }
-        grep -q '"alias":"#canix-alerts:matrix.example.com"' "$state_file" \
-          || { echo "tuwunel: Matrix alert room missing from provision state" >&2; exit 1; }
-        grep -q '"@matrix-alerts:matrix.example.com"' "$state_file" \
-          || { echo "tuwunel: Matrix alert room invite missing from provision state" >&2; exit 1; }
-        touch $out
-      '';
+      assert import ./modules/test/tuwunel-room-ids.nix {inherit lib roomIdType;};
+        runCommand "tuwunel-module-eval" {} ''
+          settings=${lib.escapeShellArg settings}
+          service=${lib.escapeShellArg serviceConfig}
+          provision=${lib.escapeShellArg provisionConfig}
+          printf '%s' "$settings" | grep -q '"client_id":"matrix"' \
+            || { echo "tuwunel: OIDC client_id missing" >&2; exit 1; }
+          printf '%s' "$settings" | grep -q '"issuer_url":"https://auth.example.com/oauth2/openid/matrix"' \
+            || { echo "tuwunel: OIDC issuer_url missing" >&2; exit 1; }
+          printf '%s' "$settings" | grep -q '"callback_url":"https://matrix.example.com/_matrix/client/unstable/login/sso/callback/matrix"' \
+            || { echo "tuwunel: OIDC callback_url missing" >&2; exit 1; }
+          printf '%s' "$settings" | grep -q '"userid_claims":\["preferred_username"\]' \
+            || { echo "tuwunel: OIDC userid_claims missing" >&2; exit 1; }
+          printf '%s' "$settings" | grep -q '"unique_id_fallbacks":false' \
+            || { echo "tuwunel: unique_id_fallbacks false missing" >&2; exit 1; }
+          printf '%s' "$settings" | grep -q '/run/credentials/tuwunel.service/password-oidc-kanidm-' \
+            || { echo "tuwunel: OIDC client_secret_file must point at runtime credential" >&2; exit 1; }
+          printf '%s' "$service" | grep -q '/run/agenix/matrix-oidc-client-secret' \
+            || { echo "tuwunel: OIDC LoadCredential source missing" >&2; exit 1; }
+          if printf '%s' "$settings" | grep -q '/run/agenix/matrix-oidc-client-secret'; then
+            echo "tuwunel: rendered settings must not contain agenix source path" >&2
+            exit 1
+          fi
+          printf '%s' "$provision" | grep -q '/run/agenix/matrix-admin-password' \
+            || { echo "tuwunel: matrix-admin password LoadCredential missing" >&2; exit 1; }
+          state_file=$(printf '%s' ${lib.escapeShellArg provisionSvc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*tuwunel-provision-state.json')
+          grep -q '"admin_token_user":"matrix-admin"' "$state_file" \
+            || { echo "tuwunel: admin_token_user missing from provision state" >&2; exit 1; }
+          grep -q '"alias":"#canix-alerts:matrix.example.com"' "$state_file" \
+            || { echo "tuwunel: Matrix alert room missing from provision state" >&2; exit 1; }
+          grep -q '"@matrix-alerts:matrix.example.com"' "$state_file" \
+            || { echo "tuwunel: Matrix alert room invite missing from provision state" >&2; exit 1; }
+          grep -q '"creator":"iris","encrypted":true' "$state_file" \
+            || { echo "tuwunel: encrypted owner-created room policy missing" >&2; exit 1; }
+          grep -q '"alias":"#hermes-iris:matrix.example.com"' "$state_file" \
+            || { echo "tuwunel: owner-created room alias missing" >&2; exit 1; }
+          touch $out
+        '';
 
     # The third-party adapter must derive the pink-raven rauthy users (can keyed by
     # kanidm login, eric/caroline emailed a set-password link) and the kanidm-backend
@@ -696,6 +705,10 @@ in
       kanidmPersons = builtins.toJSON adapterEval.config.services.kanidm.provision.persons;
     in
       assert !(adapterEval.config.services.kanidm.provision.persons ? dejana);
+      assert import ./modules/test/adapter-credentials.nix {
+        inherit lib;
+        adapter = self.lib.adapter;
+      };
       assert adapterEval.config.services.kanidm.provision.groups.internal-tool-users.members == ["dejana"];
         runCommand "adapter-module-eval" {} ''
           users=${lib.escapeShellArg rauthyUsers}
