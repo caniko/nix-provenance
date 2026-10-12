@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Load the existing lock-pinned development shell without fallback, lock updates,
+  or mutable sibling LSP inputs.
+- Regenerate member release workflows with credential-free signed-tag archives,
+  independent environment-bound trusted publication, and distinct CI names.
 - Preserve host-owned Kanidm profiles, existing Tuwunel account reconciliation,
   and the Kanidm-only aarch64 identity CLI configuration when consuming trunk.
 - Direnv loads the Rust tools and OpenCode LSP configuration through one shell,
