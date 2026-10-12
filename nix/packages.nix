@@ -92,125 +92,128 @@ in {
     tuwunel-provision = tuwunelDeps;
   };
 
-  packages = {
-    provenance-oauth = craneLib.buildPackage (oauthArgs
-      // {
-        cargoArtifacts = oauthDeps;
-        nativeBuildInputs = oauthArgs.nativeBuildInputs ++ [pkgs.makeWrapper];
-        postInstall = ''
-          wrapProgram $out/bin/provenance-oauth --prefix PATH : ${lib.makeBinPath [pkgs.coreutils]}
-        '';
-        meta = {
-          description = "Host-scoped OAuth enrollment and shared access credentials";
-          mainProgram = "provenance-oauth";
-          license = with lib.licenses; [mit asl20];
-          platforms = lib.platforms.linux;
-        };
-      });
+  packages =
+    {
+      oauth-adapters = pkgs.runCommand "provenance-oauth-adapters" {} ''
+        mkdir -p $out/share/provenance-oauth
+        cp ${../adapters/oauth}/{access,opencode,omp}.mjs ${../adapters/oauth}/server.js $out/share/provenance-oauth/
+      '';
 
-    oauth-adapters = pkgs.runCommand "provenance-oauth-adapters" {} ''
-      mkdir -p $out/share/provenance-oauth
-      cp ${../adapters/oauth}/{access,opencode,omp}.mjs ${../adapters/oauth}/server.js $out/share/provenance-oauth/
-    '';
+      identity-cli = craneLib.buildPackage (identityArgs
+        // {
+          cargoArtifacts = identityDeps;
+          meta = {
+            description = "Identity administration CLI for Kanidm and Bitwarden-backed workflows";
+            mainProgram = "identity-cli";
+            license = [lib.licenses.mpl20];
+          };
+        });
 
-    identity-cli = craneLib.buildPackage (identityArgs
-      // {
-        cargoArtifacts = identityDeps;
-        meta = {
-          description = "Identity administration CLI for Kanidm and Bitwarden-backed workflows";
-          mainProgram = "identity-cli";
-          license = [lib.licenses.mpl20];
-        };
-      });
+      immich-provision = craneLib.buildPackage (immichArgs
+        // {
+          cargoArtifacts = immichDeps;
+          meta = {
+            description = "Declarative Immich identity provisioning for NixOS and Kanidm";
+            mainProgram = "immich-provision";
+            license = [lib.licenses.agpl3Only];
+          };
+        });
 
-    immich-provision = craneLib.buildPackage (immichArgs
-      // {
-        cargoArtifacts = immichDeps;
-        meta = {
-          description = "Declarative Immich identity provisioning for NixOS and Kanidm";
-          mainProgram = "immich-provision";
-          license = [lib.licenses.agpl3Only];
-        };
-      });
+      kanidm-state-render = craneLib.buildPackage (kanidmStateRenderArgs
+        // {
+          cargoArtifacts = kanidmStateRenderDeps;
+          meta = {
+            description = "Offline generic renderer for kanidm-provision JSON";
+            mainProgram = "kanidm-state-render";
+            license = with lib.licenses; [mit asl20];
+          };
+        });
 
-    kanidm-state-render = craneLib.buildPackage (kanidmStateRenderArgs
-      // {
-        cargoArtifacts = kanidmStateRenderDeps;
-        meta = {
-          description = "Offline generic renderer for kanidm-provision JSON";
-          mainProgram = "kanidm-state-render";
-          license = with lib.licenses; [mit asl20];
-        };
-      });
+      rauthy-provision = craneLib.buildPackage (rauthyArgs
+        // {
+          cargoArtifacts = rauthyDeps;
+          meta = {
+            description = "Declarative provisioning client for Rauthy (users, groups, roles, OIDC clients)";
+            mainProgram = "rauthy-provision";
+            license = with lib.licenses; [mit asl20];
+          };
+        });
 
-    rauthy-provision = craneLib.buildPackage (rauthyArgs
-      // {
-        cargoArtifacts = rauthyDeps;
-        meta = {
-          description = "Declarative provisioning client for Rauthy (users, groups, roles, OIDC clients)";
-          mainProgram = "rauthy-provision";
-          license = with lib.licenses; [mit asl20];
-        };
-      });
+      rauthy-state-render = craneLib.buildPackage (rauthyStateRenderArgs
+        // {
+          cargoArtifacts = rauthyStateRenderDeps;
+          meta = {
+            description = "Offline generic renderer for rauthy-provision state JSON";
+            mainProgram = "rauthy-state-render";
+            license = with lib.licenses; [mit asl20];
+          };
+        });
 
-    rauthy-state-render = craneLib.buildPackage (rauthyStateRenderArgs
-      // {
-        cargoArtifacts = rauthyStateRenderDeps;
-        meta = {
-          description = "Offline generic renderer for rauthy-provision state JSON";
-          mainProgram = "rauthy-state-render";
-          license = with lib.licenses; [mit asl20];
-        };
-      });
+      vikunja-provision = craneLib.buildPackage (vikunjaArgs
+        // {
+          cargoArtifacts = vikunjaDeps;
+          meta = {
+            description = "Declarative provisioning client for Vikunja teams and memberships";
+            mainProgram = "vikunja-provision";
+            license = with lib.licenses; [mit asl20];
+          };
+        });
 
-    vikunja-provision = craneLib.buildPackage (vikunjaArgs
-      // {
-        cargoArtifacts = vikunjaDeps;
-        meta = {
-          description = "Declarative provisioning client for Vikunja teams and memberships";
-          mainProgram = "vikunja-provision";
-          license = with lib.licenses; [mit asl20];
-        };
-      });
+      forgejo-provision = craneLib.buildPackage (forgejoArgs
+        // {
+          cargoArtifacts = forgejoDeps;
+          meta = {
+            description = "Declarative Forgejo SSH public-key provisioning";
+            mainProgram = "forgejo-provision";
+            license = with lib.licenses; [mit asl20];
+          };
+        });
 
-    forgejo-provision = craneLib.buildPackage (forgejoArgs
-      // {
-        cargoArtifacts = forgejoDeps;
-        meta = {
-          description = "Declarative Forgejo SSH public-key provisioning";
-          mainProgram = "forgejo-provision";
-          license = with lib.licenses; [mit asl20];
-        };
-      });
+      stalwart016-provision = craneLib.buildPackage (stalwartProvisionArgs
+        // {
+          cargoArtifacts = stalwartProvisionDeps;
+          meta = {
+            description = "Recovery-mode provisioner for Stalwart Mail Server 0.16";
+            mainProgram = "stalwart016-provision";
+            license = with lib.licenses; [mit asl20];
+          };
+        });
 
-    stalwart016-provision = craneLib.buildPackage (stalwartProvisionArgs
-      // {
-        cargoArtifacts = stalwartProvisionDeps;
-        meta = {
-          description = "Recovery-mode provisioner for Stalwart Mail Server 0.16";
-          mainProgram = "stalwart016-provision";
-          license = with lib.licenses; [mit asl20];
-        };
-      });
+      stalwart-oauth-bootstrap = craneLib.buildPackage (stalwartOauthBootstrapArgs
+        // {
+          cargoArtifacts = stalwartOauthBootstrapDeps;
+          meta = {
+            description = "Non-interactive Stalwart OAuth refresh-token bootstrap";
+            mainProgram = "stalwart-oauth-bootstrap";
+            license = with lib.licenses; [mit asl20];
+          };
+        });
 
-    stalwart-oauth-bootstrap = craneLib.buildPackage (stalwartOauthBootstrapArgs
-      // {
-        cargoArtifacts = stalwartOauthBootstrapDeps;
-        meta = {
-          description = "Non-interactive Stalwart OAuth refresh-token bootstrap";
-          mainProgram = "stalwart-oauth-bootstrap";
-          license = with lib.licenses; [mit asl20];
-        };
-      });
-
-    tuwunel-provision = craneLib.buildPackage (tuwunelArgs
-      // {
-        cargoArtifacts = tuwunelDeps;
-        meta = {
-          description = "Declarative provisioning client for Tuwunel Matrix users with auto-bootstrap";
-          mainProgram = "tuwunel-provision";
-          license = [lib.licenses.agpl3Only];
-        };
-      });
-  };
+      tuwunel-provision = craneLib.buildPackage (tuwunelArgs
+        // {
+          cargoArtifacts = tuwunelDeps;
+          meta = {
+            description = "Declarative provisioning client for Tuwunel Matrix users with auto-bootstrap";
+            mainProgram = "tuwunel-provision";
+            license = [lib.licenses.agpl3Only];
+          };
+        });
+    }
+    // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      # The access helper reads Linux procfs to bind credentials to its host/user.
+      provenance-oauth = craneLib.buildPackage (oauthArgs
+        // {
+          cargoArtifacts = oauthDeps;
+          nativeBuildInputs = oauthArgs.nativeBuildInputs ++ [pkgs.makeWrapper];
+          postInstall = ''
+            wrapProgram $out/bin/provenance-oauth --prefix PATH : ${lib.makeBinPath [pkgs.coreutils]}
+          '';
+          meta = {
+            description = "Host-scoped OAuth enrollment and shared access credentials";
+            mainProgram = "provenance-oauth";
+            license = with lib.licenses; [mit asl20];
+            platforms = lib.platforms.linux;
+          };
+        });
+    };
 }

@@ -278,19 +278,19 @@ in {
         ])
         cfg.webhooks)
       ++ lib.flatten (lib.mapAttrsToList (name: project: [
-        {
-          assertion = !project.present || name != "";
-          message = "services.vikunja.provision.projects must not contain an empty title when present = true.";
-        }
-      ])
-      cfg.projects)
+          {
+            assertion = !project.present || name != "";
+            message = "services.vikunja.provision.projects must not contain an empty title when present = true.";
+          }
+        ])
+        cfg.projects)
       ++ lib.flatten (lib.mapAttrsToList (name: label: [
-        {
-          assertion = !label.present || name != "";
-          message = "services.vikunja.provision.labels must not contain an empty title when present = true.";
-        }
-      ])
-      cfg.labels);
+          {
+            assertion = !label.present || name != "";
+            message = "services.vikunja.provision.labels must not contain an empty title when present = true.";
+          }
+        ])
+        cfg.labels);
 
     systemd.services.vikunja-provision = {
       description = "Declaratively provision Vikunja projects, labels, teams, and webhooks";

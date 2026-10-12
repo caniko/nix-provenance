@@ -247,23 +247,6 @@ in
       node --test ${../adapters/oauth}/adapters.test.mjs
       touch $out
     '';
-    oauth-module-eval = let
-      svc = oauthEval.config.systemd.services.provenance-oauth-alice-openai;
-      initial = oauthEval.config.systemd.services.provenance-oauth-alice-openai-initialize;
-    in
-      assert svc.serviceConfig.User == "alice";
-      assert svc.serviceConfig.StateDirectoryMode == "0700";
-      assert svc.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-openai"];
-      assert !(lib.hasInfix "--initialize" svc.serviceConfig.ExecStart);
-      assert lib.hasInfix "--initialize" initial.serviceConfig.ExecStart;
-      assert initial.wantedBy == [];
-      assert svc.unitConfig.ConditionPathExists == "/var/lib/provenance-oauth-alice-openai/state.json";
-      assert oauthEval.config.systemd.paths.provenance-oauth-alice-openai.pathConfig.PathChanged == "/run/agenix/oauth-alice-openai";
-        runCommand "oauth-module-eval" {} ''
-          test -n ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig)}
-          touch $out
-        '';
-    oauth-home-module-eval = import ./modules/test/oauth-home-eval.nix {inherit pkgs self;};
     immich-test = craneLib.cargoTest (
       args.immich-provision // {cargoArtifacts = cargoArtifacts.immich-provision;}
     );
@@ -327,7 +310,9 @@ in
       alejandra --check flake.nix nix
       touch $out
     '';
-
+  }
+  // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    # NixOS service checks and the Immich server patch require Linux packages.
     # Both NixOS modules must evaluate to a concrete oneshot serviceConfig.
     immich-module-eval = let
       svc = immichEval.config.systemd.services.immich-provision;
@@ -740,7 +725,8 @@ in
       patch -d source -p1 --dry-run < ${immichPatch}
       touch $out
     '';
-
+  }
+  // {
     # Structural guard: reqwest TLS features stay per-crate (never unioned), and
     # reqwest is never hoisted into [workspace.dependencies]. This is the cheap,
     # deterministic enforcement of the no-openssl / aarch64-safe invariant.
@@ -783,6 +769,26 @@ in
         fi
         touch $out
       '';
+  }
+  // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    # These modules install the Linux-only, procfs-bound OAuth access helper.
+    oauth-module-eval = let
+      svc = oauthEval.config.systemd.services.provenance-oauth-alice-openai;
+      initial = oauthEval.config.systemd.services.provenance-oauth-alice-openai-initialize;
+    in
+      assert svc.serviceConfig.User == "alice";
+      assert svc.serviceConfig.StateDirectoryMode == "0700";
+      assert svc.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-openai"];
+      assert !(lib.hasInfix "--initialize" svc.serviceConfig.ExecStart);
+      assert lib.hasInfix "--initialize" initial.serviceConfig.ExecStart;
+      assert initial.wantedBy == [];
+      assert svc.unitConfig.ConditionPathExists == "/var/lib/provenance-oauth-alice-openai/state.json";
+      assert oauthEval.config.systemd.paths.provenance-oauth-alice-openai.pathConfig.PathChanged == "/run/agenix/oauth-alice-openai";
+        runCommand "oauth-module-eval" {} ''
+          test -n ${lib.escapeShellArg (builtins.toJSON svc.serviceConfig)}
+          touch $out
+        '';
+    oauth-home-module-eval = import ./modules/test/oauth-home-eval.nix {inherit pkgs self;};
   }
   // lib.optionalAttrs (system == "x86_64-linux") {
     identity-cli-cross-kanidm-args = let

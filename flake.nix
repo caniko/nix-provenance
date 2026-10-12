@@ -4,13 +4,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    harbor-rs = {
-      url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=ed89d0b13fc61dd1b2217bf4bba97f32cec27ba7";
+    harbor = {
+      url = "git+https://github.com/caniko/harbor.git?ref=feat/harbor-monorepo-components&rev=e8b1996580e4ecd51dd402edf4a16d9df88e3a1b";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # rust-overlay and crane are re-exported by harbor-rs; follow them through.
-    rust-overlay.follows = "harbor-rs/rust-overlay";
-    crane.follows = "harbor-rs/crane";
+    # Follow Harbor's shared Rust inputs.
+    rust-overlay.follows = "harbor/rust-overlay";
+    crane.follows = "harbor/crane";
     rauthy-src = {
       # PR2 review-fix source: feat(bootstrap) generated API key tokens.
       # Keep this commit-pinned because the original branch was deleted.
@@ -18,7 +18,7 @@
       flake = false;
     };
     plinth = {
-      url = "git+https://github.com/caniko/plinth.git";
+      url = "git+https://github.com/caniko/plinth.git?ref=migrate/harbor-combined-20261012-features&rev=534dfa6dd6217db97b7ccd313501120a3c34d912";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -27,7 +27,7 @@
     self,
     nixpkgs,
     flake-utils,
-    harbor-rs,
+    harbor,
     rust-overlay,
     crane,
     rauthy-src,
@@ -36,21 +36,29 @@
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [
-            (import rust-overlay)
-          ];
-        };
+        pkgs =
+          import (
+            if system == "x86_64-darwin"
+            then harbor.inputs.nixpkgs-darwin
+            else nixpkgs
+          ) {
+            inherit system;
+            overlays = [
+              (import rust-overlay)
+            ];
+          };
         inherit (pkgs) lib;
-        toolchain = harbor-rs.lib.mkToolchain {
+        toolchain = harbor.lib.rust.mkToolchain {
           inherit pkgs;
           toolchainProfile = "nightly";
           crossTargets = [];
         };
         inherit (toolchain) rustToolchain craneLib;
-        cross = harbor-rs.lib.mkCross {inherit pkgs system;};
-        opencodeLspShell = harbor-rs.inputs.nix-opencode-lsp.lib.mkShell {
+        treefmt =
+          harbor.inputs.treefmt-nix.lib.evalModule pkgs
+          (import ./nix/treefmt.nix {rustfmtPackage = rustToolchain;});
+        cross = harbor.lib.rust.mkCross {inherit pkgs system;};
+        opencodeLspShell = harbor.inputs.nix-opencode-lsp.lib.mkShell {
           inherit pkgs;
           rustAnalyzer = rustToolchain;
         };
@@ -64,7 +72,7 @@
         identityCrossPackageSet =
           if system == "x86_64-linux"
           then
-            harbor-rs.lib.mkCrossPackages {
+            harbor.lib.rust.mkCrossPackages {
               inherit pkgs craneLib cross;
               pname = "identity-cli";
               commonArgs = crates.args.identity-cli;
@@ -151,7 +159,7 @@
           '';
         };
 
-        atticAdapter = harbor-rs.lib.mkAdapter {
+        atticAdapter = harbor.lib.rust.mkAdapter {
           attic = {
             endpoint = "https://attic.candee.baby";
             cache = "canix";
@@ -160,20 +168,24 @@
       in {
         inherit packages;
 
-        checks = import ./nix/checks.nix {
-          inherit pkgs nixpkgs craneLib src self system;
-          inherit lib;
-          inherit packages;
-          inherit (crates) args cargoArtifacts;
-          inherit identityCrossPackageSet;
-          docs = docsPackage;
-        };
+        checks =
+          (import ./nix/checks.nix {
+            inherit pkgs nixpkgs craneLib src self system;
+            inherit lib;
+            inherit packages;
+            inherit (crates) args cargoArtifacts;
+            inherit identityCrossPackageSet;
+            docs = docsPackage;
+          })
+          // {
+            formatting = treefmt.config.build.check self;
+          };
 
-        devShells.default = harbor-rs.lib.mkDevShell {
+        devShells.default = harbor.lib.rust.mkDevShell {
           inherit pkgs craneLib cross;
-          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook pkgs.dbus];
+          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq treefmt.config.build.wrapper pkgs.mdbook pkgs.dbus];
           extraShellHook = opencodeLspShell.shellHook;
-          cargoConfig = harbor-rs.lib.mkCargoConfig {
+          cargoConfig = harbor.lib.rust.mkCargoConfig {
             inherit pkgs;
             channel = "nightly";
           };
@@ -181,7 +193,7 @@
           enableWindowsEnv = false;
         };
 
-        apps.push-cache = harbor-rs.lib.mkAtticPush {
+        apps.push-cache = harbor.lib.rust.mkAtticPush {
           inherit pkgs;
           adapter = atticAdapter;
           paths = builtins.attrValues packages;
@@ -191,7 +203,7 @@
           domain = "nix-provenance.tartanoglu.com";
         };
 
-        formatter = pkgs.alejandra;
+        formatter = treefmt.config.build.wrapper;
       }
     )
     // {
