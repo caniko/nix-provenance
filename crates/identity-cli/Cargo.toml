@@ -17,6 +17,11 @@ path = "src/lib.rs"
 name = "identity-cli"
 path = "src/main.rs"
 
+[[bin]]
+name = "forgejo-oidc-secret"
+path = "src/bin/forgejo-oidc-secret.rs"
+required-features = ["kanidm"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -33,7 +38,9 @@ kanidm_client = { version = "=1.10.4", optional = true }
 kanidm_proto = { version = "=1.10.4", optional = true }
 totp-rs = { version = "5", optional = true }
 
-# Rauthy reset-password helpers. async reqwest with rustls (no openssl C dep, so
+# Rauthy reset-password helpers and provenance-core's always-compiled HTTP module.
+# The core delegates TLS selection to leaf crates, including no-default builds.
+# async reqwest with rustls (no openssl C dep, so
 # it cross-compiles to aarch64 like rauthy-provision); TLS feature kept LOCAL —
 # do not hoist into [workspace.dependencies]. spow solves Rauthy's request_reset
 # Proof-of-Work (server feature = the native solver), matching rauthy-provision.
@@ -41,14 +48,14 @@ reqwest = { version = "0.12", default-features = false, features = [
   "blocking",
   "json",
   "rustls-tls-native-roots",
-], optional = true }
+] }
 spow = { version = "0.6", default-features = false, features = ["server"], optional = true }
 
 [features]
 default = ["kanidm", "bitwarden", "rauthy"]
-kanidm = ["dep:kanidm_client", "dep:kanidm_proto", "dep:totp-rs", "dep:reqwest"]
+kanidm = ["dep:kanidm_client", "dep:kanidm_proto", "dep:totp-rs"]
 bitwarden = ["dep:base64"]
-rauthy = ["dep:reqwest", "dep:spow"]
+rauthy = ["dep:spow"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
