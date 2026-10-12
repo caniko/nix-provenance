@@ -17,10 +17,17 @@ path = "src/lib.rs"
 name = "identity-cli"
 path = "src/main.rs"
 
+[[bin]]
+name = "forgejo-oidc-secret"
+path = "src/bin/forgejo-oidc-secret.rs"
+required-features = ["kanidm"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-provenance-core = { path = "../provenance-core" }
+# Generated-secret helpers are used only by the Kanidm module. Keep featureless
+# and Bitwarden-only builds independent of core's leaf-selected TLS transport.
+provenance-core = { path = "../provenance-core", optional = true }
 rand = "0.9"
 serde.workspace = true
 serde_json.workspace = true
@@ -42,11 +49,19 @@ reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "rustls-tls-native-roots",
 ], optional = true }
-spow = { version = "0.6", default-features = false, features = ["server"], optional = true }
+spow = { version = "0.6", default-features = false, features = [
+  "server",
+], optional = true }
 
 [features]
 default = ["kanidm", "bitwarden", "rauthy"]
-kanidm = ["dep:kanidm_client", "dep:kanidm_proto", "dep:totp-rs", "dep:reqwest"]
+kanidm = [
+  "dep:kanidm_client",
+  "dep:kanidm_proto",
+  "dep:totp-rs",
+  "dep:reqwest",
+  "dep:provenance-core",
+]
 bitwarden = ["dep:base64"]
 rauthy = ["dep:reqwest", "dep:spow"]
 

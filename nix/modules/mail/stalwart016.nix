@@ -89,12 +89,14 @@
     "@type" = "upsert";
     object = "OAuthClient";
     matchOn = ["clientId"];
-    value = lib.mapAttrs (_: client: {
-      clientId = client.clientId;
-      description = client.description;
-      redirectUris = lib.genAttrs client.redirectUris (_: true);
-      contacts = lib.genAttrs client.contacts (_: true);
-    }) cfg.oidc.clients;
+    value =
+      lib.mapAttrs (_: client: {
+        clientId = client.clientId;
+        description = client.description;
+        redirectUris = lib.genAttrs client.redirectUris (_: true);
+        contacts = lib.genAttrs client.contacts (_: true);
+      })
+      cfg.oidc.clients;
   };
 
   generatedPlan = listenerOps ++ cfg.provision.registryConfig ++ oauthClientOps;
@@ -572,12 +574,14 @@ in {
       after = ["network.target"] ++ lib.optional postgres.createLocally "postgresql.target";
       wants = lib.optional postgres.createLocally "postgresql.target";
       bindsTo = lib.optional postgres.createLocally "postgresql.service";
-      environment = {
-        STALWART_HOSTNAME = cfg.hostname;
-        HOME = "/var/lib/stalwart016";
-      } // lib.optionalAttrs (cfg.publicUrl != null) {
-        STALWART_PUBLIC_URL = cfg.publicUrl;
-      };
+      environment =
+        {
+          STALWART_HOSTNAME = cfg.hostname;
+          HOME = "/var/lib/stalwart016";
+        }
+        // lib.optionalAttrs (cfg.publicUrl != null) {
+          STALWART_PUBLIC_URL = cfg.publicUrl;
+        };
 
       serviceConfig = {
         Type = "simple";

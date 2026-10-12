@@ -49,6 +49,10 @@
           crossTargets = [];
         };
         inherit (toolchain) rustToolchain craneLib;
+        treefmt = harbor-rs.inputs.treefmt-nix.lib.evalModule pkgs (import ./nix/treefmt.nix {
+          inherit harbor-rs;
+          rustfmtPackage = rustToolchain;
+        });
         cross = harbor-rs.lib.mkCross {inherit pkgs system;};
         opencodeLspShell = harbor-rs.inputs.nix-opencode-lsp.lib.mkShell {
           inherit pkgs;
@@ -160,18 +164,22 @@
       in {
         inherit packages;
 
-        checks = import ./nix/checks.nix {
-          inherit pkgs nixpkgs craneLib src self system;
-          inherit lib;
-          inherit packages;
-          inherit (crates) args cargoArtifacts;
-          inherit identityCrossPackageSet;
-          docs = docsPackage;
-        };
+        checks =
+          (import ./nix/checks.nix {
+            inherit pkgs nixpkgs craneLib src self system;
+            inherit lib;
+            inherit packages;
+            inherit (crates) args cargoArtifacts;
+            inherit identityCrossPackageSet;
+            docs = docsPackage;
+          })
+          // {
+            formatting = treefmt.config.build.check self;
+          };
 
         devShells.default = harbor-rs.lib.mkDevShell {
           inherit pkgs craneLib cross;
-          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.mdbook pkgs.dbus];
+          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq treefmt.config.build.wrapper pkgs.mdbook pkgs.dbus];
           extraShellHook = opencodeLspShell.shellHook;
           cargoConfig = harbor-rs.lib.mkCargoConfig {
             inherit pkgs;
@@ -191,7 +199,7 @@
           domain = "nix-provenance.tartanoglu.com";
         };
 
-        formatter = pkgs.alejandra;
+        formatter = treefmt.config.build.wrapper;
       }
     )
     // {
