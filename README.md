@@ -142,8 +142,15 @@ consumer wiring.
 
 ## Development
 
+Formatting composes the lock-pinned Harbor Nix, TOML and Rust modules through
+one treefmt wrapper. Rust formatting uses the project's pinned toolchain and
+workspace edition. The development shell, flake formatting check and
+Simit-generated CI use the same declared formatter; CI runs it with `--ci`.
+
 ```sh
-cargo test
+direnv exec . treefmt
+direnv exec . treefmt --ci
+direnv exec . cargo test
 nix flake check --no-build
 nix flake check
 ```

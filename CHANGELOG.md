@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Compose the pinned Harbor Nix, TOML and Rust formatters through one treefmt
+  wrapper shared by the development shell, flake check and Simit-generated CI.
 - Load the existing lock-pinned development shell without fallback, lock updates,
   or mutable sibling LSP inputs.
 - Regenerate member release workflows with credential-free signed-tag archives,
