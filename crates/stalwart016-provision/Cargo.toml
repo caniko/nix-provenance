@@ -22,7 +22,11 @@ provenance-core = { path = "../provenance-core" }
 # Phantom dependency: ensures reqwest TLS features unify with provenance-core's
 # http module. Without a TLS feature, `danger_accept_invalid_certs` fails to
 # compile. This crate does NOT speak HTTP directly — TLS choice is arbitrary.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "blocking",
+  "json",
+] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

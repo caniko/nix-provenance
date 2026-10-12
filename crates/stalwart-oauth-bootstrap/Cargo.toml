@@ -18,10 +18,16 @@ path = "src/main.rs"
 anyhow.workspace = true
 base64 = "0.22"
 clap.workspace = true
-keyring = { version = "3", default-features = false, features = ["sync-secret-service"] }
+keyring = { version = "3", default-features = false, features = [
+  "sync-secret-service",
+] }
 provenance-core = { path = "../provenance-core" }
 rand = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "blocking",
+  "json",
+  "rustls-tls",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 sha2 = "0.10"
