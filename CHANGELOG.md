@@ -39,6 +39,10 @@
 
 ### Added
 
+- `github-provision` and `homeModules.github`: per-account Home Manager user
+  units that reconcile a GitHub account's SSH and OpenPGP public keys, invite
+  collaborators to owned or named repositories, and accept invitations only
+  from trusted owners. Runs on activation, token rotation, and daily.
 - A Home Manager rbw adapter with durable private login state, guarded legacy
   migration, shared client/agent paths, and metadata-only recovery diagnostics.
 - Nullable Stalwart 0.16 listener PROXY trust overrides, with explicit set,

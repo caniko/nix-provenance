@@ -92,6 +92,11 @@ SPDX-FileCopyrightText = "Can H. Tartanoglu"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
+path = ["crates/github-provision/**", "nix/modules/home/github.nix", "docs/src/guides/github-accounts.md"]
+SPDX-FileCopyrightText = "Can H. Tartanoglu"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
 path = [
   "nix/lib/rauthy.nix",
   "nix/modules/idp/rauthy.nix",

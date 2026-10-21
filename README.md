@@ -24,10 +24,11 @@ are supported only as runtime password-file references, normally
 credentials and reconcilers store only rotation-marker hashes. Plaintext
 passwords must never enter Nix-rendered JSON, the Nix store, argv, logs, or
 environment variables. PINs, app-local password-reset flows, and notification
-emails remain out of scope unless the identity model changes again. Public SSH
-authentication keys are a separate non-secret exception: Forgejo may reconcile
-declared public keys, while private keys and all password-like material remain
-outside this repository's state.
+emails remain out of scope unless the identity model changes again. Public keys are a separate non-secret exception: Forgejo may reconcile declared
+SSH public keys, and GitHub accounts may reconcile declared SSH and OpenPGP
+public keys plus repository collaborator invitations and their acceptance.
+Private keys, tokens, and all password-like material remain outside this
+repository's state.
 
 Each **tenant** reconciles one system from a Nix-rendered JSON state file via a
 `Type=oneshot` systemd unit ordered after that system. A tenant is not always a
@@ -49,6 +50,7 @@ Rust crate — the directory taxonomy makes that explicit:
 | [`rauthy-provision`](crates/rauthy-provision) | Rauthy users / groups / roles / OIDC clients | `MIT OR Apache-2.0` |
 | [`vikunja-provision`](crates/vikunja-provision) | Vikunja teams and memberships via the API | `MIT OR Apache-2.0` |
 | [`forgejo-provision`](crates/forgejo-provision) | Forgejo SSH public keys via the administrative API | `MIT OR Apache-2.0` |
+| [`github-provision`](crates/github-provision) | GitHub account SSH/OpenPGP public keys and repository collaborators | `MIT OR Apache-2.0` |
 | [`provenance-oauth`](crates/provenance-oauth) | Host/user-scoped OAuth enrollment, refresh, and access-only app adapters | `MIT OR Apache-2.0` |
 
 See [LICENSING.md](LICENSING.md) for the per-path SPDX map and the
@@ -61,7 +63,7 @@ tenant taxonomy and the add-a-tenant checklist.
   an account from a runtime credential file, including encrypted TOTP material.
   See [Proton VPN account login](docs/src/guides/proton-vpn.md).
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,stalwart016-provision,forgejo-cli,forgejo-cli-nushell-completion,docs,site}`
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,github-provision,stalwart016-provision,forgejo-cli,forgejo-cli-nushell-completion,docs,site}`
 - `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}` — `usersFromKanidmPersons`
@@ -70,6 +72,9 @@ tenant taxonomy and the add-a-tenant checklist.
   backend-agnostic primitives third-party flakes use (see below)
 - `homeModules.fj` — installs nixpkgs' `forgejo-cli` plus its validated Nushell
   completion and provides `nix-provenance.fj.enable`.
+- `homeModules.github` — per-account user units that reconcile a GitHub
+  account's public keys, collaborator invitations, and invitation acceptance.
+  See the [GitHub accounts guide](docs/src/guides/github-accounts.md).
 - `packages.<system>.{provenance-oauth,oauth-adapters}`, `nixosModules.oauth`, and
   `homeModules.oauth` — shared provider authorization for compatible stock
   applications. OpenAI ChatGPT is supported through OpenCode V2 plugins and OMP
