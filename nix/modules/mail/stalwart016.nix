@@ -18,9 +18,9 @@
 
   bootstrapConfig = json.generate "stalwart016-bootstrap.json" {
     "@type" = "PostgreSql";
-    host = postgres.host;
-    port = postgres.port;
-    database = postgres.database;
+    inherit (postgres) host;
+    inherit (postgres) port;
+    inherit (postgres) database;
     authUsername = postgres.username;
     authSecret =
       if postgres.passwordFile == null
@@ -29,9 +29,9 @@
         "@type" = "File";
         filePath = credentialPath postgres.passwordCredential;
       };
-    useTls = postgres.useTls;
-    allowInvalidCerts = postgres.allowInvalidCerts;
-    poolMaxConnections = postgres.poolMaxConnections;
+    inherit (postgres) useTls;
+    inherit (postgres) allowInvalidCerts;
+    inherit (postgres) poolMaxConnections;
   };
 
   # JSON config for the Rust provisioner binary (generated at eval time,
@@ -46,7 +46,7 @@
     migration_apply_files = map toString migrationApplyFiles;
     stalwart_binary = lib.getExe cfg.package;
     stalwart_config = "/etc/stalwart016/config.json";
-    hostname = cfg.hostname;
+    inherit (cfg) hostname;
     stalwart_cli_binary = lib.getExe cfg.cliPackage;
     recovery_url = cfg.provision.recoveryUrl;
     recovery_admin_username = cfg.recoveryAdmin.username;
@@ -89,12 +89,14 @@
     "@type" = "upsert";
     object = "OAuthClient";
     matchOn = ["clientId"];
-    value = lib.mapAttrs (_: client: {
-      clientId = client.clientId;
-      description = client.description;
-      redirectUris = lib.genAttrs client.redirectUris (_: true);
-      contacts = lib.genAttrs client.contacts (_: true);
-    }) cfg.oidc.clients;
+    value =
+      lib.mapAttrs (_: client: {
+        inherit (client) clientId;
+        inherit (client) description;
+        redirectUris = lib.genAttrs client.redirectUris (_: true);
+        contacts = lib.genAttrs client.contacts (_: true);
+      })
+      cfg.oidc.clients;
   };
 
   generatedPlan = listenerOps ++ cfg.provision.registryConfig ++ oauthClientOps;
@@ -572,12 +574,14 @@ in {
       after = ["network.target"] ++ lib.optional postgres.createLocally "postgresql.target";
       wants = lib.optional postgres.createLocally "postgresql.target";
       bindsTo = lib.optional postgres.createLocally "postgresql.service";
-      environment = {
-        STALWART_HOSTNAME = cfg.hostname;
-        HOME = "/var/lib/stalwart016";
-      } // lib.optionalAttrs (cfg.publicUrl != null) {
-        STALWART_PUBLIC_URL = cfg.publicUrl;
-      };
+      environment =
+        {
+          STALWART_HOSTNAME = cfg.hostname;
+          HOME = "/var/lib/stalwart016";
+        }
+        // lib.optionalAttrs (cfg.publicUrl != null) {
+          STALWART_PUBLIC_URL = cfg.publicUrl;
+        };
 
       serviceConfig = {
         Type = "simple";

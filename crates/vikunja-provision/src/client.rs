@@ -64,7 +64,6 @@ pub struct TeamRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 pub struct ProjectSummary {
-    pub id: i64,
     pub title: String,
 }
 
@@ -77,7 +76,6 @@ struct ProjectRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 pub struct LabelSummary {
-    pub id: i64,
     pub title: String,
 }
 
