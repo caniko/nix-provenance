@@ -191,7 +191,16 @@
           domain = "nix-provenance.tartanoglu.com";
         };
 
-        formatter = pkgs.alejandra;
+        # `nix fmt` and Simit's format gate run the formatter without
+        # arguments; default to the scope the nixfmt check enforces.
+        formatter = pkgs.writeShellApplication {
+          name = "nix-provenance-fmt";
+          runtimeInputs = [pkgs.alejandra];
+          text = ''
+            if [ "$#" -eq 0 ]; then set -- flake.nix nix; fi
+            exec alejandra "$@"
+          '';
+        };
       }
     )
     // {

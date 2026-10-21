@@ -16,8 +16,14 @@ sha2 = "0.10"
 # reqwest with NO TLS feature on purpose: the leaf crate's TLS choice
 # (rustls-tls vs rustls-tls-native-roots) wins via additive feature unification,
 # so this permissive core never forces a TLS backend and never links openssl.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"], optional = true }
 zeroize.workspace = true
+
+[features]
+default = ["http"]
+# Blocking HTTP helpers. Consumers without an HTTP client (and so without a
+# reqwest TLS backend) disable default features.
+http = ["dep:reqwest"]
 
 [dev-dependencies]
 # Tests compile the HTTP module directly; this keeps the production crate's TLS
