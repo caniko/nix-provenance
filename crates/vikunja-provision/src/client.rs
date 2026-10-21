@@ -11,7 +11,7 @@ use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use provenance_core::http::ensure_success as ok;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::{Method, StatusCode};
@@ -451,10 +451,12 @@ mod tests {
                 "secret": "shared-secret",
             })
         );
-        assert!(value["target_url"]
-            .as_str()
-            .unwrap()
-            .starts_with("https://"));
+        assert!(
+            value["target_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://")
+        );
     }
 
     #[test]
