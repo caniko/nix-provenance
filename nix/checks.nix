@@ -97,6 +97,43 @@
       specialArgs = {inherit pkgs;};
     };
 
+  githubTokenFile = "\${XDG_RUNTIME_DIR}/agenix/bot_github_token";
+  githubEval = lib.evalModules {
+    modules = [
+      ({lib, ...}: {
+        options.systemd.user = lib.genAttrs ["services" "paths" "timers"] (_:
+          lib.mkOption {
+            type = lib.types.attrsOf lib.types.anything;
+            default = {};
+          });
+      })
+      ({lib, ...}: {
+        options.assertions = lib.mkOption {
+          type = lib.types.listOf lib.types.anything;
+          default = [];
+        };
+      })
+      (import ./modules/home/github.nix {inherit self;})
+      {
+        nix-provenance.github = {
+          enable = true;
+          package = pkgs.writeShellScriptBin "github-provision" "exit 0";
+          accounts = {
+            owner.collaborators.bot.repositories = "owned";
+            bot = {
+              tokenFile = githubTokenFile;
+              sshKeys.atlas.key = "ssh-ed25519 AAAA";
+              acceptInvitationsFrom = ["owner"];
+              after = ["owner"];
+            };
+            owner.tokenFile = "/run/secrets/owner-token";
+          };
+        };
+      }
+    ];
+    specialArgs = {inherit pkgs;};
+  };
+
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in
   {
@@ -111,6 +148,7 @@ in
     inherit (packages) rauthy-state-render;
     inherit (packages) vikunja-provision;
     inherit (packages) forgejo-provision;
+    inherit (packages) github-provision;
     inherit (packages) stalwart016-provision;
     inherit (packages) stalwart-oauth-bootstrap;
     inherit (packages) tuwunel-provision;
@@ -232,6 +270,7 @@ in
     rauthy-clippy = mkClippy "rauthy-provision";
     vikunja-clippy = mkClippy "vikunja-provision";
     forgejo-clippy = mkClippy "forgejo-provision";
+    github-provision-clippy = mkClippy "github-provision";
     stalwart016-provision-clippy = mkClippy "stalwart016-provision";
     stalwart-oauth-bootstrap-clippy = mkClippy "stalwart-oauth-bootstrap";
     tuwunel-provision-clippy = mkClippy "tuwunel-provision";
@@ -287,6 +326,14 @@ in
       args.forgejo-provision
       // {
         cargoArtifacts = cargoArtifacts.forgejo-provision;
+        doCheck = true;
+      }
+    );
+
+    github-provision-test = craneLib.cargoTest (
+      args.github-provision
+      // {
+        cargoArtifacts = cargoArtifacts.github-provision;
         doCheck = true;
       }
     );
@@ -603,6 +650,29 @@ in
         fi
         touch $out
       '';
+
+    github-module-eval = let
+      inherit (githubEval.config) assertions;
+      bot = githubEval.config.systemd.user.services.nix-provenance-github-bot;
+      timer = githubEval.config.systemd.user.timers.nix-provenance-github-bot;
+      path = githubEval.config.systemd.user.paths.nix-provenance-github-bot;
+    in
+      assert lib.all (entry: entry.assertion) assertions;
+      assert builtins.elem "nix-provenance-github-owner.service" bot.Unit.After;
+      assert builtins.elem "agenix.service" bot.Unit.Wants;
+      assert lib.hasInfix "--token-file %t/agenix/bot_github_token" bot.Service.ExecStart;
+      assert bot.Service.RestartPreventExitStatus == 2;
+      assert path.Path.PathChanged == "%t/agenix/bot_github_token";
+      assert timer.Timer.OnCalendar == "daily";
+        runCommand "github-module-eval" {} ''
+          state=$(printf '%s' ${lib.escapeShellArg bot.Service.ExecStart} | grep -o '/nix/store/[^ ]*github-provision-bot.json')
+          ${pkgs.jq}/bin/jq -e '.login == "bot" and .acceptInvitationsFrom == ["owner"] and .sshKeys.atlas.key == "ssh-ed25519 AAAA"' "$state"
+          if grep -Fq 'owner-token' "$state"; then
+            echo "github module: token path leaked into state" >&2
+            exit 1
+          fi
+          touch $out
+        '';
 
     stalwart016-vmtest = stalwart016VmTest;
 

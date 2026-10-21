@@ -15,6 +15,7 @@
 - [Third-party External Apps](./guides/external-apps.md)
 - [Immich Kanidm OIDC Migration](./guides/kanidm-oidc-migration.md)
 - [Shared Provider OAuth](./guides/shared-oauth.md)
+- [GitHub Accounts](./guides/github-accounts.md)
 
 # Reference
 

@@ -11,6 +11,11 @@
 
 ### Added
 
+- `github-provision` and `homeModules.github`: per-account Home Manager user
+  units that reconcile a GitHub account's SSH and OpenPGP public keys, invite
+  collaborators to owned or named repositories, and accept invitations only
+  from trusted owners. Runs on activation, token rotation, and daily.
+
 - A reusable treefmt module for the repository's Alejandra formatting policy.
 - Host/user-scoped OpenAI ChatGPT OAuth enrollment with serialized refresh,
   rollback fencing, encrypted recovery checkpoints, and access-only adapters for

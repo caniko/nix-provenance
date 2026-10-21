@@ -8,6 +8,7 @@ members = [
   "crates/rauthy-state-render",
   "crates/vikunja-provision",
   "crates/forgejo-provision",
+  "crates/github-provision",
   "crates/identity-cli",
   "crates/provenance-oauth",
   "crates/stalwart016-provision",
