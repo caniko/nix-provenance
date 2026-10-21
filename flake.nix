@@ -191,7 +191,16 @@
           domain = "nix-provenance.tartanoglu.com";
         };
 
-        formatter = pkgs.alejandra;
+        # `nix fmt` and Simit's format gate run the formatter without
+        # arguments; default to the scope the nixfmt check enforces.
+        formatter = pkgs.writeShellApplication {
+          name = "nix-provenance-fmt";
+          runtimeInputs = [pkgs.alejandra];
+          text = ''
+            if [ "$#" -eq 0 ]; then set -- flake.nix nix; fi
+            exec alejandra "$@"
+          '';
+        };
       }
     )
     // {
@@ -226,6 +235,7 @@
         rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
         fj = import ./nix/modules/home/fj.nix {inherit self;};
         stalwart-oauth-bootstrap = import ./nix/modules/home/stalwart-oauth-bootstrap.nix {inherit self;};
+        github = import ./nix/modules/home/github.nix {inherit self;};
       };
 
       # Crossbow consumers build this package on Atlas and select it through
@@ -280,7 +290,7 @@
           '';
         });
       in {
-        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision stalwart016-provision tuwunel-provision;
+        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision github-provision stalwart016-provision tuwunel-provision;
         rauthy-vikunja-groups = rauthyVikunjaGroups;
       };
     };

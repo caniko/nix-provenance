@@ -12,6 +12,7 @@
 
 use std::io;
 
+#[cfg(feature = "http")]
 use reqwest::StatusCode;
 
 /// Error returned by shared provisioning helpers.
@@ -34,6 +35,7 @@ pub enum Error {
         source: io::Error,
     },
     /// An HTTP client operation failed.
+    #[cfg(feature = "http")]
     #[error("{context}: {source}")]
     Http {
         /// Operation being performed.
@@ -43,6 +45,7 @@ pub enum Error {
         source: reqwest::Error,
     },
     /// An HTTP request returned a non-success status.
+    #[cfg(feature = "http")]
     #[error("request failed with HTTP {status}")]
     HttpStatus {
         /// Returned status.
@@ -64,6 +67,7 @@ impl Error {
         }
     }
 
+    #[cfg(feature = "http")]
     pub(crate) fn http(context: impl Into<String>, source: reqwest::Error) -> Self {
         Self::Http {
             context: context.into(),
@@ -76,6 +80,7 @@ impl Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub mod generated_secret;
+#[cfg(feature = "http")]
 pub mod http;
 pub mod password;
 pub mod reconcile;

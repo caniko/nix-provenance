@@ -1,0 +1,32 @@
+[package]
+name = "github-provision"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Declarative GitHub account keys and repository collaborators"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage = "https://github.com/caniko/nix-provenance"
+authors.workspace = true
+keywords = ["github", "ssh", "gpg", "provisioning", "identity"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "github-provision"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+provenance-core = { path = "../provenance-core" }
+# Keep the TLS feature local; native roots reach api.github.com without openssl.
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls-native-roots",
+  "blocking",
+] }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

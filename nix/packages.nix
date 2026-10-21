@@ -39,6 +39,7 @@
   rauthyStateRenderArgs = mkArgs "rauthy-state-render";
   vikunjaArgs = mkArgs "vikunja-provision";
   forgejoArgs = mkArgs "forgejo-provision";
+  githubArgs = mkArgs "github-provision";
   identityArgs = mkArgs "identity-cli";
   oauthArgs = mkArgs "provenance-oauth";
   # stalwart016-provision uses explicit version because crateNameFromCargoToml
@@ -58,6 +59,7 @@
   rauthyStateRenderDeps = craneLib.buildDepsOnly rauthyStateRenderArgs;
   vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
   forgejoDeps = craneLib.buildDepsOnly forgejoArgs;
+  githubDeps = craneLib.buildDepsOnly githubArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
   oauthDeps = craneLib.buildDepsOnly oauthArgs;
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
@@ -71,6 +73,7 @@ in {
     rauthy-state-render = rauthyStateRenderArgs;
     vikunja-provision = vikunjaArgs;
     forgejo-provision = forgejoArgs;
+    github-provision = githubArgs;
     identity-cli = identityArgs;
     provenance-oauth = oauthArgs;
     stalwart016-provision = stalwartProvisionArgs;
@@ -85,6 +88,7 @@ in {
     rauthy-state-render = rauthyStateRenderDeps;
     vikunja-provision = vikunjaDeps;
     forgejo-provision = forgejoDeps;
+    github-provision = githubDeps;
     identity-cli = identityDeps;
     provenance-oauth = oauthDeps;
     stalwart016-provision = stalwartProvisionDeps;
@@ -179,6 +183,16 @@ in {
         meta = {
           description = "Declarative Forgejo SSH public-key provisioning";
           mainProgram = "forgejo-provision";
+          license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    github-provision = craneLib.buildPackage (githubArgs
+      // {
+        cargoArtifacts = githubDeps;
+        meta = {
+          description = "Declarative GitHub account keys and repository collaborators";
+          mainProgram = "github-provision";
           license = with lib.licenses; [mit asl20];
         };
       });
