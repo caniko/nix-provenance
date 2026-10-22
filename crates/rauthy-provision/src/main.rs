@@ -10,7 +10,7 @@
 //! removal). Pass `--no-auto-remove` to skip even those deletions.
 
 mod client;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Arguments;
 use std::fs;
 use std::io::Write;
@@ -400,8 +400,21 @@ fn reconcile_users(
     password_markers: &PasswordMarkerStore,
     provider_bindings: &BTreeMap<String, String>,
 ) -> Result<()> {
+    let db_user_ids = client.list_user_ids()?;
     for (email, spec) in &state.users {
-        let current = client.get_user_by_email(email)?;
+        let current = match client.get_user_by_email(email)? {
+            Some(user) if is_cache_ghost(&user.id, db_user_ids.as_ref()) => {
+                // DELETE runs Rauthy's cache invalidation for both the id and
+                // the email key; the SQL delete itself is a no-op.
+                log(format_args!(
+                    "evict stale cached user {email} ({}): no database row",
+                    user.id
+                ));
+                client.delete_user(&user.id)?;
+                None
+            }
+            current => current,
+        };
         match (spec.present, current) {
             (true, None) => {
                 log(format_args!("create user {email}"));
@@ -475,6 +488,12 @@ fn reconcile_users(
         }
     }
     Ok(())
+}
+
+/// A user Rauthy's cache returns by email whose row is absent from a complete
+/// database listing. Without a complete listing nothing is a ghost.
+fn is_cache_ghost(id: &str, db_user_ids: Option<&BTreeSet<String>>) -> bool {
+    db_user_ids.is_some_and(|ids| !ids.contains(id))
 }
 
 fn validate_user_credential_strategy(email: &str, spec: &UserSpec) -> Result<()> {
@@ -1592,6 +1611,15 @@ mod tests {
             }
         });
         format!("http://{addr}")
+    }
+
+    #[test]
+    fn cache_ghost_requires_a_complete_database_listing_without_the_id() {
+        let ids = BTreeSet::from(["present".to_string()]);
+        assert!(is_cache_ghost("deleted", Some(&ids)));
+        assert!(!is_cache_ghost("present", Some(&ids)));
+        // A paged (206) listing is incomplete and must never trigger eviction.
+        assert!(!is_cache_ghost("deleted", None));
     }
 
     #[test]

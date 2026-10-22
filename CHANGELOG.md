@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- Rauthy provisioning evicts users that Rauthy's email lookup still serves
+  from its cache after the database row is gone (its magic-link cleanup
+  deletes with raw SQL), then reconciles them as absent instead of failing
+  with HTTP 500 on dependent writes. A paged user listing never triggers
+  eviction.
 - Proton VPN accounts stay age-encrypted at rest and decrypt natively only in
   short-lived locked, non-dumpable memory with a logind sleep inhibitor. Home
   login now uses `encryptedFile` and `identityPaths`; agenix plaintext installation
