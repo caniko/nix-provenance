@@ -11,8 +11,10 @@ members = [
   "crates/github-provision",
   "crates/identity-cli",
   "crates/provenance-oauth",
+  "crates/provenance-rbw",
   "crates/stalwart016-provision",
   "crates/stalwart-oauth-bootstrap",
+  "crates/proton-vpn-auth",
   "crates/tuwunel-provision",
 ]
 

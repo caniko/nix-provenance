@@ -4,6 +4,39 @@
 
 ### Fixed
 
+- Rauthy provisioning evicts users that Rauthy's email lookup still serves
+  from its cache after the database row is gone (its magic-link cleanup
+  deletes with raw SQL), then reconciles them as absent instead of failing
+  with HTTP 500 on dependent writes. A paged user listing never triggers
+  eviction.
+- Proton VPN accounts stay age-encrypted at rest and decrypt natively only in
+  short-lived locked, non-dumpable memory with a logind sleep inhibitor. Home
+  login now uses `encryptedFile` and `identityPaths`; agenix plaintext installation
+  must be disabled. Enrollment streams to an encryption pipe and rejects file output.
+
+- Stalwart proxy fixtures wait for listener readiness after configuration
+  switches before checking trust replacement and clearing.
+- Kanidm credential wiring checks read the built script directly, avoiding
+  early pipe closure failures while preserving every configuration assertion.
+- Vikunja project and label response IDs remain available to reconciliation
+  logging when combining the durable rbw and Proton VPN integration branches.
+- The development environment fails closed on shell-loading errors and watches
+  optional Cargo configuration without requiring a pre-existing `.cargo` directory.
+- Tuwunel bootstrap fixtures resolve their shell from the test environment so
+  lifecycle tests run in Nix sandboxes without `/usr/bin/env`.
+- Tuwunel registration bootstrap tolerates delayed asynchronous config reloads
+  with bounded retries of explicit registration-disabled refusals, attempts to
+  restore the closed config after failures, and never retries ambiguous
+  transport errors.
+- Identity CLI featureless and Bitwarden-only builds no longer pull in the
+  Kanidm-only generated-secret dependency and its TLS-dependent HTTP helper;
+  the Forgejo OIDC secret binary correctly requires the Kanidm feature.
+- Room-owner login reuses the initialized HTTP transport so construction cannot
+  fail between login and the reconciliation/logout path.
+- Private-room verification no longer mistakes unrelated state events for
+  encryption or access policy.
+- Direnv now uses the locked flake inputs without requiring a sibling
+  nix-opencode-lsp checkout.
 - Preserve host-owned Kanidm profiles, existing Tuwunel account reconciliation,
   and the Kanidm-only aarch64 identity CLI configuration when consuming trunk.
 - Direnv loads the Rust tools and OpenCode LSP configuration through one shell,
@@ -15,7 +48,24 @@
   units that reconcile a GitHub account's SSH and OpenPGP public keys, invite
   collaborators to owned or named repositories, and accept invitations only
   from trusted owners. Runs on activation, token rotation, and daily.
-
+- A Home Manager rbw adapter with durable private login state, guarded legacy
+  migration, shared client/agent paths, and metadata-only recovery diagnostics.
+- Nullable Stalwart 0.16 listener PROXY trust overrides, with explicit set,
+  replace, unmanaged, and clear semantics and isolated HAProxy/mail fixtures.
+- `proton-vpn-auth enroll --stdin --stdout` validates credential documents through
+  private pipes for direct vault-to-encryption imports, including base32 and
+  compatible authenticator URI normalization without plaintext files.
+- Official Proton VPN clients can enroll an existing account from a private
+  runtime credential document through a Home Manager module and Rust adapter,
+  including TOTP, session reuse, bounded retries, and redacted errors.
+- `proton-vpn-auth enroll` securely prompts for existing account credentials and
+  creates a private runtime document for a consumer's secret-manager import.
+- Protocol regression tests and a disposable Tuwunel VM gate cover private-room
+  creation, observed-ID pinning, unsafe-state rejection and device logout.
+- Tuwunel can create initially encrypted, invite-only rooms as a declared
+  service account, verify live membership, and pin their observed room IDs.
+  Reconciliation refuses alias drift and unsuitable existing rooms and logs
+  out the room-provisioning device after either success or failure.
 - A reusable treefmt module for the repository's Alejandra formatting policy.
 - Host/user-scoped OpenAI ChatGPT OAuth enrollment with serialized refresh,
   rollback fencing, encrypted recovery checkpoints, and access-only adapters for

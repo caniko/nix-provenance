@@ -49,8 +49,14 @@ jobs:
       - name: Test
         run: nix develop -c cargo test -p provenance-core
 
+      - name: Test no default features
+        run: nix develop -c cargo test -p provenance-core --no-default-features
+
       - name: Clippy
         run: nix develop -c cargo clippy -p provenance-core --all-targets -- --deny warnings
+
+      - name: Clippy no default features
+        run: nix develop -c cargo clippy -p provenance-core --all-targets --no-default-features -- --deny warnings
 
       - name: Package crate
         run: nix develop -c cargo package -p provenance-core --allow-dirty --list

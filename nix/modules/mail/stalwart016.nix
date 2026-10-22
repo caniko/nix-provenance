@@ -16,6 +16,33 @@
   credentialPath = name: "/run/credentials/stalwart.service/${name}";
   postgres = cfg.datastore.postgresql;
 
+  octet = "(0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])";
+  proxyNetworkType = types.addCheck (types.strMatching "[0-9a-fA-F.:/]+") (value: let
+    parts = lib.splitString "/" value;
+    address = builtins.head parts;
+    v6 = lib.hasInfix ":" address;
+    validAddress =
+      if v6
+      then (builtins.tryEval (builtins.deepSeq (lib.network.ipv6.fromString address) true)).success
+      else builtins.match "${octet}\\.${octet}\\.${octet}\\.${octet}" address != null;
+    prefix = builtins.elemAt parts 1;
+  in
+    builtins.length parts
+    <= 2
+    && validAddress
+    && (builtins.length parts
+      == 1
+      || (
+        builtins.match "(0|[1-9][0-9]*)" prefix
+        != null
+        && lib.toInt prefix
+        <= (
+          if v6
+          then 128
+          else 32
+        )
+      )));
+
   bootstrapConfig = json.generate "stalwart016-bootstrap.json" {
     "@type" = "PostgreSql";
     inherit (postgres) host;
@@ -71,12 +98,15 @@
   enabledListeners =
     lib.filterAttrs (_: listener: listener.enable) cfg.listeners;
 
-  listenerCreateValue =
-    lib.mapAttrs (_: listener: {
+  listenerCreateValue = lib.mapAttrs (_: listener:
+    {
       inherit (listener) name protocol useTls tlsImplicit;
       bind = lib.genAttrs listener.bind (_: true);
+    }
+    // lib.optionalAttrs (listener.proxyTrustedNetworks != null) {
+      overrideProxyTrustedNetworks = lib.genAttrs listener.proxyTrustedNetworks (_: true);
     })
-    enabledListeners;
+  enabledListeners;
 
   listenerOps = lib.optional (listenerCreateValue != {}) {
     "@type" = "upsert";
@@ -325,6 +355,22 @@ in {
             type = types.bool;
             default = false;
             description = "Whether TLS is implicit rather than STARTTLS / cleartext.";
+          };
+
+          proxyTrustedNetworks = mkOption {
+            type = types.nullOr (types.listOf proxyNetworkType);
+            default = null;
+            example = ["10.77.0.1/32"];
+            description = ''
+              Sources trusted to send PROXY protocol on this listener. Null
+              leaves overrideProxyTrustedNetworks unmanaged. A nonempty list
+              replaces the listener override. An empty list clears the override
+              and inherits SystemSettings.proxyTrustedNetworks; it does not
+              disable system-level trust. Restrict origin access separately and
+              keep system-level trust empty when listener-scoped trust is used.
+              A connection from a trusted source must supply the PROXY header
+              before SMTP/IMAP and before TLS, including health probes.
+            '';
           };
         };
       }));

@@ -50,6 +50,7 @@
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
+  tuwunelPrivateRoomsVmTest = import ./modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
   stalwartOauthBootstrapPasswordFile = "\${XDG_RUNTIME_DIR}/agenix/stalwart_account_can";
 
@@ -136,7 +137,17 @@
 
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in
-  {
+  lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    inherit (packages) proton-vpn-auth;
+    proton-vpn-auth-clippy = mkClippy "proton-vpn-auth";
+    proton-vpn-auth-test = craneLib.cargoTest (args.proton-vpn-auth
+      // {
+        cargoArtifacts = cargoArtifacts.proton-vpn-auth;
+        nativeBuildInputs = args.proton-vpn-auth.nativeBuildInputs ++ [pkgs.python3 pkgs.util-linux pkgs.dbus pkgs.openssh];
+      });
+    proton-vpn-module-eval = import ./modules/test/proton-vpn-home-eval.nix {inherit pkgs self;};
+  }
+  // {
     # Build all crates.
     identity-cli = runCommand "identity-cli-package" {} ''
       test -x ${packages.identity-cli}/bin/forgejo-oidc-secret
@@ -152,6 +163,7 @@ in
     inherit (packages) stalwart016-provision;
     inherit (packages) stalwart-oauth-bootstrap;
     inherit (packages) tuwunel-provision;
+    inherit (packages) provenance-rbw;
     inherit docs;
     site = docs;
     inherit (packages) forgejo-cli;
@@ -264,6 +276,7 @@ in
     # Lint each crate against its isolated deps.
     identity-clippy = mkClippy "identity-cli";
     oauth-clippy = mkClippy "provenance-oauth";
+    rbw-clippy = mkClippy "provenance-rbw";
     immich-clippy = mkClippy "immich-provision";
     kanidm-state-render-clippy = mkClippy "kanidm-state-render";
     rauthy-state-render-clippy = mkClippy "rauthy-state-render";
@@ -276,6 +289,10 @@ in
     tuwunel-provision-clippy = mkClippy "tuwunel-provision";
 
     # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
+    rbw-test = craneLib.cargoTest (
+      args.provenance-rbw // {cargoArtifacts = cargoArtifacts.provenance-rbw;}
+    );
+    rbw-home-module-eval = import ./modules/test/rbw-home-eval.nix {inherit pkgs self;};
     identity-test = craneLib.cargoTest (
       args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;}
     );
@@ -675,6 +692,8 @@ in
         '';
 
     stalwart016-vmtest = stalwart016VmTest;
+    stalwart016-proxy-eval = import ./modules/test/stalwart016-proxy-eval.nix {inherit pkgs self;};
+    stalwart016-proxy-vmtest = import ./modules/test/stalwart016-proxy-vmtest.nix {inherit pkgs self;};
 
     wireguard-status-module-eval = let
       exporter = wireguardStatusEval.config.services.prometheus.exporters.wireguard;
@@ -700,18 +719,22 @@ in
       runCommand "kanidm-credentials-module-eval" {} ''
         test -n ${lib.escapeShellArg serviceConfig}
         test -x ${svc.serviceConfig.ExecStart}
-        script=$(cat ${svc.serviceConfig.ExecStart})
-        printf '%s' "$script" | grep -q 'set-ldap-unix-bind true'
-        printf '%s' "$script" | grep -q 'set-initial-primary-password can --primary-from'
-        printf '%s' "$script" | grep -q 'ssh-public-key ensure can hm-identity'
-        printf '%s' "$script" | grep -q 'set-posix-password noreply'
+        # Read the script directly: grep -q may close a printf pipe early,
+        # making a successful assertion fail with SIGPIPE under pipefail.
+        script=${svc.serviceConfig.ExecStart}
+        grep -q 'set-ldap-unix-bind true' "$script"
+        grep -q 'set-initial-primary-password can --primary-from' "$script"
+        grep -q 'ssh-public-key ensure can hm-identity' "$script"
+        grep -q 'set-posix-password noreply' "$script"
         printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/primary-can' \
           || { echo "kanidm-credentials: initial primary password LoadCredential missing" >&2; exit 1; }
-        printf '%s' "$script" | grep -q 'service-account create stalwart-ldap'
-        printf '%s' "$script" | grep -q 'group-add-members idm_people_pii_read stalwart-ldap'
-        printf '%s' "$script" | grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token'
+        grep -q 'service-account create stalwart-ldap' "$script"
+        grep -q 'group-add-members idm_people_pii_read stalwart-ldap' "$script"
+        grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token' "$script"
         touch $out
       '';
+
+    tuwunel-private-rooms-vmtest = tuwunelPrivateRoomsVmTest;
 
     tuwunel-module-eval = let
       svc = tuwunelEval.config.systemd.services.tuwunel;
@@ -751,6 +774,10 @@ in
           || { echo "tuwunel: Matrix alert room missing from provision state" >&2; exit 1; }
         grep -q '"@matrix-alerts:matrix.example.com"' "$state_file" \
           || { echo "tuwunel: Matrix alert room invite missing from provision state" >&2; exit 1; }
+        grep -q '"creator":"iris","encrypted":true' "$state_file" \
+          || { echo "tuwunel: encrypted owner-created room policy missing" >&2; exit 1; }
+        grep -q '"alias":"#hermes-iris:matrix.example.com"' "$state_file" \
+          || { echo "tuwunel: owner-created room alias missing" >&2; exit 1; }
         touch $out
       '';
 

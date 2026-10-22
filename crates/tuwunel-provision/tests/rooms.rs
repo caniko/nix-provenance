@@ -1,0 +1,370 @@
+//! Exercise the real provisioner against a bounded localhost Matrix fixture.
+//! Credentials and rooms here are synthetic; no production service is contacted.
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+
+#[derive(Debug)]
+struct Request {
+    method: String,
+    path: String,
+    auth: String,
+    body: Value,
+}
+
+fn private_state() -> Value {
+    json!([
+        {"type":"m.room.join_rules", "state_key":"", "content":{"join_rule":"invite"}},
+        {"type":"m.room.guest_access", "state_key":"", "content":{"guest_access":"forbidden"}},
+        {"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}},
+        {"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}
+    ])
+}
+
+struct Scenario {
+    alias_status: u16,
+    alias_room: &'static str,
+    expected_room: Option<&'static str>,
+    state: Value,
+    logout_status: u16,
+    invite_status: u16,
+    legacy: bool,
+}
+
+impl Default for Scenario {
+    fn default() -> Self {
+        Self {
+            alias_status: 200,
+            alias_room: "!iris:example.test",
+            expected_room: None,
+            state: private_state(),
+            logout_status: 200,
+            invite_status: 200,
+            legacy: false,
+        }
+    }
+}
+
+fn run(scenario: Scenario) -> (Output, Vec<Request>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("iris-password"), "fixture-password").unwrap();
+    std::fs::write(temp.path().join("admin-token"), "fixture-admin").unwrap();
+    let state = json!({
+        "server_name":"example.test", "port":port, "admin_token_user":null,
+        "users":{"iris":{"admin":false,"credential_name":"iris-password"}},
+        "rooms":{"iris":{
+            "alias":"#hermes-iris:example.test", "name":"hermes-iris",
+            "creator": if scenario.legacy { None } else { Some("iris") },
+            "encrypted":!scenario.legacy, "expectedRoomId":scenario.expected_room,
+            "invite":["@can:example.test"]
+        }}
+    });
+    std::fs::write(temp.path().join("state.json"), state.to_string()).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut requests = Vec::new();
+        let mut invited = false;
+        while !server_stop.load(Ordering::Acquire) && Instant::now() < deadline {
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(err) => panic!("fixture accept failed: {err}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut parts = line.split_whitespace();
+            let method = parts.next().unwrap().to_owned();
+            let path = parts.next().unwrap().to_owned();
+            let mut length = 0;
+            let mut auth = String::new();
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                let (key, value) = line.split_once(':').unwrap();
+                match key.to_ascii_lowercase().as_str() {
+                    "content-length" => length = value.trim().parse::<usize>().unwrap(),
+                    "authorization" => auth = value.trim().to_owned(),
+                    _ => {}
+                }
+            }
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            let body = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap()
+            };
+            let (status, response) = match (method.as_str(), path.as_str()) {
+                ("GET", "/_matrix/client/versions") => (200, json!({"versions":["v1.11"]})),
+                ("POST", "/_synapse/admin/v2/users/@iris:example.test") => (200, json!({})),
+                ("POST", "/_matrix/client/v3/login") => {
+                    (200, json!({"access_token":"fixture-owner"}))
+                }
+                ("GET", path) if path.starts_with("/_matrix/client/v3/directory/room/") => (
+                    scenario.alias_status,
+                    json!({"room_id":scenario.alias_room}),
+                ),
+                ("POST", "/_matrix/client/v3/createRoom") => {
+                    invited = true;
+                    (200, json!({"room_id":"!iris:example.test"}))
+                }
+                ("GET", "/_matrix/client/v3/rooms/%21iris%3Aexample.test/state") => {
+                    let mut state = scenario.state.clone();
+                    if invited {
+                        state.as_array_mut().unwrap().push(json!({"type":"m.room.member","state_key":"@can:example.test","content":{"membership":"invite"}}));
+                    }
+                    (200, state)
+                }
+                ("POST", "/_matrix/client/v3/rooms/%21iris%3Aexample.test/invite") => {
+                    invited = scenario.invite_status == 200;
+                    (scenario.invite_status, json!({}))
+                }
+                ("POST", "/_matrix/client/v3/logout") => (scenario.logout_status, json!({})),
+                _ => (500, json!({"error":"Unexpected fixture request"})),
+            };
+            requests.push(Request {
+                method,
+                path,
+                auth,
+                body,
+            });
+            let response = response.to_string();
+            write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+        }
+        requests
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tuwunel-provision"))
+        .args([
+            "--state",
+            temp.path().join("state.json").to_str().unwrap(),
+            "--admin-token-file",
+            temp.path().join("admin-token").to_str().unwrap(),
+            "--credential-dir",
+            temp.path().to_str().unwrap(),
+            "--marker-dir",
+            temp.path().join("markers").to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut timed_out = false;
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            timed_out = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    let output = child.wait_with_output().unwrap();
+    stop.store(true, Ordering::Release);
+    let requests = server.join().unwrap();
+    assert!(
+        !timed_out,
+        "provisioner exceeded fixture deadline: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (output, requests)
+}
+
+fn assert_logged_out(requests: &[Request]) {
+    let last = requests.last().unwrap();
+    assert_eq!(last.method, "POST");
+    assert_eq!(last.path, "/_matrix/client/v3/logout");
+    assert_eq!(last.auth, "Bearer fixture-owner");
+}
+
+#[test]
+fn creates_encrypted_room_as_owner_and_revokes_provisioning_session() {
+    let (output, requests) = run(Scenario {
+        alias_status: 404,
+        ..Scenario::default()
+    });
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let login = requests
+        .iter()
+        .find(|r| r.path.ends_with("/login"))
+        .unwrap();
+    assert_eq!(login.body["identifier"]["user"], "iris");
+    assert_eq!(login.body["device_id"], "TUWUNEL_PROVISION");
+    let create = requests
+        .iter()
+        .find(|r| r.path.ends_with("/createRoom"))
+        .unwrap();
+    assert_eq!(create.auth, "Bearer fixture-owner");
+    assert_eq!(create.body["visibility"], "private");
+    assert_eq!(create.body["preset"], "private_chat");
+    assert_eq!(create.body["invite"], json!(["@can:example.test"]));
+    assert_eq!(create.body["initial_state"][2]["state_key"], "");
+    assert_eq!(
+        create.body["initial_state"][2]["content"]["algorithm"],
+        "m.megolm.v1.aes-sha2"
+    );
+    assert_logged_out(&requests);
+}
+
+#[test]
+fn reconciles_missing_invitation_only_after_private_state_verification() {
+    let (output, requests) = run(Scenario::default());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let state_index = requests
+        .iter()
+        .position(|r| r.path.ends_with("/state"))
+        .unwrap();
+    let invite_index = requests
+        .iter()
+        .position(|r| r.path.ends_with("/invite"))
+        .unwrap();
+    assert!(state_index < invite_index);
+    assert_eq!(requests[invite_index].auth, "Bearer fixture-owner");
+    assert_eq!(requests[invite_index].body["user_id"], "@can:example.test");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path.ends_with("/state"))
+            .count(),
+        2
+    );
+    assert_logged_out(&requests);
+}
+
+#[test]
+fn pinned_alias_missing_or_drifted_never_creates_a_replacement() {
+    for alias_status in [404, 200] {
+        let (output, requests) = run(Scenario {
+            alias_status,
+            alias_room: "!replacement:example.test",
+            expected_room: Some("!iris:example.test"),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            !requests
+                .iter()
+                .any(|r| r.path.ends_with("/createRoom") || r.path.ends_with("/invite"))
+        );
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn unsuitable_existing_room_is_rejected_before_inviting_and_logs_out() {
+    for index in 0..3 {
+        let mut state = private_state();
+        state[index]["content"] = json!({});
+        let (output, requests) = run(Scenario {
+            state,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(!requests.iter().any(|r| r.path.ends_with("/invite")));
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn alias_lookup_failure_still_revokes_the_owner_session() {
+    let (output, requests) = run(Scenario {
+        alias_status: 500,
+        ..Scenario::default()
+    });
+    assert!(!output.status.success());
+    assert_logged_out(&requests);
+}
+
+#[test]
+fn invitation_failure_still_revokes_the_owner_session() {
+    let (output, requests) = run(Scenario {
+        invite_status: 500,
+        ..Scenario::default()
+    });
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("inviting"));
+    assert_logged_out(&requests);
+}
+
+#[test]
+fn unexpected_active_member_is_rejected_before_inviting() {
+    let mut state = private_state();
+    state.as_array_mut().unwrap().push(json!({
+        "type":"m.room.member", "state_key":"@matrix-admin:example.test",
+        "content":{"membership":"join"}
+    }));
+    let (output, requests) = run(Scenario {
+        state,
+        ..Scenario::default()
+    });
+    assert!(!output.status.success());
+    assert!(!requests.iter().any(|r| r.path.ends_with("/invite")));
+    assert_logged_out(&requests);
+}
+
+#[test]
+fn logout_failure_prevents_successful_reconciliation() {
+    let (output, requests) = run(Scenario {
+        logout_status: 500,
+        ..Scenario::default()
+    });
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("logging out"));
+    assert_logged_out(&requests);
+}
+
+#[test]
+fn legacy_room_uses_admin_without_owner_login_or_encryption_retrofit() {
+    let (output, requests) = run(Scenario {
+        alias_status: 404,
+        legacy: true,
+        ..Scenario::default()
+    });
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let create = requests
+        .iter()
+        .find(|r| r.path.ends_with("/createRoom"))
+        .unwrap();
+    assert_eq!(create.auth, "Bearer fixture-admin");
+    assert!(create.body.get("initial_state").is_none());
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.path.ends_with("/login") || r.path.ends_with("/logout"))
+    );
+}

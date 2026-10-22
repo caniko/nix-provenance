@@ -42,6 +42,8 @@
   githubArgs = mkArgs "github-provision";
   identityArgs = mkArgs "identity-cli";
   oauthArgs = mkArgs "provenance-oauth";
+  rbwArgs = mkArgs "provenance-rbw";
+  protonVpnAuthArgs = mkArgs "proton-vpn-auth";
   # stalwart016-provision uses explicit version because crateNameFromCargoToml
   # may not resolve the cargoToml path across evaluation contexts.
   stalwartProvisionArgs = buildArgs "stalwart016-provision" "0.1.0";
@@ -62,6 +64,8 @@
   githubDeps = craneLib.buildDepsOnly githubArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
   oauthDeps = craneLib.buildDepsOnly oauthArgs;
+  rbwDeps = craneLib.buildDepsOnly rbwArgs;
+  protonVpnAuthDeps = craneLib.buildDepsOnly protonVpnAuthArgs;
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
   stalwartOauthBootstrapDeps = craneLib.buildDepsOnly stalwartOauthBootstrapArgs;
   tuwunelDeps = craneLib.buildDepsOnly tuwunelArgs;
@@ -76,6 +80,8 @@ in {
     github-provision = githubArgs;
     identity-cli = identityArgs;
     provenance-oauth = oauthArgs;
+    provenance-rbw = rbwArgs;
+    proton-vpn-auth = protonVpnAuthArgs;
     stalwart016-provision = stalwartProvisionArgs;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapArgs;
     tuwunel-provision = tuwunelArgs;
@@ -91,12 +97,36 @@ in {
     github-provision = githubDeps;
     identity-cli = identityDeps;
     provenance-oauth = oauthDeps;
+    provenance-rbw = rbwDeps;
+    proton-vpn-auth = protonVpnAuthDeps;
     stalwart016-provision = stalwartProvisionDeps;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapDeps;
     tuwunel-provision = tuwunelDeps;
   };
 
   packages = {
+    provenance-rbw = craneLib.buildPackage (rbwArgs
+      // {
+        cargoArtifacts = rbwDeps;
+        meta = {
+          description = "Durable rbw client state and guarded legacy-state migration";
+          mainProgram = "provenance-rbw";
+          license = with lib.licenses; [mit asl20];
+          platforms = lib.platforms.linux;
+        };
+      });
+
+    proton-vpn-auth = craneLib.buildPackage (protonVpnAuthArgs
+      // {
+        cargoArtifacts = protonVpnAuthDeps;
+        meta = {
+          description = "Runtime credential and TOTP login adapter for Proton VPN";
+          mainProgram = "proton-vpn-auth";
+          license = with lib.licenses; [mit asl20];
+          platforms = lib.platforms.linux;
+        };
+      });
+
     provenance-oauth = craneLib.buildPackage (oauthArgs
       // {
         cargoArtifacts = oauthDeps;

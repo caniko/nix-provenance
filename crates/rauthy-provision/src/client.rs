@@ -10,6 +10,7 @@
 //! providers are declared. ApiKeys(read,create,update,delete) is needed only
 //! for transient provisioning-key management.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
@@ -124,6 +125,11 @@ pub enum AccountType {
     Federated,
     FederatedPasskey,
     FederatedPassword,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserIdResponse {
+    id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -753,6 +759,22 @@ impl RauthyClient {
     }
 
     // ----- users -----
+
+    /// Ids of every user row in Rauthy's database.
+    ///
+    /// `GET /users/email/{email}` is answered from Rauthy's user cache first,
+    /// and that cache can outlive the row (Rauthy's magic-link cleanup deletes
+    /// users with raw SQL and never invalidates it). `GET /users` reads SQL.
+    /// Returns `None` when Rauthy pages the list (206 above `ssp_threshold`),
+    /// so callers never treat an incomplete page as authoritative.
+    pub fn list_user_ids(&self) -> Result<Option<BTreeSet<String>>> {
+        let resp = self.send_ok(self.req(Method::GET, "/users"), "requesting Rauthy users")?;
+        if resp.status() == StatusCode::PARTIAL_CONTENT {
+            return Ok(None);
+        }
+        let users: Vec<UserIdResponse> = resp.json().context("decoding users list")?;
+        Ok(Some(users.into_iter().map(|user| user.id).collect()))
+    }
 
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserResponse>> {
         let resp = self

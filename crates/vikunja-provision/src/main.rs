@@ -141,7 +141,10 @@ fn reconcile_projects(client: &VikunjaClient, state: &State) -> Result<()> {
                 log(format_args!("create project {title}"));
                 client.create_project(title, spec.description.as_deref())?;
             }
-            [_] => {}
+            [project] => log(format_args!(
+                "project {title} already exists as {}",
+                project.id
+            )),
             _ => anyhow::bail!("Vikunja project {title} is ambiguous"),
         }
     }
@@ -163,7 +166,7 @@ fn reconcile_labels(client: &VikunjaClient, state: &State) -> Result<()> {
                 log(format_args!("create label {title}"));
                 client.create_label(title, spec.hex_color.as_deref())?;
             }
-            [_] => {}
+            [label] => log(format_args!("label {title} already exists as {}", label.id)),
             _ => anyhow::bail!("Vikunja label {title} is ambiguous"),
         }
     }

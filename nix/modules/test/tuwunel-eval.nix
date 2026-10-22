@@ -30,6 +30,17 @@
         topic = "Canix fleet alerts";
         invite = ["@matrix-alerts:matrix.example.com"];
       };
+      users.iris = {
+        admin = false;
+        passwordFile = "/run/agenix/matrix-iris-password";
+      };
+      rooms.iris = {
+        alias = "#hermes-iris:matrix.example.com";
+        name = "hermes-iris";
+        creator = "iris";
+        encrypted = true;
+        invite = ["@can:matrix.example.com"];
+      };
       oidcProviders.kanidm = {
         brand = "kanidm";
         clientId = "matrix";
