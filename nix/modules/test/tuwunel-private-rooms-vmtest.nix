@@ -23,10 +23,9 @@ pkgs.testers.nixosTest {
       provision = {
         enable = true;
         adminTokenUser = "matrix-admin";
-        # Only synthetic disposable-VM credentials enter the fixture store.
         users = lib.genAttrs ["matrix-admin" "can" "iris" "argus"] (name: {
           admin = name == "matrix-admin";
-          passwordFile = pkgs.writeText "fixture-${name}-password" "fixture-${name}-password";
+          passwordFile = "/run/test-matrix-passwords/${name}";
         });
         rooms = lib.genAttrs ["iris" "argus"] (name: {
           alias = "#hermes-${name}:example.test";
@@ -36,6 +35,28 @@ pkgs.testers.nixosTest {
           invite = ["@can:example.test"];
         });
       };
+    };
+    systemd.services.tuwunel-test-credentials = {
+      before = ["tuwunel-provision.service"];
+      requiredBy = ["tuwunel-provision.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        UMask = "0077";
+      };
+      script = ''
+        ${pkgs.python3}/bin/python3 - <<'PY'
+        import pathlib
+        import secrets
+
+        directory = pathlib.Path("/run/test-matrix-passwords")
+        directory.mkdir(mode=0o700)
+        for user in ["matrix-admin", "can", "iris", "argus"]:
+            path = directory / user
+            path.write_text(secrets.token_urlsafe(32))
+            path.chmod(0o600)
+        PY
+      '';
     };
     system.stateVersion = "25.11";
   };
