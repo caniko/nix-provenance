@@ -8,7 +8,12 @@
   from its cache after the database row is gone (its magic-link cleanup
   deletes with raw SQL), then reconciles them as absent instead of failing
   with HTTP 500 on dependent writes. A paged user listing never triggers
-  eviction.
+  eviction. An email-only stale entry is overwritten by re-saving the
+  recreated user.
+- Rauthy users with `requiredAuthProvider` are onboarded by their upstream
+  provider on first sign-in instead of being pre-created, which mailed them a
+  set-password link and let Rauthy's magic-link cleanup delete them after
+  they linked upstream. The provider must enable `autoOnboarding`.
 - Proton VPN accounts stay age-encrypted at rest and decrypt natively only in
   short-lived locked, non-dumpable memory with a logind sleep inhibitor. Home
   login now uses `encryptedFile` and `identityPaths`; agenix plaintext installation

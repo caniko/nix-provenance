@@ -418,6 +418,21 @@ fn reconcile_users(
             current => current,
         };
         match (spec.present, current) {
+            // Provider-backed users are never pre-created: Rauthy emails every
+            // POST /users a set-password link, and its magic-link cleanup later
+            // deletes users without a local password or passkey even after they
+            // linked upstream. Rauthy onboards them on their first sign-in.
+            (true, None) if spec.required_auth_provider.is_some() => {
+                require_provider_onboarding(email, spec, state)?;
+                if stale_email_key {
+                    // Rauthy's federated login auto-links by cached email, so the
+                    // stale key would bind the first sign-in to the deleted row.
+                    clear_stale_email_key(client, email, spec)?;
+                }
+                log(format_args!(
+                    "Rauthy user {email} will be onboarded on first sign-in through its upstream provider"
+                ));
+            }
             (true, None) => {
                 log(format_args!("create user {email}"));
                 let marker_id = format!("rauthy:{email}");
@@ -511,6 +526,21 @@ fn db_user_id_for_email<'a>(
         .map(|(id, _)| id.as_str())
 }
 
+/// Clear a stale email cache key without leaving an account behind: create a
+/// row for the email, then delete it, which invalidates both cache keys.
+/// ponytail: Rauthy mails the throwaway row a set-password link that dies with
+/// the row; drop this once Rauthy's magic-link cleanup invalidates its cache.
+fn clear_stale_email_key(client: &RauthyClient, email: &str, spec: &UserSpec) -> Result<()> {
+    log(format_args!("clear stale cached email key for {email}"));
+    client.create_user(&new_user(email, spec))?;
+    let db_users = client
+        .list_db_users()?
+        .context("Rauthy paged its user list; cannot locate the temporary user")?;
+    let id = db_user_id_for_email(&db_users, email)
+        .ok_or_else(|| anyhow!("temporary Rauthy user {email} has no database row"))?;
+    client.delete_user(id)
+}
+
 /// Re-save a freshly created user by its database id. Rauthy's `User::save`
 /// rewrites the email cache key, replacing the stale entry that still points
 /// at the deleted row (Rauthy's create path does not touch the cache).
@@ -556,6 +586,36 @@ fn audit_required_auth_provider_after_reconcile(
     let Some(required_provider) = spec.required_auth_provider.as_deref() else {
         return Ok(());
     };
+    required_provider_spec(email, spec, state)?;
+    let canonical_provider = provider_bindings.get(required_provider).ok_or_else(|| {
+        anyhow!(
+            "user {email} requires upstream provider {required_provider}, but no canonical Rauthy provider was reconciled"
+        )
+    })?;
+    let user = client
+        .get_user_by_email(email)?
+        .ok_or_else(|| anyhow!("Rauthy user {email} disappeared during reconciliation"))?;
+
+    let awaiting_first_login =
+        validate_required_auth_provider_user(email, required_provider, canonical_provider, &user)?;
+    if awaiting_first_login {
+        log(format_args!(
+            "Rauthy user {email} has no local credential and is awaiting first login through provider {required_provider}"
+        ));
+    }
+    Ok(())
+}
+
+/// The declared, enabled, auto-linking provider a user requires.
+fn required_provider_spec<'a>(
+    email: &str,
+    spec: &UserSpec,
+    state: &'a State,
+) -> Result<&'a ProviderSpec> {
+    let required_provider = spec
+        .required_auth_provider
+        .as_deref()
+        .ok_or_else(|| anyhow!("user {email} declares no required upstream provider"))?;
     let provider_spec = state.providers.get(required_provider).ok_or_else(|| {
         anyhow!(
             "user {email} requires upstream provider {required_provider}, but it is not declared"
@@ -574,21 +634,14 @@ fn audit_required_auth_provider_after_reconcile(
             "user {email} requires upstream provider {required_provider}, but auto_link is disabled"
         );
     }
-    let canonical_provider = provider_bindings.get(required_provider).ok_or_else(|| {
-        anyhow!(
-            "user {email} requires upstream provider {required_provider}, but no canonical Rauthy provider was reconciled"
-        )
-    })?;
-    let user = client
-        .get_user_by_email(email)?
-        .ok_or_else(|| anyhow!("Rauthy user {email} disappeared during reconciliation"))?;
+    Ok(provider_spec)
+}
 
-    let awaiting_first_login =
-        validate_required_auth_provider_user(email, required_provider, canonical_provider, &user)?;
-    if awaiting_first_login {
-        log(format_args!(
-            "Rauthy user {email} has no local credential and is awaiting first login through provider {required_provider}"
-        ));
+fn require_provider_onboarding(email: &str, spec: &UserSpec, state: &State) -> Result<()> {
+    if !required_provider_spec(email, spec, state)?.auto_onboarding {
+        bail!(
+            "user {email} must be onboarded by its upstream provider, but auto_onboarding is disabled"
+        );
     }
     Ok(())
 }
@@ -1640,6 +1693,23 @@ mod tests {
             }
         });
         format!("http://{addr}")
+    }
+
+    #[test]
+    fn provider_backed_users_require_auto_onboarding() {
+        let user: UserSpec =
+            serde_json::from_value(serde_json::json!({ "required_auth_provider": "kanidm" }))
+                .unwrap();
+        let mut state = State::default();
+        state.providers.insert(
+            "kanidm".into(),
+            provider_spec("https://auth.example", "rauthy"),
+        );
+        assert!(require_provider_onboarding("a@example.org", &user, &state).is_err());
+
+        state.providers.get_mut("kanidm").unwrap().auto_onboarding = true;
+        assert!(require_provider_onboarding("a@example.org", &user, &state).is_ok());
+        assert!(require_provider_onboarding("a@example.org", &spec(&[], &[]), &state).is_err());
     }
 
     #[test]
