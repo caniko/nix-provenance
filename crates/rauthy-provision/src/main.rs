@@ -10,7 +10,7 @@
 //! removal). Pass `--no-auto-remove` to skip even those deletions.
 
 mod client;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Arguments;
 use std::fs;
 use std::io::Write;
@@ -400,17 +400,19 @@ fn reconcile_users(
     password_markers: &PasswordMarkerStore,
     provider_bindings: &BTreeMap<String, String>,
 ) -> Result<()> {
-    let db_user_ids = client.list_user_ids()?;
+    let db_users = client.list_db_users()?;
     for (email, spec) in &state.users {
+        let mut stale_email_key = false;
         let current = match client.get_user_by_email(email)? {
-            Some(user) if is_cache_ghost(&user.id, db_user_ids.as_ref()) => {
+            Some(user) if is_cache_ghost(&user.id, db_users.as_ref()) => {
                 // DELETE runs Rauthy's cache invalidation for both the id and
-                // the email key; the SQL delete itself is a no-op.
+                // the email key; the SQL delete itself is a no-op. A 404 means
+                // only the email key survived, which DELETE cannot reach.
                 log(format_args!(
                     "evict stale cached user {email} ({}): no database row",
                     user.id
                 ));
-                client.delete_user(&user.id)?;
+                stale_email_key = !client.delete_user_if_resolvable(&user.id)?;
                 None
             }
             current => current,
@@ -423,6 +425,9 @@ fn reconcile_users(
                     password_markers.mark_pending(&marker_id)?;
                 }
                 client.create_user(&new_user(email, spec))?;
+                if stale_email_key {
+                    overwrite_stale_email_key(client, email, spec)?;
+                }
                 if spec.preferred_username.is_some()
                     || has_declared_profile_fields(spec)
                     || !spec.attributes.is_empty()
@@ -492,8 +497,32 @@ fn reconcile_users(
 
 /// A user Rauthy's cache returns by email whose row is absent from a complete
 /// database listing. Without a complete listing nothing is a ghost.
-fn is_cache_ghost(id: &str, db_user_ids: Option<&BTreeSet<String>>) -> bool {
-    db_user_ids.is_some_and(|ids| !ids.contains(id))
+fn is_cache_ghost(id: &str, db_users: Option<&BTreeMap<String, String>>) -> bool {
+    db_users.is_some_and(|users| !users.contains_key(id))
+}
+
+fn db_user_id_for_email<'a>(
+    db_users: &'a BTreeMap<String, String>,
+    email: &str,
+) -> Option<&'a str> {
+    db_users
+        .iter()
+        .find(|(_, db_email)| db_email.eq_ignore_ascii_case(email))
+        .map(|(id, _)| id.as_str())
+}
+
+/// Re-save a freshly created user by its database id. Rauthy's `User::save`
+/// rewrites the email cache key, replacing the stale entry that still points
+/// at the deleted row (Rauthy's create path does not touch the cache).
+fn overwrite_stale_email_key(client: &RauthyClient, email: &str, spec: &UserSpec) -> Result<()> {
+    let db_users = client
+        .list_db_users()?
+        .context("Rauthy paged its user list; cannot locate the recreated user")?;
+    let id = db_user_id_for_email(&db_users, email)
+        .ok_or_else(|| anyhow!("Rauthy user {email} was created but has no database row"))?;
+    let user = client.get_user(id)?;
+    log(format_args!("refresh cached email key for {email} ({id})"));
+    client.update_user(id, &update_user(&user, spec))
 }
 
 fn validate_user_credential_strategy(email: &str, spec: &UserSpec) -> Result<()> {
@@ -1615,11 +1644,17 @@ mod tests {
 
     #[test]
     fn cache_ghost_requires_a_complete_database_listing_without_the_id() {
-        let ids = BTreeSet::from(["present".to_string()]);
-        assert!(is_cache_ghost("deleted", Some(&ids)));
-        assert!(!is_cache_ghost("present", Some(&ids)));
+        let users = BTreeMap::from([("present".to_string(), "a@example.org".to_string())]);
+        assert!(is_cache_ghost("deleted", Some(&users)));
+        assert!(!is_cache_ghost("present", Some(&users)));
         // A paged (206) listing is incomplete and must never trigger eviction.
         assert!(!is_cache_ghost("deleted", None));
+        // Recreated users are located by email regardless of declared case.
+        assert_eq!(
+            db_user_id_for_email(&users, "A@Example.org"),
+            Some("present")
+        );
+        assert_eq!(db_user_id_for_email(&users, "b@example.org"), None);
     }
 
     #[test]
