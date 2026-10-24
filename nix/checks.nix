@@ -447,52 +447,55 @@ in
       scopes = builtins.toJSON rauthyEval.config.services.rauthy.provision.scopes;
       userAttrs = builtins.toJSON rauthyEval.config.services.rauthy.provision.userAttributes;
     in
-      runCommand "rauthy-module-eval" {} ''
-        test -n ${lib.escapeShellArg serviceConfig}
-        clients=${lib.escapeShellArg clients}
-        users=${lib.escapeShellArg users}
-        rendered_state=$(cat ${lib.escapeShellArg renderedStateFile})
-        scopes=${lib.escapeShellArg scopes}
-        attrs=${lib.escapeShellArg userAttrs}
-        triggers=${lib.escapeShellArg restartTriggers}
-        grep -q -- '--transient-api-key' ${svc.serviceConfig.ExecStart} \
-          || { echo "rauthy: transient API-key CLI flag missing from provisioner script" >&2; exit 1; }
-        printf '%s' "$triggers" | grep -q 'rauthy-provision-state.json' \
-          || { echo "rauthy: provisioner restartTriggers must include rendered state" >&2; exit 1; }
-        printf '%s' "$clients" | grep -q '/run/rauthy-clients/demo.secret' \
-          || { echo "rauthy: generatedSecretFile path missing from rendered client state" >&2; exit 1; }
-        printf '%s' "$clients" | grep -q 'vikunja_groups' \
-          || { echo "rauthy: custom Vikunja scope missing from client state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q 'preferredUsername' \
-          || { echo "rauthy: preferredUsername missing from rendered user state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q 'Europe/Oslo' \
-          || { echo "rauthy: timezone missing from rendered user state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q '12345' \
-          || { echo "rauthy: ZIP/postal code missing from rendered user state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q '+4712345678' \
-          || { echo "rauthy: phone missing from rendered user state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q 'vikunja_groups' \
-          || { echo "rauthy: custom Vikunja user attribute value missing" >&2; exit 1; }
-        printf '%s' "$rendered_state" | grep -q '/run/credentials/rauthy-provision.service/password-alice' \
-          || { echo "rauthy: rendered users must reference runtime password credential" >&2; exit 1; }
-        printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/rauthy-alice-password' \
-          || { echo "rauthy: password LoadCredential source missing" >&2; exit 1; }
-        if printf '%s' "$rendered_state" | grep -q 'rauthy-alice-password'; then
-          echo "rauthy: rendered state must not contain agenix source path" >&2
-          exit 1
-        fi
-        printf '%s' "$scopes" | grep -q 'attrIncludeId' \
-          || { echo "rauthy: custom scope attrIncludeId missing" >&2; exit 1; }
-        printf '%s' "$scopes" | grep -q 'claimsAtRoot' \
-          || { echo "rauthy: custom scope claimsAtRoot missing" >&2; exit 1; }
-        printf '%s' "$attrs" | grep -q 'vikunja_groups' \
-          || { echo "rauthy: userAttributes missing vikunja_groups" >&2; exit 1; }
-        if printf '%s' "$clients" | grep -q 'clientsecret'; then
-          echo "rauthy: rendered state must contain only secret paths, never client secret values" >&2
-          exit 1
-        fi
-        touch $out
-      '';
+      # No provider-backed users here, so no onboarding poll.
+      assert !(rauthyEval.config.systemd.timers ? rauthy-provision-onboarding);
+      assert svc.serviceConfig.ExecReload == svc.serviceConfig.ExecStart;
+        runCommand "rauthy-module-eval" {} ''
+          test -n ${lib.escapeShellArg serviceConfig}
+          clients=${lib.escapeShellArg clients}
+          users=${lib.escapeShellArg users}
+          rendered_state=$(cat ${lib.escapeShellArg renderedStateFile})
+          scopes=${lib.escapeShellArg scopes}
+          attrs=${lib.escapeShellArg userAttrs}
+          triggers=${lib.escapeShellArg restartTriggers}
+          grep -q -- '--transient-api-key' ${svc.serviceConfig.ExecStart} \
+            || { echo "rauthy: transient API-key CLI flag missing from provisioner script" >&2; exit 1; }
+          printf '%s' "$triggers" | grep -q 'rauthy-provision-state.json' \
+            || { echo "rauthy: provisioner restartTriggers must include rendered state" >&2; exit 1; }
+          printf '%s' "$clients" | grep -q '/run/rauthy-clients/demo.secret' \
+            || { echo "rauthy: generatedSecretFile path missing from rendered client state" >&2; exit 1; }
+          printf '%s' "$clients" | grep -q 'vikunja_groups' \
+            || { echo "rauthy: custom Vikunja scope missing from client state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q 'preferredUsername' \
+            || { echo "rauthy: preferredUsername missing from rendered user state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q 'Europe/Oslo' \
+            || { echo "rauthy: timezone missing from rendered user state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q '12345' \
+            || { echo "rauthy: ZIP/postal code missing from rendered user state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q '+4712345678' \
+            || { echo "rauthy: phone missing from rendered user state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q 'vikunja_groups' \
+            || { echo "rauthy: custom Vikunja user attribute value missing" >&2; exit 1; }
+          printf '%s' "$rendered_state" | grep -q '/run/credentials/rauthy-provision.service/password-alice' \
+            || { echo "rauthy: rendered users must reference runtime password credential" >&2; exit 1; }
+          printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/rauthy-alice-password' \
+            || { echo "rauthy: password LoadCredential source missing" >&2; exit 1; }
+          if printf '%s' "$rendered_state" | grep -q 'rauthy-alice-password'; then
+            echo "rauthy: rendered state must not contain agenix source path" >&2
+            exit 1
+          fi
+          printf '%s' "$scopes" | grep -q 'attrIncludeId' \
+            || { echo "rauthy: custom scope attrIncludeId missing" >&2; exit 1; }
+          printf '%s' "$scopes" | grep -q 'claimsAtRoot' \
+            || { echo "rauthy: custom scope claimsAtRoot missing" >&2; exit 1; }
+          printf '%s' "$attrs" | grep -q 'vikunja_groups' \
+            || { echo "rauthy: userAttributes missing vikunja_groups" >&2; exit 1; }
+          if printf '%s' "$clients" | grep -q 'clientsecret'; then
+            echo "rauthy: rendered state must contain only secret paths, never client secret values" >&2
+            exit 1
+          fi
+          touch $out
+        '';
 
     rauthy-state-file-module-eval = let
       svc = rauthyStateFileEval.config.systemd.services.rauthy-provision;
@@ -793,6 +796,11 @@ in
       kanidmPersons = builtins.toJSON adapterEval.config.services.kanidm.provision.persons;
     in
       assert !(adapterEval.config.services.kanidm.provision.persons ? dejana);
+      # can is provider-backed: Rauthy onboards it on first sign-in, so a
+      # timer reloads provisioning to apply its declared state afterwards.
+      assert adapterEval.config.systemd.timers.rauthy-provision-onboarding.timerConfig.OnUnitActiveSec == "15min";
+      assert lib.hasSuffix "systemctl try-reload-or-restart rauthy-provision.service"
+      adapterEval.config.systemd.services.rauthy-provision-onboarding.serviceConfig.ExecStart;
       assert adapterEval.config.services.kanidm.provision.groups.internal-tool-users.members == ["dejana"];
         runCommand "adapter-module-eval" {} ''
           users=${lib.escapeShellArg rauthyUsers}
