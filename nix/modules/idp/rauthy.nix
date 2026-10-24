@@ -18,6 +18,9 @@
 }: let
   inherit (lib) mkEnableOption mkIf mkOption optionalAttrs optionalString types;
   cfg = config.services.rauthy.provision;
+  # Rauthy creates these users on their first upstream sign-in, after the
+  # oneshot has already run, so their declared state needs a later pass.
+  awaitsOnboarding = lib.any (user: user.present && user.requiredAuthProvider != null) (lib.attrValues cfg.users);
   passwords = self.lib.passwords;
   generatedApiKeyUnit = "rauthy-bootstrap-api-key";
 
@@ -1042,6 +1045,9 @@ in {
             Type = "oneshot";
             RemainAfterExit = true;
             ExecStart = provisionScript;
+            # Re-reconcile in this unit's own credentials and environment
+            # without restarting the units that require it.
+            ExecReload = provisionScript;
             EnvironmentFile = lib.mkIf (cfg.apiKeyEnvironmentFile != null) [(toString cfg.apiKeyEnvironmentFile)];
             LoadCredential = passwords.userPasswordCredentials "rauthy-provision" cfg.users;
             StateDirectory = "rauthy-provision";
@@ -1054,6 +1060,26 @@ in {
           unitConfig = {
             StartLimitBurst = 6;
             StartLimitIntervalSec = 300;
+          };
+        };
+
+        # Apply provider-onboarded users' declared roles, groups and
+        # attributes once Rauthy has created them on first sign-in.
+        # ponytail: a 15-minute poll; trigger on a Rauthy new-user hook if
+        # one is ever exposed.
+        systemd.services.rauthy-provision-onboarding = mkIf awaitsOnboarding {
+          description = "Re-apply Rauthy provisioning to provider-onboarded users";
+          serviceConfig = {
+            Type = "oneshot";
+            # A no-op while provisioning is not active (still starting or failed).
+            ExecStart = "${config.systemd.package}/bin/systemctl try-reload-or-restart rauthy-provision.service";
+          };
+        };
+        systemd.timers.rauthy-provision-onboarding = mkIf awaitsOnboarding {
+          wantedBy = ["timers.target"];
+          timerConfig = {
+            OnActiveSec = "15min";
+            OnUnitActiveSec = "15min";
           };
         };
       }
