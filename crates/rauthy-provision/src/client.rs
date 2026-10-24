@@ -782,14 +782,6 @@ impl RauthyClient {
         ))
     }
 
-    pub fn get_user(&self, id: &str) -> Result<UserResponse> {
-        let resp = self.send_ok(
-            self.req(Method::GET, &format!("/users/{id}")),
-            format!("requesting Rauthy user {id}"),
-        )?;
-        resp.json().context("decoding user")
-    }
-
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserResponse>> {
         let resp = self
             .req(Method::GET, &format!("/users/email/{email}"))
@@ -802,12 +794,14 @@ impl RauthyClient {
         Ok(Some(resp.json().context("decoding user")?))
     }
 
-    pub fn create_user(&self, body: &NewUserRequest) -> Result<()> {
-        self.send_ok(
+    /// Rauthy answers with the created user, so callers never need a
+    /// (possibly paged) listing to learn the new id.
+    pub fn create_user(&self, body: &NewUserRequest) -> Result<UserResponse> {
+        let resp = self.send_ok(
             self.req(Method::POST, "/users").json(body),
             format!("creating Rauthy user {}", body.email),
         )?;
-        Ok(())
+        resp.json().context("decoding created user")
     }
 
     pub fn update_user(&self, id: &str, body: &UpdateUserRequest) -> Result<()> {

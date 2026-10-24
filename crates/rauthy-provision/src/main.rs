@@ -439,9 +439,9 @@ fn reconcile_users(
                 if spec.initial_password_file.is_some() {
                     password_markers.mark_pending(&marker_id)?;
                 }
-                client.create_user(&new_user(email, spec))?;
+                let created = client.create_user(&new_user(email, spec))?;
                 if stale_email_key {
-                    overwrite_stale_email_key(client, email, spec)?;
+                    overwrite_stale_email_key(client, &created, spec)?;
                 }
                 if spec.preferred_username.is_some()
                     || has_declared_profile_fields(spec)
@@ -504,6 +504,10 @@ fn reconcile_users(
                 log(format_args!("delete user {email}"));
                 client.delete_user(&user.id)?;
             }
+            // Cache hygiene like the eviction above, not a declared deletion:
+            // a surviving email key would bind a later federated sign-in to
+            // the deleted row instead of onboarding a fresh account.
+            (false, None) if stale_email_key => clear_stale_email_key(client, email, spec)?,
             (false, _) => {}
         }
     }
@@ -516,43 +520,29 @@ fn is_cache_ghost(id: &str, db_users: Option<&BTreeMap<String, String>>) -> bool
     db_users.is_some_and(|users| !users.contains_key(id))
 }
 
-fn db_user_id_for_email<'a>(
-    db_users: &'a BTreeMap<String, String>,
-    email: &str,
-) -> Option<&'a str> {
-    db_users
-        .iter()
-        .find(|(_, db_email)| db_email.eq_ignore_ascii_case(email))
-        .map(|(id, _)| id.as_str())
-}
-
 /// Clear a stale email cache key without leaving an account behind: create a
 /// row for the email, then delete it, which invalidates both cache keys.
 /// ponytail: Rauthy mails the throwaway row a set-password link that dies with
 /// the row; drop this once Rauthy's magic-link cleanup invalidates its cache.
 fn clear_stale_email_key(client: &RauthyClient, email: &str, spec: &UserSpec) -> Result<()> {
     log(format_args!("clear stale cached email key for {email}"));
-    client.create_user(&new_user(email, spec))?;
-    let db_users = client
-        .list_db_users()?
-        .context("Rauthy paged its user list; cannot locate the temporary user")?;
-    let id = db_user_id_for_email(&db_users, email)
-        .ok_or_else(|| anyhow!("temporary Rauthy user {email} has no database row"))?;
-    client.delete_user(id)
+    let temporary = client.create_user(&new_user(email, spec))?;
+    client.delete_user(&temporary.id)
 }
 
 /// Re-save a freshly created user by its database id. Rauthy's `User::save`
 /// rewrites the email cache key, replacing the stale entry that still points
 /// at the deleted row (Rauthy's create path does not touch the cache).
-fn overwrite_stale_email_key(client: &RauthyClient, email: &str, spec: &UserSpec) -> Result<()> {
-    let db_users = client
-        .list_db_users()?
-        .context("Rauthy paged its user list; cannot locate the recreated user")?;
-    let id = db_user_id_for_email(&db_users, email)
-        .ok_or_else(|| anyhow!("Rauthy user {email} was created but has no database row"))?;
-    let user = client.get_user(id)?;
-    log(format_args!("refresh cached email key for {email} ({id})"));
-    client.update_user(id, &update_user(&user, spec))
+fn overwrite_stale_email_key(
+    client: &RauthyClient,
+    created: &client::UserResponse,
+    spec: &UserSpec,
+) -> Result<()> {
+    log(format_args!(
+        "refresh cached email key for {} ({})",
+        created.email, created.id
+    ));
+    client.update_user(&created.id, &update_user(created, spec))
 }
 
 fn validate_user_credential_strategy(email: &str, spec: &UserSpec) -> Result<()> {
@@ -1422,7 +1412,7 @@ fn client_drifted(cur: &client::ClientResponse, spec: &ClientSpec) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -1695,6 +1685,138 @@ mod tests {
         format!("http://{addr}")
     }
 
+    /// Answer each request by the first route whose prefix matches its request
+    /// line (404 otherwise) and record every request line in order.
+    fn start_scripted_rauthy(
+        routes: Vec<(&'static str, &'static str, &'static str)>,
+        requests: Arc<Mutex<Vec<String>>>,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                let first = first.trim().to_string();
+                // Drain headers and body so the client never sees a reset.
+                let mut length = 0;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                requests.lock().unwrap().push(first.clone());
+                let (status, body) = routes
+                    .iter()
+                    .find(|(prefix, _, _)| first.starts_with(prefix))
+                    .map_or(("404 Not Found", ""), |(_, status, body)| (*status, *body));
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// Rauthy's cache still answers `email` with the deleted id `ghost`, and
+    /// DELETE cannot reach the surviving email key; POST /users creates `temp`.
+    fn stale_email_key_routes() -> Vec<(&'static str, &'static str, &'static str)> {
+        vec![
+            ("GET /auth/v1/users ", "200 OK", "[]"),
+            (
+                "GET /auth/v1/users/email/",
+                "200 OK",
+                r#"{"id":"ghost","email":"stale@example.org"}"#,
+            ),
+            ("DELETE /auth/v1/users/ghost ", "404 Not Found", ""),
+            (
+                "POST /auth/v1/users ",
+                "200 OK",
+                r#"{"id":"temp","email":"stale@example.org"}"#,
+            ),
+            ("DELETE /auth/v1/users/temp ", "200 OK", ""),
+            ("PUT /auth/v1/users/temp ", "200 OK", ""),
+        ]
+    }
+
+    fn reconcile_stale_email_key(user: Value, state: &mut State) -> Vec<String> {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let url = start_scripted_rauthy(stale_email_key_routes(), requests.clone());
+        let client = RauthyClient::new(&url, "test$key", false).unwrap();
+        state.users.insert(
+            "stale@example.org".into(),
+            serde_json::from_value(user).unwrap(),
+        );
+        let markers = PasswordMarkerStore::new(std::env::temp_dir());
+        reconcile_users(&client, state, false, &markers, &BTreeMap::new()).unwrap();
+        requests.lock().unwrap().clone()
+    }
+
+    fn listings(requests: &[String]) -> usize {
+        requests
+            .iter()
+            .filter(|r| r.starts_with("GET /auth/v1/users "))
+            .count()
+    }
+
+    #[test]
+    fn declared_deletion_clears_a_surviving_stale_email_key() {
+        let requests = reconcile_stale_email_key(
+            serde_json::json!({ "present": false }),
+            &mut State::default(),
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.starts_with("POST /auth/v1/users "))
+                && requests
+                    .iter()
+                    .any(|r| r.starts_with("DELETE /auth/v1/users/temp ")),
+            "the stale key must be cleared through a temporary row: {requests:?}"
+        );
+    }
+
+    #[test]
+    fn stale_email_key_repair_uses_the_created_id_without_relisting() {
+        // A post-create listing can page (206) and strand the repair.
+        let mut state = State::default();
+        let mut kanidm = provider_spec("https://auth.example", "rauthy");
+        kanidm.auto_onboarding = true;
+        state.providers.insert("kanidm".into(), kanidm);
+        let provider_backed = reconcile_stale_email_key(
+            serde_json::json!({ "required_auth_provider": "kanidm" }),
+            &mut state,
+        );
+        assert!(
+            provider_backed
+                .iter()
+                .any(|r| r.starts_with("DELETE /auth/v1/users/temp ")),
+            "{provider_backed:?}"
+        );
+        assert_eq!(listings(&provider_backed), 1, "{provider_backed:?}");
+
+        let local = reconcile_stale_email_key(serde_json::json!({}), &mut State::default());
+        assert!(
+            local
+                .iter()
+                .any(|r| r.starts_with("PUT /auth/v1/users/temp ")),
+            "{local:?}"
+        );
+        assert_eq!(listings(&local), 1, "{local:?}");
+    }
+
     #[test]
     fn provider_backed_users_require_auto_onboarding() {
         let user: UserSpec =
@@ -1719,12 +1841,6 @@ mod tests {
         assert!(!is_cache_ghost("present", Some(&users)));
         // A paged (206) listing is incomplete and must never trigger eviction.
         assert!(!is_cache_ghost("deleted", None));
-        // Recreated users are located by email regardless of declared case.
-        assert_eq!(
-            db_user_id_for_email(&users, "A@Example.org"),
-            Some("present")
-        );
-        assert_eq!(db_user_id_for_email(&users, "b@example.org"), None);
     }
 
     #[test]
