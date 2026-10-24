@@ -187,6 +187,27 @@
           paths = builtins.attrValues packages;
         };
 
+        # Simit prebuild publication on trunk (secret ATTIC_TOKEN) of the
+        # packages Canix consumes; CI runs it on x86_64-linux only.
+        apps.push-flake-inputs = harbor-rs.lib.mkAtticPush {
+          inherit pkgs;
+          adapter = atticAdapter;
+          flake = ".";
+          paths = with packages; [
+            forgejo-cli-nushell-completion
+            forgejo-provision
+            identity-cli
+            immich-provision
+            kanidm-state-render
+            proton-vpn-auth
+            provenance-oauth
+            provenance-rbw
+            rauthy-state-render
+            stalwart-oauth-bootstrap
+            tuwunel-provision
+          ];
+        };
+
         apps.deploy-pages = plinth.lib.${system}.mkDeployPagesApp {
           domain = "nix-provenance.tartanoglu.com";
         };
