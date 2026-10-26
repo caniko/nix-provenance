@@ -23,6 +23,9 @@ nix_builds = [
   ".#checks.x86_64-linux.stalwart016-proxy-vmtest",
 ]
 workspace = true
+# Validate PR heads once (pull_request); push runs cover the default branch
+# and the simit updater's candidate branches.
+push_branches = ["trunk", "simit/update/**"]
 
 [ci.nix_build]
 kvm = true
@@ -32,11 +35,13 @@ max_parallel = 1
 max_jobs = 1
 cores = 2
 artifact_retention_days = 14
+push_branches = ["trunk", "simit/update/**"]
 
 [prebuild]
 publish_attic = true
 attic_app = ".#push-flake-inputs"
 # Publish only the x86_64-linux packages Canix consumes.
+push_branches = ["trunk", "simit/update/**"]
 nix_builds = [
   ".#packages.x86_64-linux.forgejo-cli-nushell-completion",
   ".#packages.x86_64-linux.forgejo-provision",
