@@ -171,7 +171,7 @@
 
         devShells.default = harbor-rs.lib.mkDevShell {
           inherit pkgs craneLib cross;
-          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.treefmt pkgs.mdbook pkgs.dbus];
+          packages = [pkgs.cargo-nextest pkgs.rust-analyzer pkgs.jq pkgs.alejandra pkgs.treefmt pkgs.mdbook pkgs.dbus pkgs.python3 pkgs.util-linux];
           extraShellHook = opencodeLspShell.shellHook;
           cargoConfig = harbor-rs.lib.mkCargoConfig {
             inherit pkgs;
@@ -185,6 +185,27 @@
           inherit pkgs;
           adapter = atticAdapter;
           paths = builtins.attrValues packages;
+        };
+
+        # Simit prebuild publication on trunk (secret ATTIC_TOKEN) of the
+        # packages Canix consumes; CI runs it on x86_64-linux only.
+        apps.push-flake-inputs = harbor-rs.lib.mkAtticPush {
+          inherit pkgs;
+          adapter = atticAdapter;
+          flake = ".";
+          paths = with packages; [
+            forgejo-cli-nushell-completion
+            forgejo-provision
+            identity-cli
+            immich-provision
+            kanidm-state-render
+            proton-vpn-auth
+            provenance-oauth
+            provenance-rbw
+            rauthy-state-render
+            stalwart-oauth-bootstrap
+            tuwunel-provision
+          ];
         };
 
         apps.deploy-pages = plinth.lib.${system}.mkDeployPagesApp {
@@ -226,10 +247,13 @@
       };
 
       homeModules = {
+        rbw = import ./nix/modules/home/rbw.nix {inherit self;};
+        proton-vpn = import ./nix/modules/home/proton-vpn.nix {inherit self;};
         oauth = import ./nix/modules/home/oauth.nix {inherit self;};
         rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
         fj = import ./nix/modules/home/fj.nix {inherit self;};
         stalwart-oauth-bootstrap = import ./nix/modules/home/stalwart-oauth-bootstrap.nix {inherit self;};
+        github = import ./nix/modules/home/github.nix {inherit self;};
       };
 
       # Crossbow consumers build this package on Atlas and select it through
@@ -284,7 +308,7 @@
           '';
         });
       in {
-        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision stalwart016-provision tuwunel-provision;
+        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision github-provision stalwart016-provision tuwunel-provision;
         rauthy-vikunja-groups = rauthyVikunjaGroups;
       };
     };

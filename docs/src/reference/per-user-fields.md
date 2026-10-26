@@ -65,7 +65,7 @@ users are created passwordless unless `sendPasswordEmail = true` or
 | `groups` | `groups` | Additive reconciliation; declared groups are ensured but unmanaged groups are preserved |
 | `preferredUsername` / `clearPreferredUsername` | `preferred_username` | Set or explicitly clear through Rauthy's preferred-username endpoint |
 | `attributes` | `attributes` | Custom Rauthy user attribute values, rendered as JSON |
-| `requiredAuthProvider` | `required_auth_provider` | Reconciliation-time assertion that the user is credential-free and linked or auto-linkable through the named upstream provider |
+| `requiredAuthProvider` | `required_auth_provider` | The user is onboarded by the named upstream provider on first sign-in (never pre-created; the provider must enable `autoOnboarding` and `autoLink`), then reconciled and audited as credential-free and linked |
 | `sendPasswordEmail` | `send_password_email` | On creation only, request Rauthy's set-password email flow |
 | `passwordEmailRedirectUri` | `password_email_redirect_uri` | Required when `sendPasswordEmail = true` |
 | `initialPasswordFile` | `initial_password_file` | Runtime file containing the native Rauthy password applied only when creating a new user; mutually exclusive with `sendPasswordEmail` |
@@ -76,7 +76,10 @@ explicit delete/null operation, and only when the Rauthy user-values policy
 allows that value to be absent.
 
 Kanidm-derived users set `requiredAuthProvider = "kanidm"` automatically through
-the adapter helpers. The guard rejects local password/passkey state during
+the adapter helpers. They are not created through `POST /users`: Rauthy mails
+every such user a set-password link, and its magic-link cleanup deletes users
+without a local password or passkey once that link expires, even after they
+linked upstream. The guard rejects local password/passkey state during
 reconciliation, but the current Rauthy API does not provide continuous
 per-user enforcement or declarative credential removal.
 

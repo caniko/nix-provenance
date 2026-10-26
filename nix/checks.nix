@@ -98,9 +98,56 @@
       specialArgs = {inherit pkgs;};
     };
 
+  githubTokenFile = "\${XDG_RUNTIME_DIR}/agenix/bot_github_token";
+  githubEval = lib.evalModules {
+    modules = [
+      ({lib, ...}: {
+        options.systemd.user = lib.genAttrs ["services" "paths" "timers"] (_:
+          lib.mkOption {
+            type = lib.types.attrsOf lib.types.anything;
+            default = {};
+          });
+      })
+      ({lib, ...}: {
+        options.assertions = lib.mkOption {
+          type = lib.types.listOf lib.types.anything;
+          default = [];
+        };
+      })
+      (import ./modules/home/github.nix {inherit self;})
+      {
+        nix-provenance.github = {
+          enable = true;
+          package = pkgs.writeShellScriptBin "github-provision" "exit 0";
+          accounts = {
+            owner.collaborators.bot.repositories = "owned";
+            bot = {
+              tokenFile = githubTokenFile;
+              sshKeys.atlas.key = "ssh-ed25519 AAAA";
+              acceptInvitationsFrom = ["owner"];
+              after = ["owner"];
+            };
+            owner.tokenFile = "/run/secrets/owner-token";
+          };
+        };
+      }
+    ];
+    specialArgs = {inherit pkgs;};
+  };
+
   immichPatch = ../crates/immich-provision/patches/immich/0001-add-trusted-local-provision-token.patch;
 in
-  {
+  lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    inherit (packages) proton-vpn-auth;
+    proton-vpn-auth-clippy = mkClippy "proton-vpn-auth";
+    proton-vpn-auth-test = craneLib.cargoTest (args.proton-vpn-auth
+      // {
+        cargoArtifacts = cargoArtifacts.proton-vpn-auth;
+        nativeBuildInputs = args.proton-vpn-auth.nativeBuildInputs ++ [pkgs.python3 pkgs.util-linux pkgs.dbus pkgs.openssh];
+      });
+    proton-vpn-module-eval = import ./modules/test/proton-vpn-home-eval.nix {inherit pkgs self;};
+  }
+  // {
     # Build all crates.
     identity-cli = runCommand "identity-cli-package" {} ''
       test -x ${packages.identity-cli}/bin/forgejo-oidc-secret
@@ -112,9 +159,11 @@ in
     inherit (packages) rauthy-state-render;
     inherit (packages) vikunja-provision;
     inherit (packages) forgejo-provision;
+    inherit (packages) github-provision;
     inherit (packages) stalwart016-provision;
     inherit (packages) stalwart-oauth-bootstrap;
     inherit (packages) tuwunel-provision;
+    inherit (packages) provenance-rbw;
     inherit docs;
     site = docs;
     inherit (packages) forgejo-cli;
@@ -227,17 +276,23 @@ in
     # Lint each crate against its isolated deps.
     identity-clippy = mkClippy "identity-cli";
     oauth-clippy = mkClippy "provenance-oauth";
+    rbw-clippy = mkClippy "provenance-rbw";
     immich-clippy = mkClippy "immich-provision";
     kanidm-state-render-clippy = mkClippy "kanidm-state-render";
     rauthy-state-render-clippy = mkClippy "rauthy-state-render";
     rauthy-clippy = mkClippy "rauthy-provision";
     vikunja-clippy = mkClippy "vikunja-provision";
     forgejo-clippy = mkClippy "forgejo-provision";
+    github-provision-clippy = mkClippy "github-provision";
     stalwart016-provision-clippy = mkClippy "stalwart016-provision";
     stalwart-oauth-bootstrap-clippy = mkClippy "stalwart-oauth-bootstrap";
     tuwunel-provision-clippy = mkClippy "tuwunel-provision";
 
     # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
+    rbw-test = craneLib.cargoTest (
+      args.provenance-rbw // {cargoArtifacts = cargoArtifacts.provenance-rbw;}
+    );
+    rbw-home-module-eval = import ./modules/test/rbw-home-eval.nix {inherit pkgs self;};
     identity-test = craneLib.cargoTest (
       args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;}
     );
@@ -288,6 +343,14 @@ in
       args.forgejo-provision
       // {
         cargoArtifacts = cargoArtifacts.forgejo-provision;
+        doCheck = true;
+      }
+    );
+
+    github-provision-test = craneLib.cargoTest (
+      args.github-provision
+      // {
+        cargoArtifacts = cargoArtifacts.github-provision;
         doCheck = true;
       }
     );
@@ -384,52 +447,55 @@ in
       scopes = builtins.toJSON rauthyEval.config.services.rauthy.provision.scopes;
       userAttrs = builtins.toJSON rauthyEval.config.services.rauthy.provision.userAttributes;
     in
-      runCommand "rauthy-module-eval" {} ''
-        test -n ${lib.escapeShellArg serviceConfig}
-        clients=${lib.escapeShellArg clients}
-        users=${lib.escapeShellArg users}
-        rendered_state=$(cat ${lib.escapeShellArg renderedStateFile})
-        scopes=${lib.escapeShellArg scopes}
-        attrs=${lib.escapeShellArg userAttrs}
-        triggers=${lib.escapeShellArg restartTriggers}
-        grep -q -- '--transient-api-key' ${svc.serviceConfig.ExecStart} \
-          || { echo "rauthy: transient API-key CLI flag missing from provisioner script" >&2; exit 1; }
-        printf '%s' "$triggers" | grep -q 'rauthy-provision-state.json' \
-          || { echo "rauthy: provisioner restartTriggers must include rendered state" >&2; exit 1; }
-        printf '%s' "$clients" | grep -q '/run/rauthy-clients/demo.secret' \
-          || { echo "rauthy: generatedSecretFile path missing from rendered client state" >&2; exit 1; }
-        printf '%s' "$clients" | grep -q 'vikunja_groups' \
-          || { echo "rauthy: custom Vikunja scope missing from client state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q 'preferredUsername' \
-          || { echo "rauthy: preferredUsername missing from rendered user state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q 'Europe/Oslo' \
-          || { echo "rauthy: timezone missing from rendered user state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q '12345' \
-          || { echo "rauthy: ZIP/postal code missing from rendered user state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q '+4712345678' \
-          || { echo "rauthy: phone missing from rendered user state" >&2; exit 1; }
-        printf '%s' "$users" | grep -q 'vikunja_groups' \
-          || { echo "rauthy: custom Vikunja user attribute value missing" >&2; exit 1; }
-        printf '%s' "$rendered_state" | grep -q '/run/credentials/rauthy-provision.service/password-alice' \
-          || { echo "rauthy: rendered users must reference runtime password credential" >&2; exit 1; }
-        printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/rauthy-alice-password' \
-          || { echo "rauthy: password LoadCredential source missing" >&2; exit 1; }
-        if printf '%s' "$rendered_state" | grep -q 'rauthy-alice-password'; then
-          echo "rauthy: rendered state must not contain agenix source path" >&2
-          exit 1
-        fi
-        printf '%s' "$scopes" | grep -q 'attrIncludeId' \
-          || { echo "rauthy: custom scope attrIncludeId missing" >&2; exit 1; }
-        printf '%s' "$scopes" | grep -q 'claimsAtRoot' \
-          || { echo "rauthy: custom scope claimsAtRoot missing" >&2; exit 1; }
-        printf '%s' "$attrs" | grep -q 'vikunja_groups' \
-          || { echo "rauthy: userAttributes missing vikunja_groups" >&2; exit 1; }
-        if printf '%s' "$clients" | grep -q 'clientsecret'; then
-          echo "rauthy: rendered state must contain only secret paths, never client secret values" >&2
-          exit 1
-        fi
-        touch $out
-      '';
+      # No provider-backed users here, so no onboarding poll.
+      assert !(rauthyEval.config.systemd.timers ? rauthy-provision-onboarding);
+      assert svc.serviceConfig.ExecReload == svc.serviceConfig.ExecStart;
+        runCommand "rauthy-module-eval" {} ''
+          test -n ${lib.escapeShellArg serviceConfig}
+          clients=${lib.escapeShellArg clients}
+          users=${lib.escapeShellArg users}
+          rendered_state=$(cat ${lib.escapeShellArg renderedStateFile})
+          scopes=${lib.escapeShellArg scopes}
+          attrs=${lib.escapeShellArg userAttrs}
+          triggers=${lib.escapeShellArg restartTriggers}
+          grep -q -- '--transient-api-key' ${svc.serviceConfig.ExecStart} \
+            || { echo "rauthy: transient API-key CLI flag missing from provisioner script" >&2; exit 1; }
+          printf '%s' "$triggers" | grep -q 'rauthy-provision-state.json' \
+            || { echo "rauthy: provisioner restartTriggers must include rendered state" >&2; exit 1; }
+          printf '%s' "$clients" | grep -q '/run/rauthy-clients/demo.secret' \
+            || { echo "rauthy: generatedSecretFile path missing from rendered client state" >&2; exit 1; }
+          printf '%s' "$clients" | grep -q 'vikunja_groups' \
+            || { echo "rauthy: custom Vikunja scope missing from client state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q 'preferredUsername' \
+            || { echo "rauthy: preferredUsername missing from rendered user state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q 'Europe/Oslo' \
+            || { echo "rauthy: timezone missing from rendered user state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q '12345' \
+            || { echo "rauthy: ZIP/postal code missing from rendered user state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q '+4712345678' \
+            || { echo "rauthy: phone missing from rendered user state" >&2; exit 1; }
+          printf '%s' "$users" | grep -q 'vikunja_groups' \
+            || { echo "rauthy: custom Vikunja user attribute value missing" >&2; exit 1; }
+          printf '%s' "$rendered_state" | grep -q '/run/credentials/rauthy-provision.service/password-alice' \
+            || { echo "rauthy: rendered users must reference runtime password credential" >&2; exit 1; }
+          printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/rauthy-alice-password' \
+            || { echo "rauthy: password LoadCredential source missing" >&2; exit 1; }
+          if printf '%s' "$rendered_state" | grep -q 'rauthy-alice-password'; then
+            echo "rauthy: rendered state must not contain agenix source path" >&2
+            exit 1
+          fi
+          printf '%s' "$scopes" | grep -q 'attrIncludeId' \
+            || { echo "rauthy: custom scope attrIncludeId missing" >&2; exit 1; }
+          printf '%s' "$scopes" | grep -q 'claimsAtRoot' \
+            || { echo "rauthy: custom scope claimsAtRoot missing" >&2; exit 1; }
+          printf '%s' "$attrs" | grep -q 'vikunja_groups' \
+            || { echo "rauthy: userAttributes missing vikunja_groups" >&2; exit 1; }
+          if printf '%s' "$clients" | grep -q 'clientsecret'; then
+            echo "rauthy: rendered state must contain only secret paths, never client secret values" >&2
+            exit 1
+          fi
+          touch $out
+        '';
 
     rauthy-state-file-module-eval = let
       svc = rauthyStateFileEval.config.systemd.services.rauthy-provision;
@@ -605,7 +671,32 @@ in
         touch $out
       '';
 
+    github-module-eval = let
+      inherit (githubEval.config) assertions;
+      bot = githubEval.config.systemd.user.services.nix-provenance-github-bot;
+      timer = githubEval.config.systemd.user.timers.nix-provenance-github-bot;
+      path = githubEval.config.systemd.user.paths.nix-provenance-github-bot;
+    in
+      assert lib.all (entry: entry.assertion) assertions;
+      assert builtins.elem "nix-provenance-github-owner.service" bot.Unit.After;
+      assert builtins.elem "agenix.service" bot.Unit.Wants;
+      assert lib.hasInfix "--token-file %t/agenix/bot_github_token" bot.Service.ExecStart;
+      assert bot.Service.RestartPreventExitStatus == 2;
+      assert path.Path.PathChanged == "%t/agenix/bot_github_token";
+      assert timer.Timer.OnCalendar == "daily";
+        runCommand "github-module-eval" {} ''
+          state=$(printf '%s' ${lib.escapeShellArg bot.Service.ExecStart} | grep -o '/nix/store/[^ ]*github-provision-bot.json')
+          ${pkgs.jq}/bin/jq -e '.login == "bot" and .acceptInvitationsFrom == ["owner"] and .sshKeys.atlas.key == "ssh-ed25519 AAAA"' "$state"
+          if grep -Fq 'owner-token' "$state"; then
+            echo "github module: token path leaked into state" >&2
+            exit 1
+          fi
+          touch $out
+        '';
+
     stalwart016-vmtest = stalwart016VmTest;
+    stalwart016-proxy-eval = import ./modules/test/stalwart016-proxy-eval.nix {inherit pkgs self;};
+    stalwart016-proxy-vmtest = import ./modules/test/stalwart016-proxy-vmtest.nix {inherit pkgs self;};
 
     wireguard-status-module-eval = let
       exporter = wireguardStatusEval.config.services.prometheus.exporters.wireguard;
@@ -631,16 +722,18 @@ in
       runCommand "kanidm-credentials-module-eval" {} ''
         test -n ${lib.escapeShellArg serviceConfig}
         test -x ${svc.serviceConfig.ExecStart}
-        script=$(cat ${svc.serviceConfig.ExecStart})
-        printf '%s' "$script" | grep -q 'set-ldap-unix-bind true'
-        printf '%s' "$script" | grep -q 'set-initial-primary-password can --primary-from'
-        printf '%s' "$script" | grep -q 'ssh-public-key ensure can hm-identity'
-        printf '%s' "$script" | grep -q 'set-posix-password noreply'
+        # Read the script directly: grep -q may close a printf pipe early,
+        # making a successful assertion fail with SIGPIPE under pipefail.
+        script=${svc.serviceConfig.ExecStart}
+        grep -q 'set-ldap-unix-bind true' "$script"
+        grep -q 'set-initial-primary-password can --primary-from' "$script"
+        grep -q 'ssh-public-key ensure can hm-identity' "$script"
+        grep -q 'set-posix-password noreply' "$script"
         printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/primary-can' \
           || { echo "kanidm-credentials: initial primary password LoadCredential missing" >&2; exit 1; }
-        printf '%s' "$script" | grep -q 'service-account create stalwart-ldap'
-        printf '%s' "$script" | grep -q 'group-add-members idm_people_pii_read stalwart-ldap'
-        printf '%s' "$script" | grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token'
+        grep -q 'service-account create stalwart-ldap' "$script"
+        grep -q 'group-add-members idm_people_pii_read stalwart-ldap' "$script"
+        grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token' "$script"
         touch $out
       '';
 
@@ -709,6 +802,11 @@ in
         inherit lib;
         adapter = self.lib.adapter;
       };
+      # can is provider-backed: Rauthy onboards it on first sign-in, so a
+      # timer reloads provisioning to apply its declared state afterwards.
+      assert adapterEval.config.systemd.timers.rauthy-provision-onboarding.timerConfig.OnUnitActiveSec == "15min";
+      assert lib.hasSuffix "systemctl try-reload-or-restart rauthy-provision.service"
+      adapterEval.config.systemd.services.rauthy-provision-onboarding.serviceConfig.ExecStart;
       assert adapterEval.config.services.kanidm.provision.groups.internal-tool-users.members == ["dejana"];
         runCommand "adapter-module-eval" {} ''
           users=${lib.escapeShellArg rauthyUsers}

@@ -10,6 +10,7 @@
 //! providers are declared. ApiKeys(read,create,update,delete) is needed only
 //! for transient provisioning-key management.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
@@ -124,6 +125,12 @@ pub enum AccountType {
     Federated,
     FederatedPasskey,
     FederatedPassword,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserIdResponse {
+    id: String,
+    email: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -754,6 +761,27 @@ impl RauthyClient {
 
     // ----- users -----
 
+    /// Id → email of every user row in Rauthy's database.
+    ///
+    /// `GET /users/email/{email}` is answered from Rauthy's user cache first,
+    /// and that cache can outlive the row (Rauthy's magic-link cleanup deletes
+    /// users with raw SQL and never invalidates it). `GET /users` reads SQL.
+    /// Returns `None` when Rauthy pages the list (206 above `ssp_threshold`),
+    /// so callers never treat an incomplete page as authoritative.
+    pub fn list_db_users(&self) -> Result<Option<BTreeMap<String, String>>> {
+        let resp = self.send_ok(self.req(Method::GET, "/users"), "requesting Rauthy users")?;
+        if resp.status() == StatusCode::PARTIAL_CONTENT {
+            return Ok(None);
+        }
+        let users: Vec<UserIdResponse> = resp.json().context("decoding users list")?;
+        Ok(Some(
+            users
+                .into_iter()
+                .map(|user| (user.id, user.email))
+                .collect(),
+        ))
+    }
+
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserResponse>> {
         let resp = self
             .req(Method::GET, &format!("/users/email/{email}"))
@@ -766,12 +794,14 @@ impl RauthyClient {
         Ok(Some(resp.json().context("decoding user")?))
     }
 
-    pub fn create_user(&self, body: &NewUserRequest) -> Result<()> {
-        self.send_ok(
+    /// Rauthy answers with the created user, so callers never need a
+    /// (possibly paged) listing to learn the new id.
+    pub fn create_user(&self, body: &NewUserRequest) -> Result<UserResponse> {
+        let resp = self.send_ok(
             self.req(Method::POST, "/users").json(body),
             format!("creating Rauthy user {}", body.email),
         )?;
-        Ok(())
+        resp.json().context("decoding created user")
     }
 
     pub fn update_user(&self, id: &str, body: &UpdateUserRequest) -> Result<()> {
@@ -797,6 +827,19 @@ impl RauthyClient {
             format!("deleting Rauthy user {id}"),
         )?;
         Ok(())
+    }
+
+    /// Delete by id; `false` when Rauthy no longer resolves the id (404).
+    pub fn delete_user_if_resolvable(&self, id: &str) -> Result<bool> {
+        let resp = self
+            .req(Method::DELETE, &format!("/users/{id}"))
+            .send()
+            .with_context(|| format!("deleting Rauthy user {id}"))?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        ok(resp).with_context(|| format!("deleting Rauthy user {id}"))?;
+        Ok(true)
     }
 
     pub fn get_user_attributes(&self, id: &str) -> Result<Vec<UserAttributeValueResponse>> {

@@ -39,8 +39,11 @@
   rauthyStateRenderArgs = mkArgs "rauthy-state-render";
   vikunjaArgs = mkArgs "vikunja-provision";
   forgejoArgs = mkArgs "forgejo-provision";
+  githubArgs = mkArgs "github-provision";
   identityArgs = mkArgs "identity-cli";
   oauthArgs = mkArgs "provenance-oauth";
+  rbwArgs = mkArgs "provenance-rbw";
+  protonVpnAuthArgs = mkArgs "proton-vpn-auth";
   # stalwart016-provision uses explicit version because crateNameFromCargoToml
   # may not resolve the cargoToml path across evaluation contexts.
   stalwartProvisionArgs = buildArgs "stalwart016-provision" "0.1.0";
@@ -58,8 +61,11 @@
   rauthyStateRenderDeps = craneLib.buildDepsOnly rauthyStateRenderArgs;
   vikunjaDeps = craneLib.buildDepsOnly vikunjaArgs;
   forgejoDeps = craneLib.buildDepsOnly forgejoArgs;
+  githubDeps = craneLib.buildDepsOnly githubArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
   oauthDeps = craneLib.buildDepsOnly oauthArgs;
+  rbwDeps = craneLib.buildDepsOnly rbwArgs;
+  protonVpnAuthDeps = craneLib.buildDepsOnly protonVpnAuthArgs;
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
   stalwartOauthBootstrapDeps = craneLib.buildDepsOnly stalwartOauthBootstrapArgs;
   tuwunelDeps = craneLib.buildDepsOnly tuwunelArgs;
@@ -71,8 +77,11 @@ in {
     rauthy-state-render = rauthyStateRenderArgs;
     vikunja-provision = vikunjaArgs;
     forgejo-provision = forgejoArgs;
+    github-provision = githubArgs;
     identity-cli = identityArgs;
     provenance-oauth = oauthArgs;
+    provenance-rbw = rbwArgs;
+    proton-vpn-auth = protonVpnAuthArgs;
     stalwart016-provision = stalwartProvisionArgs;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapArgs;
     tuwunel-provision = tuwunelArgs;
@@ -85,14 +94,39 @@ in {
     rauthy-state-render = rauthyStateRenderDeps;
     vikunja-provision = vikunjaDeps;
     forgejo-provision = forgejoDeps;
+    github-provision = githubDeps;
     identity-cli = identityDeps;
     provenance-oauth = oauthDeps;
+    provenance-rbw = rbwDeps;
+    proton-vpn-auth = protonVpnAuthDeps;
     stalwart016-provision = stalwartProvisionDeps;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapDeps;
     tuwunel-provision = tuwunelDeps;
   };
 
   packages = {
+    provenance-rbw = craneLib.buildPackage (rbwArgs
+      // {
+        cargoArtifacts = rbwDeps;
+        meta = {
+          description = "Durable rbw client state and guarded legacy-state migration";
+          mainProgram = "provenance-rbw";
+          license = with lib.licenses; [mit asl20];
+          platforms = lib.platforms.linux;
+        };
+      });
+
+    proton-vpn-auth = craneLib.buildPackage (protonVpnAuthArgs
+      // {
+        cargoArtifacts = protonVpnAuthDeps;
+        meta = {
+          description = "Runtime credential and TOTP login adapter for Proton VPN";
+          mainProgram = "proton-vpn-auth";
+          license = with lib.licenses; [mit asl20];
+          platforms = lib.platforms.linux;
+        };
+      });
+
     provenance-oauth = craneLib.buildPackage (oauthArgs
       // {
         cargoArtifacts = oauthDeps;
@@ -179,6 +213,16 @@ in {
         meta = {
           description = "Declarative Forgejo SSH public-key provisioning";
           mainProgram = "forgejo-provision";
+          license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    github-provision = craneLib.buildPackage (githubArgs
+      // {
+        cargoArtifacts = githubDeps;
+        meta = {
+          description = "Declarative GitHub account keys and repository collaborators";
+          mainProgram = "github-provision";
           license = with lib.licenses; [mit asl20];
         };
       });

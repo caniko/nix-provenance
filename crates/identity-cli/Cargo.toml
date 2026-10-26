@@ -25,9 +25,9 @@ required-features = ["kanidm"]
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-# Generated-secret helpers are used only by the Kanidm module. Keep featureless
-# and Bitwarden-only builds independent of core's leaf-selected TLS transport.
-provenance-core = { path = "../provenance-core", optional = true }
+# Only the Kanidm generated_secret store is used; skip the HTTP helpers, which
+# need a TLS backend this crate does not always enable.
+provenance-core = { path = "../provenance-core", default-features = false, optional = true }
 rand = "0.9"
 serde.workspace = true
 serde_json.workspace = true

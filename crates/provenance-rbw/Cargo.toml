@@ -1,0 +1,22 @@
+[package]
+name = "provenance-rbw"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Durable rbw client state and guarded legacy-state migration"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
