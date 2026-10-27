@@ -202,21 +202,22 @@ in rec {
     users,
     group,
   }: let
-    managedUsers = lib.filterAttrs (_: u: u.manageProfile or true) users;
+    managedUsers = lib.filterAttrs (name: u:
+      if !isKanidmLogin u.credential
+      then throw "adapter.kanidmPersons: user '${name}' must use adapter.kanidmLogin on the kanidm backend (passwordInitByEmail and passwordFromFile are rauthy-only flows)."
+      else u.manageProfile or true)
+    users;
   in
     lib.mapAttrs (
       name: u:
-        if !isKanidmLogin u.credential
-        then throw "adapter.kanidmPersons: user '${name}' must use adapter.kanidmLogin on the kanidm backend (passwordInitByEmail and passwordFromFile are rauthy-only flows)."
-        else
-          {
-            groups = lib.unique ([group] ++ (u.groups or []));
-          }
-          // lib.optionalAttrs (u.manageProfile or true) {
-            present = u.present or true;
-            displayName = u.displayName or name;
-            mailAddresses = lib.optional ((u.email or null) != null) u.email;
-          }
+        {
+          groups = lib.unique ([group] ++ (u.groups or []));
+        }
+        // lib.optionalAttrs (u.manageProfile or true) {
+          present = u.present or true;
+          displayName = u.displayName or name;
+          mailAddresses = lib.optional ((u.email or null) != null) u.email;
+        }
     )
     managedUsers;
 }

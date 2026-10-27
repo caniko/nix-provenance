@@ -55,6 +55,8 @@ struct CreateRoomRequest<'a> {
     invite: Vec<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     initial_state: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    power_level_content_override: Option<serde_json::Value>,
 }
 
 impl<'a> CreateRoomRequest<'a> {
@@ -72,11 +74,14 @@ impl<'a> CreateRoomRequest<'a> {
             name,
             topic,
             invite: invite.iter().map(String::as_str).collect(),
+            power_level_content_override: encrypted
+                .then(|| serde_json::json!({"invite":100,"events":{"m.room.redaction":100}})),
             initial_state: if encrypted {
                 vec![
                     serde_json::json!({"type": "m.room.join_rules", "state_key": "", "content": {"join_rule": "invite"}}),
                     serde_json::json!({"type": "m.room.guest_access", "state_key": "", "content": {"guest_access": "forbidden"}}),
                     serde_json::json!({"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}}),
+                    serde_json::json!({"type": "m.room.history_visibility", "state_key": "", "content": {"history_visibility": "joined"}}),
                 ]
             } else {
                 Vec::new()
@@ -201,6 +206,10 @@ impl TuwunelClient {
             return Ok(data.access_token);
         }
 
+        // Preserve the HTTP status in the error chain so callers distinguish
+        // definitive authentication refusals from potentially committed logins.
+        resp.error_for_status()
+            .with_context(|| format!("password login returned HTTP {status}"))?;
         bail!("password login returned HTTP {status}");
     }
 
@@ -422,7 +431,7 @@ impl TuwunelClient {
         invite: &[String],
         encrypted: bool,
     ) -> Result<String> {
-        let alias_localpart = alias_localpart(alias)?;
+        let (alias_localpart, _) = parse_room_alias(alias)?;
         let body = CreateRoomRequest::new(alias_localpart, name, topic, invite, encrypted);
 
         let resp = self
@@ -509,6 +518,9 @@ fn verify_private_room_state(
     let mut join_rule = None;
     let mut guest_access = None;
     let mut algorithm = None;
+    let mut history_visibility = None;
+    let mut creation = None;
+    let mut power_levels = None;
     let mut members = BTreeMap::new();
     for event in events {
         match event.get("type").and_then(serde_json::Value::as_str) {
@@ -520,6 +532,23 @@ fn verify_private_room_state(
             }
             Some("m.room.encryption") if event["state_key"].as_str() == Some("") => {
                 algorithm = event["content"]["algorithm"].as_str();
+            }
+            Some("m.room.history_visibility") if event["state_key"].as_str() == Some("") => {
+                history_visibility = event["content"]["history_visibility"].as_str();
+            }
+            Some("m.room.create") if event["state_key"].as_str() == Some("") => {
+                creation = Some(event);
+            }
+            Some("m.room.power_levels") if event["state_key"].as_str() == Some("") => {
+                power_levels = Some(&event["content"]);
+            }
+            Some("m.room.third_party_invite") => {
+                if !event["content"]
+                    .as_object()
+                    .is_some_and(serde_json::Map::is_empty)
+                {
+                    bail!("room contains an undeclared third-party invitation");
+                }
             }
             Some("m.room.member") => {
                 if let (Some(user), Some(membership)) = (
@@ -539,6 +568,159 @@ fn verify_private_room_state(
         bail!(
             "room is missing the required Matrix encryption state; refusing to retrofit encryption"
         );
+    }
+    if !matches!(history_visibility, Some("joined" | "invited" | "shared")) {
+        bail!("room history is not restricted to members");
+    }
+    let creation = creation.context("room is missing its canonical creation event")?;
+    if creation["sender"].as_str() != Some(creator) {
+        bail!("room was not created by the declared owner");
+    }
+    if let Some(additional) = creation["content"].get("additional_creators") {
+        // ponytail: private rooms have one controlling owner; co-owners need an
+        // explicit ownership policy before adopting their rooms.
+        if !additional.as_array().is_some_and(Vec::is_empty) {
+            bail!("room has additional creators outside its single-owner policy");
+        }
+    }
+    let version = match creation["content"].get("room_version") {
+        Some(version) => version.as_str().context("invalid room version")?,
+        None => "1",
+    };
+    // Room version IDs are opaque strings, not numbers to normalize.
+    let version = [
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+    ]
+    .iter()
+    .position(|&supported| supported == version)
+    .with_context(|| format!("unsupported Matrix room version: {version}"))?
+        + 1;
+    // Order exact integers first, then any legacy float overflow beyond i64.
+    // This preserves integer precision without saturating distinct finite legacy
+    // powers or rounding their comparisons through f64 in modern rooms.
+    let level = |value: Option<&serde_json::Value>, default: i64| -> Result<(i64, f64)> {
+        match value {
+            Some(serde_json::Value::String(value)) if version < 10 => value
+                .trim()
+                .parse()
+                .map(|n| (n, 0.0))
+                .context("invalid Matrix power level"),
+            Some(value) if version < 6 && value.is_f64() => {
+                let n = value
+                    .as_f64()
+                    .filter(|n| n.is_finite())
+                    .context("invalid Matrix power level")?
+                    .trunc();
+                let overflow = if n >= i64::MAX as f64 || n < i64::MIN as f64 {
+                    n
+                } else {
+                    0.0
+                };
+                Ok((n as i64, overflow))
+            }
+            Some(value) => value
+                .as_i64()
+                .map(|n| (n, 0.0))
+                .context("invalid Matrix power level"),
+            None => Ok((default, 0.0)),
+        }
+    };
+    let empty = serde_json::Map::new();
+    let powers = match power_levels {
+        Some(value) => value.as_object().context("invalid room power levels")?,
+        None => &empty,
+    };
+    let users = match powers.get("users") {
+        Some(value) => value
+            .as_object()
+            .context("invalid room user power levels")?,
+        None => &empty,
+    };
+    let default_user = level(powers.get("users_default"), 0)?;
+    // Matrix v12 creators have infinite power; older rooms without a power
+    // event give the creation sender 100. These are protocol defaults, not
+    // inferred ownership or fabricated state.
+    let owner_power = if version >= 12 {
+        (i64::MAX, f64::INFINITY)
+    } else if power_levels.is_none() {
+        (100, 0.0)
+    } else {
+        users
+            .get(creator)
+            .map_or(Ok(default_user), |value| level(Some(value), 0))?
+    };
+    if owner_power <= default_user {
+        bail!("declared owner does not control room power levels");
+    }
+    let mut nonowner_power = default_user;
+    for (user, value) in users {
+        if user != creator {
+            let power = level(Some(value), 0)?;
+            if power > nonowner_power {
+                nonowner_power = power;
+            }
+        }
+    }
+    if nonowner_power >= owner_power {
+        bail!("room has another controlling account");
+    }
+    for (key, default) in [
+        ("state_default", 50),
+        ("invite", 0),
+        ("kick", 50),
+        ("ban", 50),
+        ("redact", 50),
+    ] {
+        if key == "redact" && version >= 12 {
+            // v12 redaction sending is controlled by the event threshold below.
+            continue;
+        }
+        let required = level(powers.get(key), default)?;
+        if owner_power < required {
+            bail!("declared owner lacks room control for {key}");
+        }
+        if nonowner_power >= required {
+            bail!("nonowner can change room policy through {key}");
+        }
+    }
+    let events = match powers.get("events") {
+        Some(value) => value.as_object().context("invalid event power levels")?,
+        None => &empty,
+    };
+    // Every supported version checks the redaction event's sending threshold;
+    // `redact` alone cannot stop redaction of another local user's event.
+    let required = match events.get("m.room.redaction") {
+        Some(value) => level(Some(value), 0)?,
+        None => level(powers.get("events_default"), 0)?,
+    };
+    if owner_power < required {
+        bail!("declared owner lacks room control for m.room.redaction");
+    }
+    if nonowner_power >= required {
+        bail!("nonowner can change room policy through m.room.redaction");
+    }
+    for (kind, value) in events {
+        let required = level(Some(value), 0)?;
+        if owner_power < required {
+            bail!("declared owner cannot control all room event types");
+        }
+        // Only known timeline messages may bypass owner-only state control.
+        if !matches!(
+            kind.as_str(),
+            "m.room.message"
+                | "m.room.encrypted"
+                | "m.reaction"
+                | "m.sticker"
+                | "m.poll.start"
+                | "m.poll.response"
+                | "m.poll.end"
+                | "org.matrix.msc3381.poll.start"
+                | "org.matrix.msc3381.poll.response"
+                | "org.matrix.msc3381.poll.end"
+        ) && nonowner_power >= required
+        {
+            bail!("nonowner can change room policy through {kind}");
+        }
     }
     if members.get(creator).map(String::as_str) != Some("join") {
         bail!("declared room creator is not joined");
@@ -567,6 +749,9 @@ mod private_room_tests {
             serde_json::json!({"type":"m.room.join_rules", "state_key":"", "content":{"join_rule":"invite"}}),
             serde_json::json!({"type":"m.room.guest_access", "state_key":"", "content":{"guest_access":"forbidden"}}),
             serde_json::json!({"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
+            serde_json::json!({"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"joined"}}),
+            serde_json::json!({"type":"m.room.create", "state_key":"", "sender":"@iris:example.test", "content":{}}),
+            serde_json::json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":100,"events":{"m.room.redaction":100}}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}),
             serde_json::json!({"type":"m.room.member", "state_key":"@can:example.test", "content":{"membership":"invite"}}),
         ]
@@ -581,6 +766,11 @@ mod private_room_tests {
         assert_eq!(body["visibility"], "private");
         assert_eq!(body["preset"], "private_chat");
         assert_eq!(body["invite"], serde_json::json!(["@can:example.test"]));
+        assert_eq!(body["power_level_content_override"]["invite"], 100);
+        assert_eq!(
+            body["power_level_content_override"]["events"]["m.room.redaction"],
+            100
+        );
         assert_eq!(body["initial_state"][0]["content"]["join_rule"], "invite");
         assert_eq!(
             body["initial_state"][1]["content"]["guest_access"],
@@ -631,7 +821,7 @@ mod private_room_tests {
 
     #[test]
     fn nonempty_state_keys_cannot_prove_private_room_policy() {
-        for index in 0..3 {
+        for index in 0..5 {
             let mut events = state();
             events[index]["state_key"] = "unrelated".into();
             assert!(verify(&events).is_err());
@@ -647,6 +837,322 @@ mod private_room_tests {
             verify(&events).unwrap(),
             BTreeSet::from(["@iris:example.test".into()])
         );
+    }
+
+    #[test]
+    fn rejects_public_history_foreign_creator_and_lost_controlling_power() {
+        let mut events = state();
+        events[3]["content"]["history_visibility"] = "world_readable".into();
+        assert!(verify(&events).is_err());
+        events = state();
+        events[4]["sender"] = "@other:example.test".into();
+        assert!(verify(&events).is_err());
+        for levels in [
+            serde_json::json!({"users":{"@iris:example.test":0}}),
+            serde_json::json!({"users":{"@iris:example.test":100,"@other:example.test":100}}),
+            serde_json::json!({"users":{"@iris:example.test":100},"state_default":101}),
+            serde_json::json!({"users":{"@iris:example.test":100},"invite":101}),
+            serde_json::json!({"users":{"@iris:example.test":100},"users_default":100}),
+            serde_json::json!({"users":{"@iris:example.test":100},"events":{"m.room.power_levels":101}}),
+        ] {
+            events = state();
+            events[5]["content"] = levels;
+            assert!(verify(&events).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_permissive_protocol_defaults_and_supports_v12_single_creator() {
+        let mut events = state();
+        events.retain(|event| event["type"] != "m.room.power_levels");
+        assert!(verify(&events).is_err());
+        events = state();
+        events[4]["content"]["room_version"] = "12".into();
+        events[5]["content"] = serde_json::json!({"users":{},"invite":100,"events":{"m.room.tombstone":150,"m.room.redaction":100}});
+        assert!(verify(&events).is_ok());
+        events[4]["content"]["additional_creators"] = serde_json::json!(["@other:example.test"]);
+        assert!(verify(&events).is_err());
+    }
+
+    #[test]
+    fn unsupported_room_version_identifiers_do_not_inherit_standard_authority() {
+        for version in [
+            "012",
+            "01",
+            "+12",
+            "+1",
+            "001",
+            "0",
+            "13",
+            "org.example.room",
+            " 12",
+            "12 ",
+            "1.0",
+        ] {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.into();
+            assert!(verify(&events).is_err(), "unsupported identifier {version}");
+            // Unsupported v12-like identifiers must not grant creator infinity.
+            events[5]["content"]["users"] = serde_json::json!({});
+            assert!(
+                verify(&events).is_err(),
+                "unsupported creator authority {version}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_every_nonowner_privacy_or_membership_threshold() {
+        for key in ["state_default", "invite", "kick", "ban", "redact"] {
+            for explicit_user in [false, true] {
+                let mut events = state();
+                if explicit_user {
+                    events[5]["content"]["users"]["@can:example.test"] = 10.into();
+                } else {
+                    events[5]["content"]["users_default"] = 10.into();
+                }
+                events[5]["content"][key] = 10.into();
+                assert!(
+                    verify(&events).is_err(),
+                    "accepted {key} with nonowner power 10"
+                );
+            }
+        }
+        for kind in [
+            "m.room.power_levels",
+            "m.room.join_rules",
+            "m.room.guest_access",
+            "m.room.history_visibility",
+            "m.room.encryption",
+            "m.room.member",
+            "m.room.third_party_invite",
+            "m.room.server_acl",
+            "m.room.tombstone",
+        ] {
+            let mut events = state();
+            events[5]["content"]["events"][kind] = 0.into();
+            assert!(
+                verify(&events).is_err(),
+                "accepted nonowner control of {kind}"
+            );
+        }
+        let mut events = state();
+        events[5]["content"]["events"]["m.room.encrypted"] = 0.into();
+        assert!(
+            verify(&events).is_ok(),
+            "ordinary encrypted messages remain allowed"
+        );
+    }
+
+    #[test]
+    fn every_supported_version_requires_owner_only_effective_redaction_power() {
+        for version in 1..=12 {
+            for (mut levels, safe) in [
+                (serde_json::json!({"invite":100}), false),
+                (serde_json::json!({"invite":100,"events_default":0}), false),
+                (
+                    serde_json::json!({"invite":100,"events_default":100,"events":{"m.room.redaction":0}}),
+                    false,
+                ),
+                (
+                    serde_json::json!({"invite":100,"users_default":10,"events_default":10}),
+                    false,
+                ),
+                (
+                    serde_json::json!({"invite":100,"users":{"@can:example.test":10},"events_default":10}),
+                    false,
+                ),
+                (serde_json::json!({"invite":100,"events_default":50}), true),
+                (
+                    serde_json::json!({"invite":100,"events_default":0,"events":{"m.room.redaction":100}}),
+                    true,
+                ),
+            ] {
+                if version < 12 {
+                    levels["users"]["@iris:example.test"] = 100.into();
+                }
+                let mut events = state();
+                events[4]["content"]["room_version"] = version.to_string().into();
+                events[5]["content"] = levels;
+                assert_eq!(verify(&events).is_ok(), safe, "room version {version}");
+            }
+        }
+        let mut events = state();
+        events[4]["content"]["room_version"] = "11".into();
+        events[5]["content"]["events"] = serde_json::json!({});
+        events[5]["content"]["events_default"] = 101.into();
+        assert!(verify(&events).is_err(), "owner cannot send redactions");
+        events[5]["content"]["events"]["m.room.redaction"] = 100.into();
+        assert!(
+            verify(&events).is_ok(),
+            "explicit threshold overrides default"
+        );
+    }
+
+    #[test]
+    fn legacy_string_power_levels_follow_room_version_rules() {
+        for version in 1..=12 {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.to_string().into();
+            events[5]["content"] = serde_json::json!({
+                "users":{"@iris:example.test":" +00100 ","@can:example.test":" -01 "},
+                "users_default":"-01", "events_default":"000", "state_default":"+050",
+                "invite":" 100 ", "kick":"50", "ban":"50", "redact":"50",
+                "events":{"m.room.redaction":"\t+100\n","m.room.encrypted":"0","m.room.power_levels":"100"}
+            });
+            assert_eq!(
+                verify(&events).is_ok(),
+                version < 10,
+                "room version {version}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_power_parsing_rejects_malformed_values_and_preserves_policy() {
+        for version in 1..=9 {
+            for invalid in [
+                serde_json::json!(""),
+                serde_json::json!("+"),
+                serde_json::json!("-"),
+                serde_json::json!("1.0"),
+                serde_json::json!("1e2"),
+                serde_json::json!("0x64"),
+                serde_json::json!("1 00"),
+                serde_json::json!("100abc"),
+                serde_json::json!("9223372036854775808"),
+                serde_json::json!(true),
+                serde_json::json!(null),
+                serde_json::json!({}),
+            ] {
+                let mut events = state();
+                events[4]["content"]["room_version"] = version.to_string().into();
+                events[5]["content"]["events"]["m.room.redaction"] = invalid;
+                assert!(verify(&events).is_err(), "room version {version}");
+            }
+            for levels in [
+                serde_json::json!({"users":{"@iris:example.test":"100"},"invite":"100","events":{"m.room.redaction":"0"}}),
+                serde_json::json!({"users":{"@iris:example.test":"100","@can:example.test":"100"},"invite":"100","events":{"m.room.redaction":"100"}}),
+            ] {
+                let mut events = state();
+                events[4]["content"]["room_version"] = version.to_string().into();
+                events[5]["content"] = levels;
+                let error = verify(&events).unwrap_err().to_string();
+                assert!(!error.contains("invalid Matrix power level"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_float_powers_follow_version_rules_and_truncate_towards_zero() {
+        for version in 1..=12 {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.to_string().into();
+            events[5]["content"] = serde_json::json!({
+                "users":{"@iris:example.test":100.9}, "users_default":-0.9,
+                "state_default":50.9, "invite":100.5, "kick":50.9, "ban":50.9, "redact":50.9,
+                "events":{"m.room.redaction":100.5}
+            });
+            assert_eq!(
+                verify(&events).is_ok(),
+                version < 6,
+                "room version {version}"
+            );
+            events[5]["content"]["events"]["m.room.redaction"] = 0.9.into();
+            assert!(
+                verify(&events).is_err(),
+                "nonowner can send redactions after truncation"
+            );
+        }
+        for version in 1..=5 {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.to_string().into();
+            events[5]["content"]["users"]["@iris:example.test"] = 1e100.into();
+            events[5]["content"]["events"]["m.room.redaction"] = 5e99.into();
+            assert!(
+                verify(&events).is_ok(),
+                "finite powers beyond i64 remain comparable"
+            );
+            events[5]["content"]["users"]["@can:example.test"] = 1e100.into();
+            assert!(
+                verify(&events).is_err(),
+                "equal legacy controller power is refused"
+            );
+        }
+    }
+
+    #[test]
+    fn integer_power_comparisons_remain_exact_above_f64_precision() {
+        for version in 1..=11 {
+            for strings in [false, true] {
+                let power = |n: i64| {
+                    if strings {
+                        serde_json::json!(n.to_string())
+                    } else {
+                        serde_json::json!(n)
+                    }
+                };
+                let mut events = state();
+                events[4]["content"]["room_version"] = version.to_string().into();
+                let owner = power(9_007_199_254_740_993);
+                events[5]["content"] = serde_json::json!({
+                    "users":{"@iris:example.test":owner,"@can:example.test":power(9_007_199_254_740_992)},
+                    "users_default":-1, "state_default":owner, "invite":owner,
+                    "kick":owner, "ban":owner, "redact":owner,
+                    "events":{"m.room.redaction":owner}
+                });
+                assert_eq!(verify(&events).is_ok(), !strings || version < 10);
+                events[5]["content"]["events"]["m.room.redaction"] = power(9_007_199_254_740_994);
+                assert!(
+                    verify(&events).is_err(),
+                    "owner cannot meet a strictly greater threshold"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn v12_ignores_redact_but_requires_owner_only_redaction_events() {
+        for version in 1..=12 {
+            let mut events = state();
+            events[4]["content"]["room_version"] = version.to_string().into();
+            events[5]["content"]["redact"] = 0.into();
+            assert_eq!(
+                verify(&events).is_ok(),
+                version == 12,
+                "room version {version}"
+            );
+            events[5]["content"]["events"]["m.room.redaction"] = 0.into();
+            assert!(
+                verify(&events).is_err(),
+                "redaction sending power must still exclude nonowners"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_poll_events_do_not_grant_room_policy_control() {
+        for kind in [
+            "m.poll.start",
+            "m.poll.response",
+            "m.poll.end",
+            "org.matrix.msc3381.poll.start",
+            "org.matrix.msc3381.poll.response",
+            "org.matrix.msc3381.poll.end",
+        ] {
+            let mut events = state();
+            events[5]["content"]["events"][kind] = 0.into();
+            assert!(verify(&events).is_ok(), "rejected timeline event {kind}");
+        }
+    }
+
+    #[test]
+    fn rejects_active_third_party_invitations_but_accepts_revoked_empty_state() {
+        let mut events = state();
+        events.push(serde_json::json!({"type":"m.room.third_party_invite", "state_key":"token", "content":{"display_name":"outsider","public_key":"key"}}));
+        assert!(verify(&events).is_err());
+        events.last_mut().unwrap()["content"] = serde_json::json!({});
+        assert!(verify(&events).is_ok());
     }
 }
 
@@ -677,17 +1183,20 @@ fn is_user_in_use(err: &anyhow::Error) -> bool {
         .any(|msg| msg.starts_with("user_in_use:"))
 }
 
-fn alias_localpart(alias: &str) -> Result<&str> {
+pub(crate) fn parse_room_alias(alias: &str) -> Result<(&str, &str)> {
     let Some(rest) = alias.strip_prefix('#') else {
         bail!("Matrix room alias must start with '#': {alias}");
     };
-    let Some((localpart, _server)) = rest.split_once(':') else {
+    let Some((localpart, server)) = rest.split_once(':') else {
         bail!("Matrix room alias must include a server name: {alias}");
     };
     if localpart.is_empty() {
         bail!("Matrix room alias localpart is empty: {alias}");
     }
-    Ok(localpart)
+    if server.is_empty() {
+        bail!("Matrix room alias server name is empty: {alias}");
+    }
+    Ok((localpart, server))
 }
 
 fn percent_encode(value: &str) -> String {
@@ -826,11 +1335,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_alias_localpart() {
+    fn parses_room_alias_without_dropping_the_server() {
         assert_eq!(
-            alias_localpart("#canix-alerts:matrix.tartanoglu.com").unwrap(),
-            "canix-alerts"
+            parse_room_alias("#canix-alerts:matrix.tartanoglu.com").unwrap(),
+            ("canix-alerts", "matrix.tartanoglu.com")
         );
+        for server in ["example.test:8448", "[::1]:8448"] {
+            let alias = format!("#room:{server}");
+            assert_eq!(parse_room_alias(&alias).unwrap(), ("room", server));
+        }
+        assert!(parse_room_alias("#room:").is_err());
     }
 
     #[test]
