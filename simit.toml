@@ -23,6 +23,9 @@ nix_builds = [
   ".#checks.x86_64-linux.stalwart016-proxy-vmtest",
 ]
 workspace = true
+# Validate PR heads once (pull_request); push runs cover the default branch
+# and the simit updater's candidate branches.
+push_branches = ["trunk", "simit/update/**"]
 
 [ci.nix_build]
 kvm = true
@@ -32,11 +35,37 @@ max_parallel = 1
 max_jobs = 1
 cores = 2
 artifact_retention_days = 14
+push_branches = ["trunk", "simit/update/**"]
+
+# Each crate has its own cargoArtifacts, so a family shares them in one job.
+[ci.nix_build.groups]
+tuwunel = [
+  ".#packages.x86_64-linux.tuwunel-provision",
+  ".#checks.x86_64-linux.tuwunel-provision-test",
+  ".#checks.x86_64-linux.tuwunel-provision-clippy",
+  ".#checks.x86_64-linux.tuwunel-module-eval",
+  ".#checks.x86_64-linux.tuwunel-private-rooms-vmtest",
+]
+clients = [
+  ".#packages.x86_64-linux.proton-vpn-auth",
+  ".#checks.x86_64-linux.proton-vpn-auth-test",
+  ".#checks.x86_64-linux.proton-vpn-auth-clippy",
+  ".#checks.x86_64-linux.proton-vpn-module-eval",
+  ".#packages.x86_64-linux.provenance-rbw",
+  ".#checks.x86_64-linux.rbw-test",
+  ".#checks.x86_64-linux.rbw-clippy",
+  ".#checks.x86_64-linux.rbw-home-module-eval",
+]
+stalwart = [
+  ".#checks.x86_64-linux.stalwart016-proxy-eval",
+  ".#checks.x86_64-linux.stalwart016-proxy-vmtest",
+]
 
 [prebuild]
 publish_attic = true
 attic_app = ".#push-flake-inputs"
 # Publish only the x86_64-linux packages Canix consumes.
+push_branches = ["trunk", "simit/update/**"]
 nix_builds = [
   ".#packages.x86_64-linux.forgejo-cli-nushell-completion",
   ".#packages.x86_64-linux.forgejo-provision",
