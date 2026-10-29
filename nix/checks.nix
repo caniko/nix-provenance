@@ -696,6 +696,7 @@ in
 
     stalwart016-vmtest = stalwart016VmTest;
     stalwart016-proxy-eval = import ./modules/test/stalwart016-proxy-eval.nix {inherit pkgs self;};
+    stalwart016-peer-eval = import ./modules/test/stalwart016-peer-eval.nix {inherit pkgs self;};
     stalwart016-proxy-vmtest = import ./modules/test/stalwart016-proxy-vmtest.nix {inherit pkgs self;};
 
     wireguard-status-module-eval = let
