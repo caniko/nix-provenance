@@ -89,9 +89,10 @@ pub fn probe_store(
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-        if let Some(pw) = &password {
-            cmd.env("PGPASSWORD", pw);
-        }
+        match &password {
+            Some(pw) => cmd.env("PGPASSWORD", pw),
+            None => cmd.env_remove("PGPASSWORD"),
+        };
         cmd.status()
     };
 

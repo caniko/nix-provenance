@@ -10,6 +10,7 @@
       {
         services.stalwart016.datastore.postgresql = {
           host = "/run/postgresql";
+          createLocally = false;
           passwordFile = pkgs.lib.mkForce null;
         };
       }
