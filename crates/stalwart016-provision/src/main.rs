@@ -267,7 +267,7 @@ fn main() -> Result<()> {
     if !pending.migration
         && !pending.registry
         && cfg.store_health_check
-        && let (Some(psql_bin), Some(pg_pw_file)) = (&cfg.psql_binary, &cli.pg_password_file)
+        && let Some(psql_bin) = &cfg.psql_binary
     {
         match health::probe_store(
             psql_bin,
@@ -275,7 +275,7 @@ fn main() -> Result<()> {
             cfg.pg_port,
             &cfg.pg_user,
             &cfg.pg_database,
-            pg_pw_file,
+            cli.pg_password_file.as_deref(),
             &cfg.probe_table,
         )? {
             health::StoreHealth::Ok => {}

@@ -641,7 +641,7 @@ in {
           (let
             pwFlag = "--recovery-password-file %d/${cfg.recoveryAdmin.passwordCredential}";
             healthCheckFlag =
-              lib.optionalString cfg.provision.storeHealthCheck.enable
+              lib.optionalString (cfg.provision.storeHealthCheck.enable && postgres.passwordFile != null)
               "--pg-password-file %d/${postgres.passwordCredential}";
           in "${lib.getExe cfg.provisionPackage} --config ${provisionConfig} ${pwFlag} ${healthCheckFlag}");
         ExecStart = "${lib.getExe cfg.package} --config /etc/stalwart016/config.json";
