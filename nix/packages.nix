@@ -15,7 +15,11 @@
     inherit src pname;
     version = crateVersion pname;
     strictDeps = true;
-    nativeBuildInputs = [pkgs.clang pkgs.mold];
+    # Build-side tools: `pkgs` may be a cross package set (the Canix overlay
+    # path), where top-level `clang`/`mold` are target builds that cannot run
+    # on the build machine. buildPackages is identical for native sets, so
+    # native derivation hashes are unchanged.
+    nativeBuildInputs = [pkgs.buildPackages.clang pkgs.buildPackages.mold];
     cargoExtraArgs = "-p ${pname}";
     # Tests run as their own checks; keep the package build lean.
     doCheck = false;
@@ -28,7 +32,11 @@
     inherit pname;
     version = ver;
     strictDeps = true;
-    nativeBuildInputs = [pkgs.clang pkgs.mold];
+    # Build-side tools: `pkgs` may be a cross package set (the Canix overlay
+    # path), where top-level `clang`/`mold` are target builds that cannot run
+    # on the build machine. buildPackages is identical for native sets, so
+    # native derivation hashes are unchanged.
+    nativeBuildInputs = [pkgs.buildPackages.clang pkgs.buildPackages.mold];
     cargoExtraArgs = "-p ${pname}";
     doCheck = false;
   };
@@ -50,7 +58,7 @@
   stalwartOauthBootstrapArgs =
     buildArgs "stalwart-oauth-bootstrap" "0.1.0"
     // {
-      nativeBuildInputs = [pkgs.clang pkgs.mold pkgs.pkg-config];
+      nativeBuildInputs = [pkgs.buildPackages.clang pkgs.buildPackages.mold pkgs.pkg-config];
       buildInputs = [pkgs.dbus];
     };
   tuwunelArgs = mkArgs "tuwunel-provision";
