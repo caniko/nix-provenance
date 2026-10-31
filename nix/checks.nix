@@ -922,7 +922,7 @@ in
       missing =
         lib.filter
         (name:
-          !(hasInput crossPkgs.${name} crossPkgs.buildPackages.clang)
+          !(hasInput crossPkgs.${name} crossPkgs.buildPackages.llvmPackages_latest.clang)
           || !(hasInput crossPkgs.${name} crossPkgs.buildPackages.mold))
         provisioned;
     in
