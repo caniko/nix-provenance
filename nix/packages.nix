@@ -15,12 +15,14 @@
     inherit src pname;
     version = crateVersion pname;
     strictDeps = true;
-    # Build-side tools: `pkgs` may be a cross package set (the Canix overlay
-    # path), where top-level `clang`/`mold` are target builds that cannot run
-    # on the build machine. llvmPackages_latest tracks the newest cached
+    # Build tools must run on the build machine and target it: `pkgs` may be a
+    # cross set (the Canix overlay path), where `buildPackages` clang/mold are
+    # wrappers targeting the host platform (needing target compiler-rt).
+    # pkgsBuildBuild is the plain native toolchain (== pkgs on native sets).
+    # llvmPackages_latest tracks the newest cached
     # LLVM; its clang wrapper brings the matching lld/bintools, and mold is
     # selected with -fuse-ld=mold.
-    nativeBuildInputs = [pkgs.buildPackages.llvmPackages_latest.clang pkgs.buildPackages.mold];
+    nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages_latest.clang pkgs.pkgsBuildBuild.mold];
     cargoExtraArgs = "-p ${pname}";
     # Tests run as their own checks; keep the package build lean.
     doCheck = false;
@@ -33,12 +35,14 @@
     inherit pname;
     version = ver;
     strictDeps = true;
-    # Build-side tools: `pkgs` may be a cross package set (the Canix overlay
-    # path), where top-level `clang`/`mold` are target builds that cannot run
-    # on the build machine. llvmPackages_latest tracks the newest cached
+    # Build tools must run on the build machine and target it: `pkgs` may be a
+    # cross set (the Canix overlay path), where `buildPackages` clang/mold are
+    # wrappers targeting the host platform (needing target compiler-rt).
+    # pkgsBuildBuild is the plain native toolchain (== pkgs on native sets).
+    # llvmPackages_latest tracks the newest cached
     # LLVM; its clang wrapper brings the matching lld/bintools, and mold is
     # selected with -fuse-ld=mold.
-    nativeBuildInputs = [pkgs.buildPackages.llvmPackages_latest.clang pkgs.buildPackages.mold];
+    nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages_latest.clang pkgs.pkgsBuildBuild.mold];
     cargoExtraArgs = "-p ${pname}";
     doCheck = false;
   };
@@ -60,7 +64,7 @@
   stalwartOauthBootstrapArgs =
     buildArgs "stalwart-oauth-bootstrap" "0.1.0"
     // {
-      nativeBuildInputs = [pkgs.buildPackages.llvmPackages_latest.clang pkgs.buildPackages.mold pkgs.pkg-config];
+      nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages_latest.clang pkgs.pkgsBuildBuild.mold pkgs.pkg-config];
       buildInputs = [pkgs.dbus];
     };
   tuwunelArgs = mkArgs "tuwunel-provision";
