@@ -13,6 +13,7 @@ every start.
 services.ntfy-sh = {
   enable = true;
   settings.auth-file = "/var/lib/ntfy-sh/user.db"; # required
+  settings.auth-default-access = "deny-all"; # default when provision.enable; anything else is rejected
   provision = {
     enable = true;
     users.can = { role = "admin"; passwordFile = config.age.secrets.ntfy-can.path; };
@@ -24,4 +25,12 @@ services.ntfy-sh = {
 ```
 
 `access` is merged into `settings.auth-access`. Token users must be declared in
-`users`. A pre-existing `services.ntfy-sh.environmentFile` is kept.
+`users`. A pre-existing `services.ntfy-sh.environmentFile` is kept and listed first; the
+generated file comes last so module credentials win. `passwordFile` and
+`tokenFile` are required plain strings and must be absolute runtime paths, not
+store paths (assertion). Anonymous access is denied by default
+(`auth-default-access = "deny-all"` is enforced by an assertion).
+
+Scope: ntfy has no OIDC/SSO, so this is the identity-model exception in
+`AGENTS.md`. `NTFY_AUTH_USERS` (bcrypt hashes) and `NTFY_AUTH_TOKENS` go through
+the `EnvironmentFile` because that is ntfy's only declarative interface.

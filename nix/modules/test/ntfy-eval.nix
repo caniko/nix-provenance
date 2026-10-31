@@ -8,6 +8,7 @@
   services.ntfy-sh = {
     settings.base-url = "https://ntfy.example.test";
     enable = true;
+    environmentFile = "/run/agenix/ntfy-extra";
     provision = {
       enable = true;
       users = {

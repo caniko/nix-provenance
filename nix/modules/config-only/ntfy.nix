@@ -11,6 +11,8 @@
   unit = "ntfy-sh-credentials";
   envFile = "/run/ntfy-sh-provision/env";
   tokenList = lib.concatLists (lib.mapAttrsToList (user: ts: lib.imap0 (i: t: t // {inherit user i;}) ts) cfg.tokens);
+  secretFiles = map (u: u.passwordFile) (lib.attrValues cfg.users) ++ map (t: t.tokenFile) tokenList;
+  notRuntime = f: !(lib.hasPrefix "/" f) || lib.hasPrefix builtins.storeDir f;
   tokenKey = t: "ntfy-token-${t.user}-${toString t.i}";
 in {
   # Config-only: ntfy reads predefined users/tokens from NTFY_AUTH_* env vars.
@@ -28,7 +30,10 @@ in {
             type = types.enum ["admin" "user"];
             description = "ntfy role.";
           };
-          passwordFile = removeAttrs pw.passwordFileOption ["default"];
+          passwordFile = mkOption {
+            type = types.str;
+            description = "Runtime file (not a store path) holding this user's password, e.g. `config.age.secrets.<name>.path`.";
+          };
         };
       });
     };
@@ -39,8 +44,8 @@ in {
       type = types.attrsOf (types.listOf (types.submodule {
         options = {
           tokenFile = mkOption {
-            type = types.oneOf [types.path types.str];
-            description = "Runtime file containing a token matching `lib.ntfy.tokenPattern`.";
+            type = types.str;
+            description = "Runtime file (not a store path) containing a token matching `lib.ntfy.tokenPattern`.";
           };
           label = mkOption {
             type = types.nullOr (types.strMatching "[^:,]+");
@@ -73,8 +78,17 @@ in {
         assertion = lib.all (u: cfg.users ? ${u}) (lib.attrNames cfg.tokens);
         message = "services.ntfy-sh.provision.tokens users must be declared in provision.users.";
       }
+      {
+        assertion = !(lib.any notRuntime secretFiles);
+        message = "services.ntfy-sh.provision password/token files must be absolute runtime paths outside ${builtins.storeDir}.";
+      }
+      {
+        assertion = ntfySh.settings.auth-default-access or null == "deny-all";
+        message = "services.ntfy-sh.provision requires settings.auth-default-access = \"deny-all\" (no anonymous access).";
+      }
     ];
 
+    services.ntfy-sh.settings.auth-default-access = lib.mkDefault "deny-all";
     services.ntfy-sh.settings.auth-access = cfg.access;
 
     systemd.services.${unit} = {
@@ -112,7 +126,9 @@ in {
       };
     };
 
-    # nixpkgs sets EnvironmentFile to services.ntfy-sh.environmentFile; keep it.
-    systemd.services.ntfy-sh.serviceConfig.EnvironmentFile = lib.mkForce ([envFile] ++ lib.optional (ntfySh.environmentFile != null) ntfySh.environmentFile);
+    # nixpkgs sets EnvironmentFile to services.ntfy-sh.environmentFile; keep it,
+    # but list ours last: with systemd the later file wins, so module credentials
+    # override a pre-existing NTFY_AUTH_* there.
+    systemd.services.ntfy-sh.serviceConfig.EnvironmentFile = lib.mkForce (lib.optional (ntfySh.environmentFile != null) ntfySh.environmentFile ++ [envFile]);
   };
 }

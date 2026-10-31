@@ -560,12 +560,28 @@ in
 
     ntfy-module-eval = let
       cfg = ntfyEval.config;
+      failed = c: lib.filter (m: lib.hasPrefix "services.ntfy-sh.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
+      ext = m: ntfyEval.extendModules {modules = [m];};
+      pwPath = v: {services.ntfy-sh.provision.users.can.passwordFile = lib.mkForce v;};
+      ntfyStoreEval = ext (pwPath "/nix/store/x-secret");
+      ntfyOpenEval = ext {services.ntfy-sh.settings.auth-default-access = lib.mkForce "read-write";};
+      ntfyNullEval = builtins.tryEval (builtins.deepSeq (ext (pwPath null)).config.services.ntfy-sh.provision.users.can.passwordFile null);
+      ntfyPathEval = builtins.tryEval (builtins.deepSeq (ext (pwPath ./ntfy-eval-secret)).config.services.ntfy-sh.provision.users.can.passwordFile null);
       svc = cfg.systemd.services.ntfy-sh-credentials;
       json = builtins.toJSON;
       script = svc.script;
     in
       runCommand "ntfy-module-eval" {} ''
-        printf '%s\n' ${lib.escapeShellArg (json cfg.systemd.services.ntfy-sh.serviceConfig.EnvironmentFile)} | grep -q '/run/ntfy-sh-provision/env'
+        # generated env file comes last so its credentials win
+        test ${lib.escapeShellArg (json cfg.systemd.services.ntfy-sh.serviceConfig.EnvironmentFile)} = '["/run/agenix/ntfy-extra","/run/ntfy-sh-provision/env"]'
+        test ${lib.escapeShellArg cfg.services.ntfy-sh.settings.auth-default-access} = deny-all
+        test ${lib.escapeShellArg (json (failed cfg))} = '[]'
+        # store-backed or relative secret files and open anonymous access are rejected
+        test ${lib.escapeShellArg (json (failed ntfyStoreEval.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ntfyOpenEval.config))} != '[]'
+        # null and Nix path values fail the option type
+        test ${lib.escapeShellArg (json ntfyNullEval.success)} = false
+        test ${lib.escapeShellArg (json ntfyPathEval.success)} = false
         printf '%s\n' ${lib.escapeShellArg (json cfg.services.ntfy-sh.settings.auth-access)} | grep -q 'syndb-publisher:syndb-alerts:wo'
         printf '%s\n' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q '/run/agenix/ntfy-can'
         printf '%s\n' ${lib.escapeShellArg (json svc.before)} | grep -q 'ntfy-sh.service'
