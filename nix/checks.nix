@@ -42,6 +42,7 @@
   rauthyGeneratedEval = evalSystem ./modules/test/rauthy-generated-api-key-eval.nix;
   vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
   vikunjaProvisionEval = evalSystem ./modules/test/vikunja-provision-eval.nix;
+  ntfyEval = evalSystem ./modules/test/ntfy-eval.nix;
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
   forgejoGeneratedEval = evalSystem ./modules/test/forgejo-generated-eval.nix;
   stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
@@ -554,6 +555,113 @@ in
     in
       runCommand "vikunja-module-eval" {} ''
         test -n ${lib.escapeShellArg serviceConfig}
+        touch $out
+      '';
+
+    ntfy-module-eval = let
+      cfg = ntfyEval.config;
+      failed = c: lib.filter (m: lib.hasPrefix "services.ntfy-sh.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
+      ext = m: ntfyEval.extendModules {modules = [m];};
+      pwPath = v: {services.ntfy-sh.provision.users.can.passwordFile = lib.mkForce v;};
+      ntfyStoreEval = ext (pwPath "/nix/store/x-secret");
+      ntfyNameEval = ext {
+        services.ntfy-sh.provision.users."a,b" = {
+          role = "user";
+          passwordFile = "/run/x";
+        };
+      };
+      ntfyEmptyAuthEval = ext {services.ntfy-sh.settings.auth-file = lib.mkForce "";};
+      ntfyOpenEval = ext {services.ntfy-sh.settings.auth-default-access = lib.mkForce "read-write";};
+      ntfyNullEval = builtins.tryEval (builtins.deepSeq (ext (pwPath null)).config.services.ntfy-sh.provision.users.can.passwordFile null);
+      ntfyPathEval = builtins.tryEval (builtins.deepSeq (ext (pwPath ./ntfy-eval-secret)).config.services.ntfy-sh.provision.users.can.passwordFile null);
+      svc = cfg.systemd.services.ntfy-sh-credentials;
+      json = builtins.toJSON;
+      script = svc.script;
+    in
+      runCommand "ntfy-module-eval" {} ''
+        # generated env file comes last so its credentials win
+        test ${lib.escapeShellArg (json cfg.systemd.services.ntfy-sh.serviceConfig.EnvironmentFile)} = '["/run/agenix/ntfy-extra","/run/ntfy-sh-provision/env"]'
+        test ${lib.escapeShellArg cfg.services.ntfy-sh.settings.auth-default-access} = deny-all
+        test ${lib.escapeShellArg (json (failed cfg))} = '[]'
+        # store-backed or relative secret files and open anonymous access are rejected
+        test ${lib.escapeShellArg (json (failed ntfyStoreEval.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ntfyNameEval.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ntfyEmptyAuthEval.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ntfyOpenEval.config))} != '[]'
+        # null and Nix path values fail the option type
+        test ${lib.escapeShellArg (json ntfyNullEval.success)} = false
+        test ${lib.escapeShellArg (json ntfyPathEval.success)} = false
+        printf '%s\n' ${lib.escapeShellArg (json cfg.services.ntfy-sh.settings.auth-access)} | grep -q 'syndb-publisher:syndb-alerts:wo'
+        printf '%s\n' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q '/run/agenix/ntfy-can'
+        printf '%s\n' ${lib.escapeShellArg (json svc.before)} | grep -q 'ntfy-sh.service'
+        # plaintext never in the store: the script only references runtime credential paths
+        grep -q '/run/credentials/ntfy-sh-credentials.service/' ${pkgs.writeText "ntfy-script" script}
+        ! grep -q '/run/agenix' ${pkgs.writeText "ntfy-script" script}
+        touch $out
+      '';
+
+    ntfy-env-builder = let
+      hostile = "a$(touch /build/x)`touch /build/x`'\"";
+      hostileScript = pkgs.writeShellScript "ntfy-env-hostile" (self.lib.ntfy.mkEnvScript {
+        ntfy = pkgs.ntfy-sh;
+        out = "/build/env";
+        users = [
+          {
+            name = "can";
+            role = "admin";
+            file = "/build/pw";
+          }
+        ];
+        tokens = [
+          {
+            user = "can";
+            file = "/build/tk";
+            label = hostile;
+          }
+        ];
+      });
+      script = pkgs.writeShellScript "ntfy-env" (self.lib.ntfy.mkEnvScript {
+        ntfy = pkgs.ntfy-sh;
+        out = "/build/env";
+        users = [
+          {
+            name = "can";
+            role = "admin";
+            file = "/build/pw";
+          }
+        ];
+        tokens = [
+          {
+            user = "can";
+            file = "/build/tk";
+            label = "ci";
+          }
+        ];
+      });
+    in
+      runCommand "ntfy-env-builder" {nativeBuildInputs = [pkgs.coreutils pkgs.gnugrep];} ''
+        printf 'dummy-password\n' > /build/pw
+        printf 'tk_abcdefghijklmnopqrstuvwxyz012\n' > /build/tk
+        ${script}
+        grep -Eq '^NTFY_AUTH_USERS=can:\$2[aby]\$[^:]+:admin$' /build/env
+        grep -Fxq 'NTFY_AUTH_TOKENS=can:tk_abcdefghijklmnopqrstuvwxyz012:ci' /build/env
+        grep -Fxq 'NTFY_AUTH_DEFAULT_ACCESS=deny-all' /build/env
+        ! grep -q dummy-password /build/env
+        printf 'tk_short' > /build/tk
+        ! ${script}
+        printf 'tk_abcdefghijklmnopqrstuvwxyz012\n' > /build/tk
+        # empty (or newline-only) password and empty token are rejected
+        printf '\n' > /build/pw
+        ! ${script}
+        printf 'dummy-password\n' > /build/pw
+        : > /build/tk
+        ! ${script}
+        # hostile label is data, never executed
+        printf 'tk_abcdefghijklmnopqrstuvwxyz012\n' > /build/tk
+        cd /build
+        ${hostileScript}
+        test ! -e /build/x
+        grep -Fxq ${lib.escapeShellArg "NTFY_AUTH_TOKENS=can:tk_abcdefghijklmnopqrstuvwxyz012:${hostile}"} /build/env
         touch $out
       '';
 
