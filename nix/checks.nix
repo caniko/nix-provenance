@@ -907,9 +907,8 @@ in
     '';
 
     # Crossbow applies this overlay to a cross package set, where top-level
-    # clang/mold are target builds that cannot run on the build machine.
-    # nativeBuildInputs must resolve through buildPackages; native sets are
-    # unaffected because buildPackages is the same set there.
+    # clang/mold are target builds and buildPackages ones target the host, so
+    # nativeBuildInputs must come from pkgsBuildBuild (native, build-to-build).
     cross-provisioning-tools = let
       crossPkgs = nixpkgs.legacyPackages.${system}.pkgsCross.aarch64-multiplatform.extend self.overlays.default;
       provisioned = [
@@ -922,12 +921,13 @@ in
       missing =
         lib.filter
         (name:
-          !(hasInput crossPkgs.${name} crossPkgs.buildPackages.llvmPackages_latest.clang)
-          || !(hasInput crossPkgs.${name} crossPkgs.buildPackages.mold))
+          !(hasInput crossPkgs.${name} crossPkgs.pkgsBuildBuild.llvmPackages_latest.clang)
+          || !(hasInput crossPkgs.${name} crossPkgs.pkgsBuildBuild.mold))
         provisioned;
     in
       assert crossPkgs.stdenv.buildPlatform.system != crossPkgs.stdenv.hostPlatform.system;
-      assert lib.assertMsg (missing == []) "cross provisioning packages must take clang/mold from buildPackages: ${lib.concatStringsSep ", " missing}";
+      assert crossPkgs.pkgsBuildBuild.llvmPackages_latest.clang.targetPrefix == "";
+      assert lib.assertMsg (missing == []) "cross provisioning packages must take clang/mold from pkgsBuildBuild: ${lib.concatStringsSep ", " missing}";
         runCommand "cross-provisioning-tools" {} ''
           touch $out
         '';
