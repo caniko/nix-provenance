@@ -564,6 +564,12 @@ in
       ext = m: ntfyEval.extendModules {modules = [m];};
       pwPath = v: {services.ntfy-sh.provision.users.can.passwordFile = lib.mkForce v;};
       ntfyStoreEval = ext (pwPath "/nix/store/x-secret");
+      ntfyNameEval = ext {
+        services.ntfy-sh.provision.users."a,b" = {
+          role = "user";
+          passwordFile = "/run/x";
+        };
+      };
       ntfyOpenEval = ext {services.ntfy-sh.settings.auth-default-access = lib.mkForce "read-write";};
       ntfyNullEval = builtins.tryEval (builtins.deepSeq (ext (pwPath null)).config.services.ntfy-sh.provision.users.can.passwordFile null);
       ntfyPathEval = builtins.tryEval (builtins.deepSeq (ext (pwPath ./ntfy-eval-secret)).config.services.ntfy-sh.provision.users.can.passwordFile null);
@@ -578,6 +584,7 @@ in
         test ${lib.escapeShellArg (json (failed cfg))} = '[]'
         # store-backed or relative secret files and open anonymous access are rejected
         test ${lib.escapeShellArg (json (failed ntfyStoreEval.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ntfyNameEval.config))} != '[]'
         test ${lib.escapeShellArg (json (failed ntfyOpenEval.config))} != '[]'
         # null and Nix path values fail the option type
         test ${lib.escapeShellArg (json ntfyNullEval.success)} = false
@@ -636,6 +643,7 @@ in
         ${script}
         grep -Eq '^NTFY_AUTH_USERS=can:\$2[aby]\$[^:]+:admin$' /build/env
         grep -Fxq 'NTFY_AUTH_TOKENS=can:tk_abcdefghijklmnopqrstuvwxyz012:ci' /build/env
+        grep -Fxq 'NTFY_AUTH_DEFAULT_ACCESS=deny-all' /build/env
         ! grep -q dummy-password /build/env
         printf 'tk_short' > /build/tk
         ! ${script}

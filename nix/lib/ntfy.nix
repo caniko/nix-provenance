@@ -25,23 +25,25 @@ in {
     users="" tokens=""
     ${lib.concatMapStrings (u: ''
         pw="$(tr -d '\n' < ${q u.file})"
-        [ -n "$pw" ] || { echo "ntfy: empty password file for ${u.name}" >&2; exit 1; }
+        [ -n "$pw" ] || { echo ${q "ntfy: empty password file for ${u.name}"} >&2; exit 1; }
         h="$(hash "$pw")"
-        [ -n "$h" ] || { echo "ntfy: could not hash password for ${u.name}" >&2; exit 1; }
+        [ -n "$h" ] || { echo ${q "ntfy: could not hash password for ${u.name}"} >&2; exit 1; }
         users="$users''${users:+,}"${q "${u.name}:"}"$h"${q ":${u.role}"}
       '')
       users}
     ${lib.concatMapStrings (t: ''
         tk="$(tr -d '\n' < ${q t.file})"
-        [ -n "$tk" ] || { echo "ntfy: empty token file for ${t.user}" >&2; exit 1; }
+        [ -n "$tk" ] || { echo ${q "ntfy: empty token file for ${t.user}"} >&2; exit 1; }
         printf '%s' "$tk" | grep -Eq ${q tokenPattern} \
-          || { echo "ntfy: token for ${t.user} must match ${tokenPattern}" >&2; exit 1; }
+          || { echo ${q "ntfy: token for ${t.user} must match ${tokenPattern}"} >&2; exit 1; }
         tokens="$tokens''${tokens:+,}"${q "${t.user}:"}"$tk"${lib.optionalString (t.label != null) (q ":${t.label}")}
       '')
       tokens}
     {
       printf 'NTFY_AUTH_USERS=%s\n' "$users"
       printf 'NTFY_AUTH_TOKENS=%s\n' "$tokens"
+      # an operator environmentFile must not reopen anonymous access
+      printf 'NTFY_AUTH_DEFAULT_ACCESS=deny-all\n'
     } > ${q out}.tmp
     mv ${q out}.tmp ${q out}
   '';

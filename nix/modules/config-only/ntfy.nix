@@ -79,6 +79,10 @@ in {
         message = "services.ntfy-sh.provision.tokens users must be declared in provision.users.";
       }
       {
+        assertion = lib.all (n: builtins.match "[A-Za-z0-9._-]+" n != null) (lib.attrNames cfg.users);
+        message = "services.ntfy-sh.provision.users names must match [A-Za-z0-9._-]+ (no ':' or ',').";
+      }
+      {
         assertion = !(lib.any notRuntime secretFiles);
         message = "services.ntfy-sh.provision password/token files must be absolute runtime paths outside ${builtins.storeDir}.";
       }
