@@ -905,4 +905,30 @@ in
       test -x ${identityCrossPackageSet."identity-cli-aarch64-linux"}/bin/forgejo-oidc-secret
       touch $out
     '';
+
+    # Crossbow applies this overlay to a cross package set, where top-level
+    # clang/mold are target builds that cannot run on the build machine.
+    # nativeBuildInputs must resolve through buildPackages; native sets are
+    # unaffected because buildPackages is the same set there.
+    cross-provisioning-tools = let
+      crossPkgs = nixpkgs.legacyPackages.${system}.pkgsCross.aarch64-multiplatform.extend self.overlays.default;
+      provisioned = [
+        "vikunja-provision"
+        "rauthy-provision"
+        "stalwart016-provision"
+      ];
+      hasInput = package: input:
+        lib.any (candidate: candidate.drvPath == input.drvPath) package.nativeBuildInputs;
+      missing =
+        lib.filter
+        (name:
+          !(hasInput crossPkgs.${name} crossPkgs.buildPackages.llvmPackages_latest.clang)
+          || !(hasInput crossPkgs.${name} crossPkgs.buildPackages.mold))
+        provisioned;
+    in
+      assert crossPkgs.stdenv.buildPlatform.system != crossPkgs.stdenv.hostPlatform.system;
+      assert lib.assertMsg (missing == []) "cross provisioning packages must take clang/mold from buildPackages: ${lib.concatStringsSep ", " missing}";
+        runCommand "cross-provisioning-tools" {} ''
+          touch $out
+        '';
   }
