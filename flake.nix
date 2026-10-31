@@ -235,6 +235,7 @@
         rauthyServer = import ./nix/modules/idp/rauthy-server.nix;
         rauthy = import ./nix/modules/idp/rauthy.nix {inherit self;};
         vikunja = import ./nix/modules/config-only/vikunja.nix {inherit self;};
+        ntfy = import ./nix/modules/config-only/ntfy.nix {inherit self;};
         vikunjaProvision = import ./nix/modules/service-oidc/vikunja.nix {inherit self;};
         forgejo = import ./nix/modules/service-oidc/forgejo.nix {inherit self;};
         stalwart = import ./nix/modules/ldap/stalwart.nix {inherit self;};

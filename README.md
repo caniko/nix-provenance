@@ -23,7 +23,12 @@ are supported only as runtime password-file references, normally
 `config.age.secrets.<name>.path`; modules load those files through systemd
 credentials and reconcilers store only rotation-marker hashes. Plaintext
 passwords must never enter Nix-rendered JSON, the Nix store, argv, logs, or
-environment variables. PINs, app-local password-reset flows, and notification
+environment variables. The one exception is a service with no OIDC/SSO
+support (ntfy is the first): its module may provision app-local accounts and
+API tokens from runtime secret files loaded as systemd credentials, hashing at
+runtime, and write them only to the service's own `/run` `EnvironmentFile`
+(mode 0600, built at start) because that is ntfy's only declarative interface.
+PINs, app-local password-reset flows, and notification
 emails remain out of scope unless the identity model changes again. Public keys are a separate non-secret exception: Forgejo may reconcile declared
 SSH public keys, and GitHub accounts may reconcile declared SSH and OpenPGP
 public keys plus repository collaborator invitations and their acceptance.
