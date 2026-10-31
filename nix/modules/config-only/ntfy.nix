@@ -48,9 +48,9 @@ in {
             description = "Runtime file (not a store path) containing a token matching `lib.ntfy.tokenPattern`.";
           };
           label = mkOption {
-            type = types.nullOr (types.strMatching "[^:,]+");
+            type = types.nullOr (types.strMatching "[A-Za-z0-9._ -]+");
             default = null;
-            description = "Optional token label.";
+            description = "Optional token label (letters, digits, `.`, `_`, space, `-`).";
           };
         };
       }));

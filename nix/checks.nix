@@ -592,6 +592,25 @@ in
       '';
 
     ntfy-env-builder = let
+      hostile = "a$(touch /build/x)`touch /build/x`'\"";
+      hostileScript = pkgs.writeShellScript "ntfy-env-hostile" (self.lib.ntfy.mkEnvScript {
+        ntfy = pkgs.ntfy-sh;
+        out = "/build/env";
+        users = [
+          {
+            name = "can";
+            role = "admin";
+            file = "/build/pw";
+          }
+        ];
+        tokens = [
+          {
+            user = "can";
+            file = "/build/tk";
+            label = hostile;
+          }
+        ];
+      });
       script = pkgs.writeShellScript "ntfy-env" (self.lib.ntfy.mkEnvScript {
         ntfy = pkgs.ntfy-sh;
         out = "/build/env";
@@ -620,6 +639,19 @@ in
         ! grep -q dummy-password /build/env
         printf 'tk_short' > /build/tk
         ! ${script}
+        printf 'tk_abcdefghijklmnopqrstuvwxyz012\n' > /build/tk
+        # empty (or newline-only) password and empty token are rejected
+        printf '\n' > /build/pw
+        ! ${script}
+        printf 'dummy-password\n' > /build/pw
+        : > /build/tk
+        ! ${script}
+        # hostile label is data, never executed
+        printf 'tk_abcdefghijklmnopqrstuvwxyz012\n' > /build/tk
+        cd /build
+        ${hostileScript}
+        test ! -e /build/x
+        grep -Fxq ${lib.escapeShellArg "NTFY_AUTH_TOKENS=can:tk_abcdefghijklmnopqrstuvwxyz012:${hostile}"} /build/env
         touch $out
       '';
 
