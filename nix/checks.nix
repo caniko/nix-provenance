@@ -570,6 +570,7 @@ in
           passwordFile = "/run/x";
         };
       };
+      ntfyEmptyAuthEval = ext {services.ntfy-sh.settings.auth-file = lib.mkForce "";};
       ntfyOpenEval = ext {services.ntfy-sh.settings.auth-default-access = lib.mkForce "read-write";};
       ntfyNullEval = builtins.tryEval (builtins.deepSeq (ext (pwPath null)).config.services.ntfy-sh.provision.users.can.passwordFile null);
       ntfyPathEval = builtins.tryEval (builtins.deepSeq (ext (pwPath ./ntfy-eval-secret)).config.services.ntfy-sh.provision.users.can.passwordFile null);
@@ -585,6 +586,7 @@ in
         # store-backed or relative secret files and open anonymous access are rejected
         test ${lib.escapeShellArg (json (failed ntfyStoreEval.config))} != '[]'
         test ${lib.escapeShellArg (json (failed ntfyNameEval.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ntfyEmptyAuthEval.config))} != '[]'
         test ${lib.escapeShellArg (json (failed ntfyOpenEval.config))} != '[]'
         # null and Nix path values fail the option type
         test ${lib.escapeShellArg (json ntfyNullEval.success)} = false

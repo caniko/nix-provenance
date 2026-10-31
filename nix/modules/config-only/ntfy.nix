@@ -71,8 +71,8 @@ in {
         message = "services.ntfy-sh.provision requires services.ntfy-sh.enable = true.";
       }
       {
-        assertion = ntfySh.settings ? auth-file;
-        message = "services.ntfy-sh.provision requires services.ntfy-sh.settings.auth-file.";
+        assertion = lib.hasPrefix "/" (ntfySh.settings.auth-file or "");
+        message = "services.ntfy-sh.provision requires services.ntfy-sh.settings.auth-file as a non-empty absolute path (ntfy creates no auth manager otherwise).";
       }
       {
         assertion = lib.all (u: cfg.users ? ${u}) (lib.attrNames cfg.tokens);
