@@ -42,6 +42,7 @@
   rauthyGeneratedEval = evalSystem ./modules/test/rauthy-generated-api-key-eval.nix;
   vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
   vikunjaProvisionEval = evalSystem ./modules/test/vikunja-provision-eval.nix;
+  ntfyEval = evalSystem ./modules/test/ntfy-eval.nix;
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
   forgejoGeneratedEval = evalSystem ./modules/test/forgejo-generated-eval.nix;
   stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
@@ -554,6 +555,55 @@ in
     in
       runCommand "vikunja-module-eval" {} ''
         test -n ${lib.escapeShellArg serviceConfig}
+        touch $out
+      '';
+
+    ntfy-module-eval = let
+      cfg = ntfyEval.config;
+      svc = cfg.systemd.services.ntfy-sh-credentials;
+      json = builtins.toJSON;
+      script = svc.script;
+    in
+      runCommand "ntfy-module-eval" {} ''
+        printf '%s\n' ${lib.escapeShellArg (json cfg.systemd.services.ntfy-sh.serviceConfig.EnvironmentFile)} | grep -q '/run/ntfy-sh-provision/env'
+        printf '%s\n' ${lib.escapeShellArg (json cfg.services.ntfy-sh.settings.auth-access)} | grep -q 'syndb-publisher:syndb-alerts:wo'
+        printf '%s\n' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q '/run/agenix/ntfy-can'
+        printf '%s\n' ${lib.escapeShellArg (json svc.before)} | grep -q 'ntfy-sh.service'
+        # plaintext never in the store: the script only references runtime credential paths
+        grep -q '/run/credentials/ntfy-sh-credentials.service/' ${pkgs.writeText "ntfy-script" script}
+        ! grep -q '/run/agenix' ${pkgs.writeText "ntfy-script" script}
+        touch $out
+      '';
+
+    ntfy-env-builder = let
+      script = pkgs.writeShellScript "ntfy-env" (self.lib.ntfy.mkEnvScript {
+        ntfy = pkgs.ntfy-sh;
+        out = "/build/env";
+        users = [
+          {
+            name = "can";
+            role = "admin";
+            file = "/build/pw";
+          }
+        ];
+        tokens = [
+          {
+            user = "can";
+            file = "/build/tk";
+            label = "ci";
+          }
+        ];
+      });
+    in
+      runCommand "ntfy-env-builder" {nativeBuildInputs = [pkgs.coreutils pkgs.gnugrep];} ''
+        printf 'dummy-password\n' > /build/pw
+        printf 'tk_abcdefghijklmnopqrstuvwxyz012\n' > /build/tk
+        ${script}
+        grep -Eq '^NTFY_AUTH_USERS=can:\$2[aby]\$[^:]+:admin$' /build/env
+        grep -Fxq 'NTFY_AUTH_TOKENS=can:tk_abcdefghijklmnopqrstuvwxyz012:ci' /build/env
+        ! grep -q dummy-password /build/env
+        printf 'tk_short' > /build/tk
+        ! ${script}
         touch $out
       '';
 
