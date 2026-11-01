@@ -1,4 +1,7 @@
-{lib, adapter}: let
+{
+  lib,
+  adapter,
+}: let
   personsFor = manageProfile: credential:
     adapter.kanidmPersons {
       group = "internal-tool-users";
@@ -14,5 +17,4 @@
 in
   assert personsFor false adapter.kanidmLogin == {};
   assert (personsFor true adapter.kanidmLogin).host.groups == ["internal-tool-users"];
-  assert lib.all (manageProfile: lib.all (rejects manageProfile) invalidCredentials) [false true];
-    true
+  assert lib.all (manageProfile: lib.all (rejects manageProfile) invalidCredentials) [false true]; true
