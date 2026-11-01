@@ -910,6 +910,10 @@ in
       assert adapterEval.config.systemd.timers.rauthy-provision-onboarding.timerConfig.OnUnitActiveSec == "15min";
       assert lib.hasSuffix "systemctl try-reload-or-restart rauthy-provision.service"
       adapterEval.config.systemd.services.rauthy-provision-onboarding.serviceConfig.ExecStart;
+      assert import ./modules/test/adapter-credentials.nix {
+        inherit lib;
+        adapter = self.lib.adapter;
+      };
       assert adapterEval.config.services.kanidm.provision.groups.internal-tool-users.members == ["dejana"];
         runCommand "adapter-module-eval" {} ''
           users=${lib.escapeShellArg rauthyUsers}
