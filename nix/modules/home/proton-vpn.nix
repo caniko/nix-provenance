@@ -124,14 +124,6 @@ in {
         };
         Install.WantedBy = ["graphical-session.target"];
       };
-      systemd.user.paths.${unitName} = {
-        Unit = {
-          Description = "Watch the Proton VPN account credential document";
-          PartOf = ["graphical-session.target"];
-        };
-        Path.PathChanged = credentialPath;
-        Install.WantedBy = ["graphical-session.target"];
-      };
     })
   ];
 }

@@ -61,7 +61,7 @@ in
   assert lib.hasInfix " login --encrypted-file %d/account.age" service.Service.ExecStart;
   assert lib.hasInfix "--identity '/home/fixture user/.ssh/id_ed25519'" service.Service.ExecStart;
   assert service.Service.MemorySwapMax == 0 && service.Service.LimitMEMLOCK == "8M";
-  assert enabled.systemd.user.paths.nix-provenance-proton-vpn-login.Path.PathChanged == "/nix/store/fixture/proton_vpn.age";
+  assert !(enabled.systemd.user ? paths) || !(enabled.systemd.user.paths ? nix-provenance-proton-vpn-login);
   assert builtins.elem "agenix.service" service.Unit.After;
   assert builtins.elem "oo7-daemon.service" service.Unit.After;
   assert service.Service.RestartPreventExitStatus == 2;
