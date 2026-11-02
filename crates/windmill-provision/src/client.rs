@@ -68,7 +68,14 @@ impl Windmill {
 
     /// Add an existing instance user to a workspace. "Already a member" is
     /// success so reruns are no-ops.
-    pub fn add_user(&self, bearer: &str, ws: &str, email: &str, admin: bool) -> Result<bool> {
+    pub fn add_user(
+        &self,
+        bearer: &str,
+        ws: &str,
+        username: &str,
+        email: &str,
+        admin: bool,
+    ) -> Result<bool> {
         let resp = self
             .http
             .post(format!("{}/api/w/{ws}/workspaces/add_user", self.base))
@@ -83,6 +90,15 @@ impl Windmill {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
         if status == StatusCode::BAD_REQUEST && body.contains("already exists") {
+            // Converge the workspace role of an existing member.
+            let resp = self
+                .http
+                .post(format!("{}/api/w/{ws}/users/update/{username}", self.base))
+                .bearer_auth(bearer)
+                .json(&json!({ "is_admin": admin }))
+                .send()?;
+            provenance_core::http::ensure_success(resp)
+                .with_context(|| format!("updating {email} role in {ws}"))?;
             return Ok(false);
         }
         // Body is an error message from Windmill, never a credential.

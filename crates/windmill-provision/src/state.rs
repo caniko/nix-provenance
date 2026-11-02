@@ -81,6 +81,22 @@ pub fn is_username(value: &str) -> bool {
 
 impl State {
     pub fn validate(&self) -> Result<()> {
+        let mut emails = std::collections::BTreeSet::new();
+        let mut paths = std::collections::BTreeSet::new();
+        for user in self.users.values() {
+            ensure!(
+                emails.insert(user.email.to_lowercase()),
+                "duplicate user email {}",
+                user.email
+            );
+        }
+        for (label, token) in &self.tokens {
+            ensure!(
+                paths.insert(&token.path),
+                "token {label}: path {} used twice",
+                token.path.display()
+            );
+        }
         for (name, user) in &self.users {
             ensure!(is_safe_ident(&user.email), "user {name}: unsafe email");
             ensure!(
@@ -144,6 +160,35 @@ mod tests {
         let s = state(BASE);
         s.validate().unwrap();
         assert_eq!(s.tokens["t"].mode_bits().unwrap(), 0o640);
+    }
+
+    #[test]
+    fn rejects_duplicate_emails_and_token_paths() {
+        let mut s = state(BASE);
+        s.users.insert(
+            "other".into(),
+            User {
+                email: "CAN@example.com".into(),
+                credential_name: "q".into(),
+                workspaces: vec![],
+                admin: false,
+            },
+        );
+        assert!(s.validate().is_err());
+        let mut s = state(BASE);
+        s.tokens.insert(
+            "u".into(),
+            Token {
+                user: "can".into(),
+                workspace: None,
+                scopes: vec![],
+                path: "/x/t".into(),
+                owner: "root".into(),
+                group: "root".into(),
+                mode: "0600".into(),
+            },
+        );
+        assert!(s.validate().is_err());
     }
 
     #[test]

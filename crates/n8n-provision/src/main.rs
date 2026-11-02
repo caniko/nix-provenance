@@ -89,6 +89,12 @@ fn quote(value: &str) -> String {
 /// Reuse the stored hash while it still verifies the current password;
 /// otherwise hash anew and persist.
 fn owner_hash(password: &str, hash_file: &Path) -> Result<String> {
+    // bcrypt silently truncates beyond 72 bytes, which would accept any
+    // password sharing that prefix.
+    anyhow::ensure!(
+        password.len() <= 72,
+        "owner password exceeds bcrypt's 72-byte limit"
+    );
     if let Ok(existing) = fs::read_to_string(hash_file) {
         let existing = existing.trim();
         if bcrypt::verify(password, existing).unwrap_or(false) {
@@ -178,6 +184,12 @@ fn reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlong_password_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(owner_hash(&"a".repeat(73), &dir.path().join("h")).is_err());
+    }
 
     #[test]
     fn hash_is_reused_until_password_changes() {

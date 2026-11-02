@@ -135,7 +135,7 @@ in {
       RuntimeDirectory = "n8n-provision";
       RuntimeDirectoryMode = "0700";
       ExecStartPre = ["+${exe} owner-env --state ${stateFile} --credential-dir %d --hash-dir ${n8n.environment.N8N_USER_FOLDER} --out ${envFile}"];
-      EnvironmentFile = ["-${envFile}"];
+      EnvironmentFile = lib.mkAfter ["-${envFile}"];
     };
 
     systemd.services.n8n-provision = {

@@ -115,9 +115,12 @@ fn resolve_id(file: &str, name: &str) -> Result<u32> {
     lookup_id(&fs::read_to_string(file)?, name).with_context(|| format!("{name} not in {file}"))
 }
 
+/// Create the token directory if missing; an existing directory keeps its mode.
 fn ensure_dir(dir: &Path) -> Result<()> {
-    fs::create_dir_all(dir)?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o755))?;
+    if !dir.exists() {
+        fs::create_dir_all(dir)?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755))?;
+    }
     Ok(())
 }
 
@@ -152,10 +155,13 @@ fn reconcile(
     for (name, user) in &state.users {
         let password = read_password_file(credential_dir.join(&user.credential_name))?;
         let id = format!("windmill:{}", user.email);
-        if markers.needs_update(&id, &password)? || !db.user_has_argon2_hash(&user.email)? {
+        // The marker covers the instance-admin flag too, so flipping `admin`
+        // re-applies the row even when the password file is unchanged.
+        let fingerprint = format!("admin={}\n{password}", user.admin);
+        if markers.needs_update(&id, &fingerprint)? || !db.user_has_argon2_hash(&user.email)? {
             let hash = db::hash_password(&password)?;
             db.run(&db::upsert_user_sql(&user.email, name, &hash, user.admin))?;
-            markers.commit(&id, &password)?;
+            markers.commit(&id, &fingerprint)?;
             eprintln!("user {name}: password applied");
         }
     }
@@ -171,19 +177,23 @@ fn reconcile(
     }
     for (name, user) in &state.users {
         for ws in &user.workspaces {
-            if wm.add_user(&superadmin, ws, &user.email, user.admin)? {
+            if wm.add_user(&superadmin, ws, name, &user.email, user.admin)? {
                 eprintln!("user {name}: added to {ws}");
             }
         }
     }
 
     for (label, token) in &state.tokens {
-        let valid = match fs::read_to_string(&token.path) {
-            Ok(existing) if !existing.trim().is_empty() => {
-                wm.token_is_valid(existing.trim(), token.workspace.as_deref())?
-            }
-            _ => false,
-        };
+        // A kept token must still match the declared user/workspace/scopes.
+        let spec_id = format!("windmill-token:{label}");
+        let spec = format!("{}\n{:?}\n{:?}", token.user, token.workspace, token.scopes);
+        let valid = !markers.needs_update(&spec_id, &spec)?
+            && match fs::read_to_string(&token.path) {
+                Ok(existing) if !existing.trim().is_empty() => {
+                    wm.token_is_valid(existing.trim(), token.workspace.as_deref())?
+                }
+                _ => false,
+            };
         if valid {
             // Re-assert ownership/mode so declared drift heals without a re-mint.
             let existing = fs::read_to_string(&token.path)?;
@@ -195,6 +205,7 @@ fn reconcile(
         let session = wm.login(&user.email, &password)?;
         let value = wm.create_token(&session, label, token.workspace.as_deref(), &token.scopes)?;
         install_token(token, &value)?;
+        markers.commit(&spec_id, &spec)?;
         eprintln!("token {label}: minted");
     }
     Ok(())

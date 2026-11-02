@@ -204,7 +204,7 @@ in {
       RuntimeDirectory = "windmill-provision";
       RuntimeDirectoryMode = "0700";
       ExecStartPre = ["+${exe} env --secret-file %d/${superadminCredential} --out ${envFile}"];
-      EnvironmentFile = ["-${envFile}"];
+      EnvironmentFile = lib.mkAfter ["-${envFile}"];
     };
 
     systemd.services.windmill-provision = {
