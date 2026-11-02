@@ -74,9 +74,11 @@ service's own consumption:
   recreated at each start). It never appears in `Environment=`, argv, logs or
   the store. The server and the reconciler are the only readers.
 - **n8n owner hash.** n8n's env-managed owner takes a bcrypt *hash*
-  (`N8N_INSTANCE_OWNER_PASSWORD_HASH`), not a password. An `ExecStartPre=+`
-  step hashes the password file into a 0600 `EnvironmentFile` under `/run`,
-  reusing the stored hash while the password is unchanged.
+  (`N8N_INSTANCE_OWNER_PASSWORD_HASH`), not a password. A root
+  `n8n-owner-env` oneshot (which n8n requires, and which holds the password as a
+  systemd credential) hashes the password file into a 0600 `EnvironmentFile`
+  under `/run` when it starts or restarts, reusing the stored hash while the
+  password is unchanged.
 - **Windmill users.** The open-source Windmill server cannot create users or
   set passwords over HTTP, so the reconciler writes an argon2id hash into the
   local `password` table through `psql` (hash on stdin only) and uses the API

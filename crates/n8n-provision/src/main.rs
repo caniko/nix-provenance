@@ -28,7 +28,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Render N8N_INSTANCE_OWNER_* (bcrypt hash) into an EnvironmentFile (ExecStartPre=+).
+    /// Render N8N_INSTANCE_OWNER_* (bcrypt hash) into an EnvironmentFile (run by the n8n-owner-env oneshot).
     OwnerEnv {
         #[arg(long)]
         state: PathBuf,
@@ -174,23 +174,17 @@ fn reconcile(
     let registry = marker_dir.join(CREDENTIAL_REGISTRY);
     let previous: BTreeMap<String, String> = read_registry(&registry)?;
     // name -> id of credentials this tool created (never adopted ones).
-    let mut owned: BTreeMap<String, String> = BTreeMap::new();
+    let mut owned = previous.clone();
 
     for (name, cred) in &state.credentials {
         let data = resolve_data(cred, credential_dir)?;
         // Digest over type + resolved data: the marker says "n8n holds exactly this".
         let fingerprint = secret_digest(&format!("{}\n{data}", cred.kind));
         let id = format!("n8n-credential:{name}");
-        let found = existing
-            .iter()
-            .find(|(_, n)| n == name)
-            .map(|(i, _)| i.as_str());
+        let found = pick_target(&existing, &previous, name)?;
         match found {
-            Some(cred_id) if !markers.needs_update(&id, &fingerprint)? => {
-                keep_owned(&mut owned, &previous, name, cred_id);
-            }
+            Some(_) if !markers.needs_update(&id, &fingerprint)? => {}
             Some(cred_id) => {
-                keep_owned(&mut owned, &previous, name, cred_id);
                 n8n.update_credential(cred_id, name, &cred.kind, &data)?;
                 markers.commit(&id, &fingerprint)?;
                 eprintln!("credential {name}: updated");
@@ -198,6 +192,8 @@ fn reconcile(
             None => {
                 let new_id = n8n.create_credential(name, &cred.kind, &data)?;
                 owned.insert(name.clone(), new_id);
+                // Persist at once: a later failure must not forget this ownership.
+                save_registry(&registry, &owned, marker_dir)?;
                 markers.commit(&id, &fingerprint)?;
                 eprintln!("credential {name}: created");
             }
@@ -210,24 +206,44 @@ fn reconcile(
         // Already gone (deleted by hand): the desired state holds, nothing to do.
         if existing.iter().any(|(i, _)| *i == id) {
             n8n.delete_credential(&id)?;
+            owned.remove(&name);
             eprintln!("credential {name}: deleted (no longer declared)");
         }
     }
     fs::create_dir_all(marker_dir)?;
-    atomic_write_secret(&registry, &serde_json::to_string(&owned)?)?;
+    save_registry(&registry, &owned, marker_dir)?;
     Ok(())
 }
 
-/// Carry an id forward only if an earlier run recorded it as ours.
-fn keep_owned(
-    owned: &mut BTreeMap<String, String>,
+fn save_registry(
+    registry: &Path,
+    owned: &BTreeMap<String, String>,
+    marker_dir: &Path,
+) -> Result<()> {
+    fs::create_dir_all(marker_dir)?;
+    atomic_write_secret(registry, &serde_json::to_string(owned)?)?;
+    Ok(())
+}
+
+/// The n8n credential to update: the recorded one when it still exists, else a
+/// single same-named one (adopted); several candidates are ambiguous, so refuse.
+fn pick_target<'a>(
+    existing: &'a [(String, String)],
     previous: &BTreeMap<String, String>,
     name: &str,
-    id: &str,
-) {
-    if previous.get(name).is_some_and(|p| p == id) {
-        owned.insert(name.to_owned(), id.to_owned());
+) -> Result<Option<&'a str>> {
+    if let Some(id) = previous.get(name)
+        && let Some((i, _)) = existing.iter().find(|(i, _)| i == id)
+    {
+        return Ok(Some(i));
     }
+    let mut named = existing.iter().filter(|(_, n)| n == name);
+    let first = named.next().map(|(i, _)| i.as_str());
+    anyhow::ensure!(
+        named.next().is_none(),
+        "credential {name}: several n8n credentials share this name and none is recorded as ours"
+    );
+    Ok(first)
 }
 
 const CREDENTIAL_REGISTRY: &str = "credentials.json";
@@ -259,6 +275,19 @@ fn removed_credentials(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_prefers_recorded_id_and_refuses_ambiguity() {
+        let existing = vec![
+            ("a".to_owned(), "c".to_owned()),
+            ("b".to_owned(), "c".to_owned()),
+        ];
+        let mut previous = BTreeMap::new();
+        assert!(pick_target(&existing, &previous, "c").is_err());
+        previous.insert("c".to_owned(), "b".to_owned());
+        assert_eq!(pick_target(&existing, &previous, "c").unwrap(), Some("b"));
+        assert_eq!(pick_target(&existing, &previous, "zz").unwrap(), None);
+    }
 
     #[test]
     fn corrupt_registry_aborts_and_missing_is_empty() {

@@ -97,7 +97,8 @@ services.n8n = {
 };
 ```
 
-- The owner is env-managed: an `ExecStartPre=+` step writes the bcrypt hash of
+- The owner is env-managed: the root `n8n-owner-env` oneshot (required by n8n; it runs
+  at its own start or restart, not on every n8n start) writes the bcrypt hash of
   the password file to `/run/n8n-provision/owner.env` (0600). The hash is kept
   in `N8N_USER_FOLDER/owner.bcrypt` and reused while the password is
   unchanged.

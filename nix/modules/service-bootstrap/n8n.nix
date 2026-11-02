@@ -39,7 +39,7 @@
       credential_name = ownerCredential;
     };
   };
-  # n8n's ExecStartPre sees only the owner, so credential edits neither
+  # the n8n-owner-env oneshot sees only the owner, so credential edits neither
   # restart n8n nor can a credential mistake stop it from starting.
   ownerStateFile = pkgs.writeText "n8n-provision-owner.json" (builtins.toJSON ownerState);
   stateFile = pkgs.writeText "n8n-provision-state.json" (builtins.toJSON (ownerState
@@ -87,9 +87,9 @@ in {
       passwordFile = mkOption {
         type = types.str;
         description = ''
-          Runtime file (not a store path) holding the owner password. At each
-          n8n start an `ExecStartPre=+` step bcrypt-hashes it into a root-owned
-          0600 EnvironmentFile under /run (n8n's env-managed owner takes only a
+          Runtime file (not a store path) holding the owner password. When the
+          root `n8n-owner-env` oneshot (required by n8n) starts or restarts it
+          bcrypt-hashes it into a root-owned 0600 EnvironmentFile under /run (n8n's env-managed owner takes only a
           hash); the hash is reused while the password is unchanged.
         '';
       };
