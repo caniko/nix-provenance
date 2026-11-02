@@ -87,6 +87,41 @@ pub fn lock_default_admin_sql() -> String {
     )
 }
 
+/// Reduce psql stderr to SQLSTATE codes only; anything else (statement text,
+/// row detail) is dropped so a hash can never reach the journal.
+pub fn sqlstate_summary(stderr: &str) -> String {
+    let codes: Vec<&str> = stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("ERROR:").map(str::trim))
+        .filter(|c| c.len() == 5 && c.chars().all(|ch| ch.is_ascii_alphanumeric()))
+        .collect();
+    if codes.is_empty() {
+        "no SQLSTATE".to_owned()
+    } else {
+        format!("SQLSTATE {}", codes.join(","))
+    }
+}
+
+/// Lock a provisioned user that is no longer declared: no password verifies,
+/// no admin, no tokens. Only rows this tenant created (`company =
+/// 'provisioned'`) are touched. `email` must satisfy `state::is_safe_ident`.
+pub fn lock_user_sql(email: &str) -> String {
+    format!(
+        "UPDATE password SET password_hash = '{LOCKED_HASH}', super_admin = false \
+         WHERE email = '{email}' AND company = 'provisioned';\n\
+         DELETE FROM token WHERE email = '{email}' \
+         AND EXISTS (SELECT 1 FROM password WHERE email = '{email}' AND company = 'provisioned');\n"
+    )
+}
+
+/// Revoke every token carrying `label` that belongs to a provisioned user.
+pub fn revoke_label_sql(label: &str) -> String {
+    format!(
+        "DELETE FROM token WHERE label = '{label}' \
+         AND email IN (SELECT email FROM password WHERE company = 'provisioned');\n"
+    )
+}
+
 pub struct Psql {
     pub runuser: PathBuf,
     pub psql: PathBuf,
@@ -99,11 +134,14 @@ impl Psql {
         let mut child = Command::new(&self.runuser)
             .args(["-u", "postgres", "--"])
             .arg(&self.psql)
-            .args(["-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-d"])
+            // VERBOSITY=sqlstate: errors carry only the SQLSTATE, never the
+            // statement text or row values (which would echo the hash).
+            .args(["-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"])
+            .args(["-v", "VERBOSITY=sqlstate", "-v", "SHOW_CONTEXT=never", "-d"])
             .arg(&self.database)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .context("spawning psql")?;
         child
@@ -113,7 +151,11 @@ impl Psql {
             .write_all(sql.as_bytes())?;
         let out = child.wait_with_output()?;
         if !out.status.success() {
-            bail!("psql failed with {}", out.status);
+            bail!(
+                "psql failed with {}: {}",
+                out.status,
+                sqlstate_summary(&String::from_utf8_lossy(&out.stderr))
+            );
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -128,6 +170,28 @@ impl Psql {
         } else {
             "left(token, 10)"
         })
+    }
+
+    /// Emails of every login this tenant ever created.
+    pub fn provisioned_emails(&self) -> Result<Vec<String>> {
+        let out = self.run("SELECT email FROM password WHERE company = 'provisioned';\n")?;
+        Ok(out
+            .lines()
+            .map(|l| l.trim().to_owned())
+            .filter(|l| !l.is_empty())
+            .collect())
+    }
+
+    /// The workspace username of `email` (it need not equal the declared key).
+    pub fn workspace_username(&self, ws: &str, email: &str) -> Result<Option<String>> {
+        let out = self.run(&format!(
+            "SELECT username FROM usr WHERE workspace_id = '{ws}' AND email = '{email}';\n"
+        ))?;
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(str::to_owned))
     }
 
     pub fn user_has_argon2_hash(&self, email: &str) -> Result<bool> {
@@ -181,6 +245,25 @@ mod tests {
         assert_eq!(token_prefix("abcdefghijKLM"), Some("abcdefghij"));
         assert_eq!(token_prefix("short"), None);
         assert_eq!(token_prefix("abc'defghijk"), None);
+    }
+
+    #[test]
+    fn stderr_is_reduced_to_sqlstate() {
+        let leaked =
+            "ERROR:  23502\nERROR:  null value\nDETAIL:  Failing row contains ($argon2id$secret)\n";
+        let summary = sqlstate_summary(leaked);
+        assert_eq!(summary, "SQLSTATE 23502");
+        assert!(!summary.contains("argon2"));
+        assert_eq!(sqlstate_summary("garbage"), "no SQLSTATE");
+    }
+
+    #[test]
+    fn pruning_sql_only_touches_provisioned_rows() {
+        let lock = lock_user_sql("gone@example.com");
+        assert!(lock.contains("company = 'provisioned'"));
+        assert!(lock.contains("super_admin = false"));
+        assert!(lock.contains("DELETE FROM token WHERE email = 'gone@example.com'"));
+        assert!(revoke_label_sql("lbl").contains("company = 'provisioned'"));
     }
 
     #[test]

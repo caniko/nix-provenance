@@ -897,6 +897,7 @@ in
       lockout = ext {services.windmill.provision.users.can.admin = lib.mkForce false;};
       ghostToken = ext {services.windmill.provision.tokens.t.user = "ghost";};
       stockAdmin = ext {services.windmill.provision.users.can.email = lib.mkForce "Admin@Windmill.dev";};
+      upperEmail = ext {services.windmill.provision.users.can.email = lib.mkForce "Can@example.test";};
       plainHttpUrl = ext {services.windmill.provision.url = "http://windmill.example.test";};
       threeWorkspaces = ext {
         services.windmill.provision.workspaces = {
@@ -914,6 +915,7 @@ in
         test ${lib.escapeShellArg (json (failed stockAdmin.config))} != '[]'
         test ${lib.escapeShellArg (json (failed threeWorkspaces.config))} != '[]'
         test ${lib.escapeShellArg (json (failed plainHttpUrl.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed upperEmail.config))} != '[]'
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-server.service
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'

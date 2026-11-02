@@ -179,6 +179,10 @@ in {
         message = "services.windmill.provision secret files must be absolute runtime paths outside ${builtins.storeDir}.";
       }
       {
+        assertion = lib.all (u: u.email == lib.toLower u.email) (lib.attrValues cfg.users);
+        message = "services.windmill.provision.users emails must be lowercase: Windmill lowercases the email at login.";
+      }
+      {
         assertion = !(lib.any (u: lib.toLower u.email == "admin@windmill.dev") (lib.attrValues cfg.users));
         message = "services.windmill.provision.users must not declare admin@windmill.dev: disableDefaultAdmin locks that account.";
       }

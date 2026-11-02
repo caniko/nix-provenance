@@ -2,6 +2,7 @@ mod client;
 mod db;
 mod state;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, chown};
 use std::path::{Path, PathBuf};
@@ -115,11 +116,15 @@ fn resolve_id(file: &str, name: &str) -> Result<u32> {
     lookup_id(&fs::read_to_string(file)?, name).with_context(|| format!("{name} not in {file}"))
 }
 
-/// Create the token directory if missing; an existing directory keeps its mode.
+/// Create the token directory and any missing ancestors at an explicit 0755
+/// (the unit's UMask would otherwise leave new ancestors at 0700 and lock the
+/// declared group out). Existing directories keep their mode.
 fn ensure_dir(dir: &Path) -> Result<()> {
-    if !dir.exists() {
-        fs::create_dir_all(dir)?;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o755))?;
+    let mut missing: Vec<&Path> = dir.ancestors().take_while(|p| !p.exists()).collect();
+    missing.reverse();
+    for path in missing {
+        fs::create_dir(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
     }
     Ok(())
 }
@@ -181,8 +186,15 @@ fn reconcile(
     }
     for (name, user) in &state.users {
         for ws in &user.workspaces {
-            if wm.add_user(&superadmin, ws, name, &user.email, user.admin)? {
+            if wm.add_user(&superadmin, ws, &user.email, user.admin)? {
                 eprintln!("user {name}: added to {ws}");
+            } else {
+                // Already a member: converge the role on the member's actual
+                // username, which need not equal the declared key.
+                let username = db.workspace_username(ws, &user.email)?.with_context(|| {
+                    format!("{} is a member of {ws} but has no usr row", user.email)
+                })?;
+                wm.set_workspace_admin(&superadmin, ws, &username, user.admin)?;
             }
         }
     }
@@ -190,7 +202,13 @@ fn reconcile(
     for (label, token) in &state.tokens {
         // A kept token must still match the declared user/workspace/scopes.
         let spec_id = format!("windmill-token:{label}");
-        let spec = format!("{}\n{:?}\n{:?}", token.user, token.workspace, token.scopes);
+        // Windmill copies the owner's super_admin into the token at mint time,
+        // so the spec covers the owner's email and admin flag too.
+        let owner = &state.users[&token.user];
+        let spec = format!(
+            "{}\n{}\n{}\n{:?}\n{:?}",
+            token.user, owner.email, owner.admin, token.workspace, token.scopes
+        );
         let valid = !markers.needs_update(&spec_id, &spec)?
             && match fs::read_to_string(&token.path) {
                 Ok(existing) if !existing.trim().is_empty() => {
@@ -228,6 +246,61 @@ fn reconcile(
         markers.commit(&spec_id, &spec)?;
         eprintln!("token {label}: minted");
     }
+    prune(state, marker_dir, db)
+}
+
+const TOKEN_REGISTRY: &str = "tokens.json";
+
+/// Labels recorded by earlier runs that are no longer declared.
+fn removed_tokens(
+    previous: &BTreeMap<String, PathBuf>,
+    declared: &BTreeMap<String, state::Token>,
+) -> Vec<(String, PathBuf)> {
+    previous
+        .iter()
+        .filter(|(label, _)| !declared.contains_key(*label))
+        .map(|(label, path)| (label.clone(), path.clone()))
+        .collect()
+}
+
+/// Provisioned logins (from the DB marker `company = 'provisioned'`) whose
+/// email is no longer declared.
+fn undeclared_emails(provisioned: Vec<String>, state: &State) -> Vec<String> {
+    let declared: BTreeSet<&str> = state.users.values().map(|u| u.email.as_str()).collect();
+    provisioned
+        .into_iter()
+        .filter(|email| !declared.contains(email.as_str()))
+        .collect()
+}
+
+/// Revoke what the declaration no longer names: tokens first, then logins.
+/// ponytail: the token registry is written once per successful run, so a label
+/// removed again before any run completes is not remembered; keep a journal
+/// if that window matters.
+fn prune(state: &State, marker_dir: &Path, db: &db::Psql) -> Result<()> {
+    let registry = marker_dir.join(TOKEN_REGISTRY);
+    let previous: BTreeMap<String, PathBuf> = fs::read_to_string(&registry)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    for (label, path) in removed_tokens(&previous, &state.tokens) {
+        anyhow::ensure!(state::is_safe_ident(&label), "unsafe recorded token label");
+        db.run(&db::revoke_label_sql(&label))?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
+        }
+        eprintln!("token {label}: revoked (no longer declared)");
+    }
+    for email in undeclared_emails(db.provisioned_emails()?, state) {
+        anyhow::ensure!(state::is_safe_ident(&email), "unsafe provisioned email");
+        db.run(&db::lock_user_sql(&email))?;
+    }
+    let current: BTreeMap<&String, &PathBuf> =
+        state.tokens.iter().map(|(l, t)| (l, &t.path)).collect();
+    fs::create_dir_all(marker_dir)?;
+    fs::write(&registry, serde_json::to_vec(&current)?)?;
     Ok(())
 }
 
@@ -242,6 +315,58 @@ mod tests {
             "SUPERADMIN_SECRET=\"a b\\\"c\\\\d\"\n"
         );
         assert!(env_line("a\nb").is_err());
+    }
+
+    fn sample_state() -> State {
+        serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:1","database":"d","superadmin_credential":"s",
+            "disable_default_admin":true,
+            "users":{"can":{"email":"can@example.com","credential_name":"p","workspaces":[],"admin":true}},
+            "tokens":{"keep":{"user":"can","path":"/x/keep","owner":"root","group":"root","mode":"0600"}}}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn removed_tokens_are_the_recorded_but_undeclared_ones() {
+        let state = sample_state();
+        let previous = BTreeMap::from([
+            ("keep".to_owned(), PathBuf::from("/x/keep")),
+            ("gone".to_owned(), PathBuf::from("/x/gone")),
+        ]);
+        assert_eq!(
+            removed_tokens(&previous, &state.tokens),
+            vec![("gone".to_owned(), PathBuf::from("/x/gone"))]
+        );
+    }
+
+    #[test]
+    fn undeclared_emails_are_provisioned_logins_no_longer_declared() {
+        let state = sample_state();
+        let provisioned = vec!["can@example.com".to_owned(), "old@example.com".to_owned()];
+        assert_eq!(
+            undeclared_emails(provisioned, &state),
+            vec!["old@example.com".to_owned()]
+        );
+    }
+
+    #[test]
+    fn ensure_dir_makes_every_new_ancestor_0755_and_keeps_existing_modes() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let leaf = root.path().join("a/b/c");
+        ensure_dir(&leaf).unwrap();
+        for dir in ["a", "a/b", "a/b/c"] {
+            let mode = fs::metadata(root.path().join(dir))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755, "{dir}");
+        }
+        assert_eq!(
+            fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 
     #[test]

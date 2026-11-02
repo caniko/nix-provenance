@@ -8,7 +8,30 @@
 pkgs.testers.nixosTest {
   name = "windmill-bootstrap${nameSuffix}";
 
-  nodes.machine = {lib, ...}: {
+  nodes.machine = {lib, ...}: let
+    canUser = {
+      email = "can@example.test";
+      passwordFile = "/var/lib/fixture/can";
+      workspaces = ["studio"];
+      admin = true;
+    };
+    opsUser = {
+      email = "ops@example.test";
+      passwordFile = "/var/lib/fixture/ops";
+      workspaces = ["studio"];
+      admin = true;
+    };
+    studioToken = {
+      user = "can";
+      workspace = "studio";
+      group = "studio";
+      mode = "0640";
+    };
+    opsToken = {
+      user = "ops";
+      workspace = "studio";
+    };
+  in {
     imports = [self.nixosModules.windmillProvision];
     virtualisation.memorySize = 3072;
     virtualisation.cores = 2;
@@ -21,6 +44,10 @@ pkgs.testers.nixosTest {
       "/var/lib/fixture/superadmin".f = {
         mode = "0600";
         argument = "fixture-superadmin-secret-with space";
+      };
+      "/var/lib/fixture/ops".f = {
+        mode = "0600";
+        argument = "fixture-ops-password";
       };
       "/var/lib/fixture/can".f = {
         mode = "0600";
@@ -36,26 +63,24 @@ pkgs.testers.nixosTest {
         enable = true;
         superadminSecretFile = "/var/lib/fixture/superadmin";
         workspaces.studio.name = "Studio";
-        users.can = {
-          email = "can@example.test";
-          passwordFile = "/var/lib/fixture/can";
-          workspaces = ["studio"];
-          admin = true;
-        };
-        tokens.paperclip-studio = {
-          user = "can";
-          workspace = "studio";
-          group = "studio";
-          mode = "0640";
-        };
+        users.can = canUser;
+        users.ops = opsUser;
+        tokens.paperclip-studio = studioToken;
+        tokens.ops-token = opsToken;
       };
     };
-    # A declared-token spec change (token rebound to a second workspace) must
-    # re-mint and revoke.
+    # Declared-token spec change (token rebound to a second workspace).
     specialisation.rebound.configuration.services.windmill.provision = {
       workspaces.other.name = "Other";
       users.can.workspaces = ["studio" "other"];
       tokens.paperclip-studio.workspace = lib.mkForce "other";
+    };
+    # Role change: ops loses instance admin, so its token must be re-minted.
+    specialisation.demoted.configuration.services.windmill.provision.users.ops.admin = lib.mkForce false;
+    # Removal: ops and its token are no longer declared.
+    specialisation.pruned.configuration.services.windmill.provision = {
+      users = lib.mkForce {can = canUser;};
+      tokens = lib.mkForce {paperclip-studio = studioToken;};
     };
     # Jobs are out of scope; keep the VM small.
     systemd.services.windmill-worker.enable = lib.mkForce false;
@@ -101,23 +126,56 @@ pkgs.testers.nixosTest {
             assert word not in journal, journal
         assert machine.succeed("cat /var/lib/windmill-provision/tokens/paperclip-studio") == before
 
-    with subtest("a token spec change re-mints and revokes the old token"):
-        old = machine.succeed("cat /var/lib/windmill-provision/tokens/paperclip-studio").strip()
-        machine.succeed("/run/current-system/specialisation/rebound/bin/switch-to-configuration test")
+    base = machine.succeed("readlink -f /run/current-system").strip()
+    spec = {n: machine.succeed(f"readlink -f /run/current-system/specialisation/{n}").strip() for n in ("rebound", "demoted", "pruned")}
+    tok = "/var/lib/windmill-provision/tokens"
+
+    def read_token(name):
+        return machine.succeed(f"cat {tok}/{name}").strip()
+
+    def code(token, ws="studio"):
+        return machine.succeed(
+            f"curl -s -o /dev/null -w '%{{http_code}}' -H 'Authorization: Bearer {token}' {api}/w/{ws}/users/whoami"
+        ).strip()
+
+    def switch(system):
+        machine.succeed(f"{system}/bin/switch-to-configuration test")
         machine.wait_for_unit("windmill-provision.service")
-        new = machine.succeed("cat /var/lib/windmill-provision/tokens/paperclip-studio").strip()
-        assert new != old
         # Windmill caches authenticated tokens for up to two minutes; a restart
-        # flushes that cache so the revocation is observable immediately.
+        # flushes that cache so a revocation is observable immediately.
         machine.succeed("systemctl restart windmill-server.service")
         machine.wait_for_unit("windmill-provision.service")
         machine.wait_until_succeeds(f"curl -sf {api}/version")
-        def code(token):
-            return machine.succeed(
-                f"curl -s -o /dev/null -w '%{{http_code}}' -H 'Authorization: Bearer {token}' {api}/w/other/users/whoami"
-            ).strip()
+
+    with subtest("a token spec change re-mints and revokes the old token"):
+        old = read_token("paperclip-studio")
+        switch(spec["rebound"])
+        new = read_token("paperclip-studio")
+        assert new != old
+        assert code(old, "other") == "401", code(old, "other")
+        assert code(new, "other") == "200", code(new, "other")
+        machine.succeed(f"test \"$(stat -c '%a %G' {tok}/paperclip-studio)\" = '640 studio'")
+        switch(base)
+
+    with subtest("demoting a user re-mints and revokes its admin token"):
+        old = read_token("ops-token")
+        assert code(old) == "200", code(old)
+        switch(spec["demoted"])
+        new = read_token("ops-token")
+        assert new != old
         assert code(old) == "401", code(old)
         assert code(new) == "200", code(new)
-        machine.succeed("test \"$(stat -c '%a %G' /var/lib/windmill-provision/tokens/paperclip-studio)\" = '640 studio'")
+        switch(base)
+
+    with subtest("removing a user and a token entry revokes both"):
+        ops_token = read_token("ops-token")
+        assert login_code("ops@example.test", "fixture-ops-password") == "200"
+        switch(spec["pruned"])
+        assert code(ops_token) == "401", code(ops_token)
+        machine.fail(f"test -e {tok}/ops-token")
+        assert login_code("ops@example.test", "fixture-ops-password") != "200"
+        # The remaining declared user and token are untouched.
+        assert login_code("can@example.test", "fixture-can-password") == "200"
+        assert code(read_token("paperclip-studio")) == "200"
   '';
 }

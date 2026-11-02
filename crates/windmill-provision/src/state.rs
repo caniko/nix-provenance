@@ -99,6 +99,10 @@ impl State {
         }
         for (name, user) in &self.users {
             ensure!(
+                user.email == user.email.to_ascii_lowercase(),
+                "user {name}: email must be lowercase (Windmill lowercases logins)"
+            );
+            ensure!(
                 !user.email.eq_ignore_ascii_case(crate::db::DEFAULT_ADMIN),
                 "user {name}: {} is the stock admin that disableDefaultAdmin locks",
                 user.email
@@ -174,7 +178,7 @@ mod tests {
         s.users.insert(
             "other".into(),
             User {
-                email: "CAN@example.com".into(),
+                email: "can@example.com".into(),
                 credential_name: "q".into(),
                 workspaces: vec![],
                 admin: false,
@@ -198,9 +202,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_uppercase_emails() {
+        let mut s = state(BASE);
+        s.users.get_mut("can").unwrap().email = "Can@example.com".into();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
     fn rejects_stock_admin_email_case_insensitively() {
         let mut s = state(BASE);
-        s.users.get_mut("can").unwrap().email = "Admin@Windmill.DEV".into();
+        s.users.get_mut("can").unwrap().email = "admin@windmill.dev".into();
         assert!(s.validate().is_err());
     }
 
