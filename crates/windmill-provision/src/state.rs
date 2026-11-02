@@ -141,6 +141,14 @@ impl State {
                     self.workspaces.contains_key(ws),
                     "token {label}: undeclared workspace {ws}"
                 );
+                // A non-admin non-member has no identity on that workspace, so
+                // the token would be unusable and re-minted on every run.
+                let owner = &self.users[&token.user];
+                ensure!(
+                    owner.admin || owner.workspaces.contains(ws),
+                    "token {label}: user {} is not a member of workspace {ws}",
+                    token.user
+                );
             }
             token.mode_bits()?;
         }
@@ -212,6 +220,31 @@ mod tests {
     fn rejects_stock_admin_email_case_insensitively() {
         let mut s = state(BASE);
         s.users.get_mut("can").unwrap().email = "admin@windmill.dev".into();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_workspace_token_for_non_member_non_admin() {
+        let mut s = state(BASE);
+        s.workspaces.insert(
+            "other".into(),
+            Workspace {
+                name: "Other".into(),
+            },
+        );
+        s.tokens.get_mut("t").unwrap().workspace = Some("other".into());
+        s.users.get_mut("can").unwrap().admin = true;
+        s.validate().unwrap(); // admins have an identity everywhere
+        s.users.insert(
+            "ops".into(),
+            User {
+                email: "ops@example.com".into(),
+                credential_name: "q".into(),
+                workspaces: vec![],
+                admin: false,
+            },
+        );
+        s.tokens.get_mut("t").unwrap().user = "ops".into();
         assert!(s.validate().is_err());
     }
 

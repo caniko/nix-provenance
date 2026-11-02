@@ -105,6 +105,15 @@ impl N8n {
         }
     }
 
+    pub fn delete_credential(&self, id: &str) -> Result<()> {
+        let resp = self
+            .http
+            .delete(format!("{}/rest/credentials/{id}", self.base))
+            .send()?;
+        provenance_core::http::ensure_success(resp).context("credential delete")?;
+        Ok(())
+    }
+
     pub fn update_credential(&self, id: &str, name: &str, kind: &str, data: &Value) -> Result<()> {
         let resp = self
             .http

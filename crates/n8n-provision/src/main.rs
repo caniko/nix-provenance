@@ -1,7 +1,7 @@
 mod client;
 mod state;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -194,7 +194,35 @@ fn reconcile(
             }
         }
     }
+
+    // Delete credentials this tool created earlier that are no longer
+    // declared, so a removed entry does not stay usable by workflows.
+    let registry = marker_dir.join(CREDENTIAL_REGISTRY);
+    let previous: BTreeSet<String> = fs::read_to_string(&registry)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    for name in removed_credentials(&previous, state) {
+        for (id, _) in existing.iter().filter(|(_, n)| *n == name) {
+            n8n.delete_credential(id)?;
+            eprintln!("credential {name}: deleted (no longer declared)");
+        }
+    }
+    fs::create_dir_all(marker_dir)?;
+    let declared: BTreeSet<&String> = state.credentials.keys().collect();
+    fs::write(&registry, serde_json::to_vec(&declared)?)?;
     Ok(())
+}
+
+const CREDENTIAL_REGISTRY: &str = "credentials.json";
+
+/// Names recorded by earlier runs that are no longer declared.
+fn removed_credentials(previous: &BTreeSet<String>, state: &State) -> Vec<String> {
+    previous
+        .iter()
+        .filter(|name| !state.credentials.contains_key(*name))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -209,6 +237,21 @@ mod tests {
         assert_eq!(read_secret_value(&f).unwrap(), " pw ");
         fs::write(&f, "\n").unwrap();
         assert!(read_secret_value(&f).is_err());
+    }
+
+    #[test]
+    fn removed_credentials_are_recorded_but_undeclared_names() {
+        let state: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "credentials":{"keep":{"type":"httpHeaderAuth"}}}"#,
+        )
+        .unwrap();
+        let previous = BTreeSet::from(["keep".to_owned(), "gone".to_owned()]);
+        assert_eq!(
+            removed_credentials(&previous, &state),
+            vec!["gone".to_owned()]
+        );
     }
 
     #[test]

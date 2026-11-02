@@ -21,7 +21,7 @@
   fieldFiles = lib.concatLists (lib.mapAttrsToList (name: c: lib.mapAttrsToList (field: file: {inherit name field file;}) c.dataFiles) cfg.credentials);
   secretFiles = [cfg.owner.passwordFile] ++ map (f: toString f.file) fieldFiles;
 
-  stateFile = pkgs.writeText "n8n-provision-state.json" (builtins.toJSON {
+  ownerState = {
     inherit (cfg) url;
     owner = {
       inherit (cfg.owner) email;
@@ -29,13 +29,19 @@
       last_name = cfg.owner.lastName;
       credential_name = ownerCredential;
     };
-    credentials =
-      lib.mapAttrs (name: c: {
-        inherit (c) type data;
-        data_files = lib.mapAttrs (field: _: fieldCredential name field) c.dataFiles;
-      })
-      cfg.credentials;
-  });
+  };
+  # n8n's ExecStartPre sees only the owner, so credential edits neither
+  # restart n8n nor can a credential mistake stop it from starting.
+  ownerStateFile = pkgs.writeText "n8n-provision-owner.json" (builtins.toJSON ownerState);
+  stateFile = pkgs.writeText "n8n-provision-state.json" (builtins.toJSON (ownerState
+    // {
+      credentials =
+        lib.mapAttrs (name: c: {
+          inherit (c) type data;
+          data_files = lib.mapAttrs (field: _: fieldCredential name field) c.dataFiles;
+        })
+        cfg.credentials;
+    }));
 in {
   options.services.n8n.provision = {
     enable = mkEnableOption "declarative n8n owner account and credentials";
@@ -128,6 +134,10 @@ in {
         message = "services.n8n.provision.credentials.*.data would land in the Nix store; put secret-looking fields (pass, secret, token, key, value) in dataFiles.";
       }
       {
+        assertion = lib.all (c: lib.all (f: !(c.data ? ${f})) (lib.attrNames c.dataFiles)) (lib.attrValues cfg.credentials);
+        message = "services.n8n.provision.credentials.*: a field must not appear in both data and dataFiles.";
+      }
+      {
         assertion = n8n.enable;
         message = "services.n8n.provision requires services.n8n.enable = true.";
       }
@@ -143,7 +153,7 @@ in {
       LoadCredential = ["${ownerCredential}:${cfg.owner.passwordFile}"];
       RuntimeDirectory = "n8n-provision";
       RuntimeDirectoryMode = "0700";
-      ExecStartPre = ["+${exe} owner-env --state ${stateFile} --credential-dir %d --hash-dir ${n8n.environment.N8N_USER_FOLDER} --out ${envFile}"];
+      ExecStartPre = ["+${exe} owner-env --state ${ownerStateFile} --credential-dir %d --hash-dir ${n8n.environment.N8N_USER_FOLDER} --out ${envFile}"];
       EnvironmentFile = lib.mkAfter ["-${envFile}"];
     };
 

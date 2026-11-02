@@ -77,6 +77,8 @@ pkgs.testers.nixosTest {
     };
     # Role change: ops loses instance admin, so its token must be re-minted.
     specialisation.demoted.configuration.services.windmill.provision.users.ops.admin = lib.mkForce false;
+    # Email change: the old login must die and the new one take over.
+    specialisation.emailchanged.configuration.services.windmill.provision.users.ops.email = lib.mkForce "ops2@example.test";
     # Removal: ops and its token are no longer declared.
     specialisation.pruned.configuration.services.windmill.provision = {
       users = lib.mkForce {can = canUser;};
@@ -127,7 +129,7 @@ pkgs.testers.nixosTest {
         assert machine.succeed("cat /var/lib/windmill-provision/tokens/paperclip-studio") == before
 
     base = machine.succeed("readlink -f /run/current-system").strip()
-    spec = {n: machine.succeed(f"readlink -f /run/current-system/specialisation/{n}").strip() for n in ("rebound", "demoted", "pruned")}
+    spec = {n: machine.succeed(f"readlink -f /run/current-system/specialisation/{n}").strip() for n in ("rebound", "demoted", "emailchanged", "pruned")}
     tok = "/var/lib/windmill-provision/tokens"
 
     def read_token(name):
@@ -167,6 +169,18 @@ pkgs.testers.nixosTest {
         assert code(new) == "200", code(new)
         switch(base)
 
+    with subtest("changing a user's email locks the old login and rolls the token over"):
+        old = read_token("ops-token")
+        assert login_code("ops@example.test", "fixture-ops-password") == "200"
+        switch(spec["emailchanged"])
+        new = read_token("ops-token")
+        assert new != old
+        assert login_code("ops@example.test", "fixture-ops-password") != "200"
+        assert login_code("ops2@example.test", "fixture-ops-password") == "200"
+        assert code(old) == "401", code(old)
+        assert code(new) == "200", code(new)
+        switch(base)
+
     with subtest("removing a user and a token entry revokes both"):
         ops_token = read_token("ops-token")
         assert login_code("ops@example.test", "fixture-ops-password") == "200"
@@ -177,5 +191,21 @@ pkgs.testers.nixosTest {
         # The remaining declared user and token are untouched.
         assert login_code("can@example.test", "fixture-can-password") == "200"
         assert code(read_token("paperclip-studio")) == "200"
+
+    with subtest("an in-place password rotation is applied by the path unit"):
+        switch(base)
+        machine.succeed("printf 'rotated-can-password' > /var/lib/fixture/can")
+        machine.wait_until_succeeds(
+            f"curl -sf -X POST {api}/auth/login -H 'content-type: application/json' "
+            "-d '{\"email\":\"can@example.test\",\"password\":\"rotated-can-password\"}'"
+        )
+        assert login_code("can@example.test", "fixture-can-password") != "200"
+
+    with subtest("an in-place superadmin secret rotation restarts the server and provisioning"):
+        machine.succeed("printf 'rotated-superadmin-secret' > /var/lib/fixture/superadmin")
+        machine.wait_until_succeeds(
+            f"curl -sf -H 'Authorization: Bearer rotated-superadmin-secret' {api}/users/whoami"
+        )
+        machine.wait_for_unit("windmill-provision.service")
   '';
 }

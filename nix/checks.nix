@@ -611,7 +611,7 @@ in
       ntfyPathEval = builtins.tryEval (builtins.deepSeq (ext (pwPath ./ntfy-eval-secret)).config.services.ntfy-sh.provision.users.can.passwordFile null);
       svc = cfg.systemd.services.ntfy-sh-credentials;
       json = builtins.toJSON;
-      script = svc.script;
+      inherit (svc) script;
     in
       runCommand "ntfy-module-eval" {} ''
         # generated env file comes last so its credentials win
@@ -897,6 +897,20 @@ in
       lockout = ext {services.windmill.provision.users.can.admin = lib.mkForce false;};
       ghostToken = ext {services.windmill.provision.tokens.t.user = "ghost";};
       stockAdmin = ext {services.windmill.provision.users.can.email = lib.mkForce "Admin@Windmill.dev";};
+      memberless = ext {
+        services.windmill.provision = {
+          workspaces.other.name = "Other";
+          users.ops = {
+            email = "ops@example.test";
+            passwordFile = "/run/agenix/ops";
+            admin = false;
+          };
+          tokens.t = {
+            user = "ops";
+            workspace = "other";
+          };
+        };
+      };
       upperEmail = ext {services.windmill.provision.users.can.email = lib.mkForce "Can@example.test";};
       plainHttpUrl = ext {services.windmill.provision.url = "http://windmill.example.test";};
       threeWorkspaces = ext {
@@ -916,6 +930,7 @@ in
         test ${lib.escapeShellArg (json (failed threeWorkspaces.config))} != '[]'
         test ${lib.escapeShellArg (json (failed plainHttpUrl.config))} != '[]'
         test ${lib.escapeShellArg (json (failed upperEmail.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed memberless.config))} != '[]'
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-server.service
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
@@ -938,6 +953,9 @@ in
       failed = c: lib.filter (m: lib.hasPrefix "services.n8n.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
       storeSecret = n8nEval.extendModules {modules = [{services.n8n.provision.owner.passwordFile = lib.mkForce "/nix/store/x-secret";}];};
       # (foo-bar, va) and (foo, bar-va) must not share a credential id.
+      overlap = n8nEval.extendModules {
+        modules = [{services.n8n.provision.credentials.studio-webhook.dataFiles.name = "/run/agenix/c";}];
+      };
       collide = n8nEval.extendModules {
         modules = [
           {
@@ -959,6 +977,7 @@ in
       runCommand "n8n-module-eval" {} ''
         test ${lib.escapeShellArg (json (failed n8nEval.config))} = '[]'
         test ${lib.escapeShellArg (json (failed storeSecret.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed overlap.config))} != '[]'
         test ${lib.escapeShellArg (toString (lib.length collideIds))} = 2
         test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot

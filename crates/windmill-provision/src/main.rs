@@ -4,7 +4,7 @@ mod state;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, chown};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -129,19 +129,43 @@ fn ensure_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Install `value` at the token path atomically. Owner and mode are applied to
+/// the temporary file through its descriptor before the rename, so no
+/// path-based `chown`/`chmod` can follow a symlink planted by the consumer.
 fn install_token(token: &state::Token, value: &str) -> Result<()> {
-    if let Some(dir) = token.path.parent() {
-        ensure_dir(dir)?;
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let parent = token.path.parent().context("token path has no parent")?;
+    ensure_dir(parent)?;
+    let name = token
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .context("token path has no file name")?;
+    let uid = resolve_id("/etc/passwd", &token.owner)?;
+    let gid = resolve_id("/etc/group", &token.group)?;
+    let tmp = parent.join(format!(".{name}.{}.tmp", std::process::id()));
+    let _ = fs::remove_file(&tmp);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        // create_new (O_CREAT|O_EXCL) never follows a symlink at `tmp`.
+        .open(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    let result = (|| -> Result<()> {
+        std::os::unix::fs::fchown(&file, Some(uid), Some(gid))?;
+        file.set_permissions(fs::Permissions::from_mode(token.mode_bits()?))?;
+        file.write_all(value.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp, &token.path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    // atomic_write_secret installs 0600 root first; widen only afterwards.
-    atomic_write_secret(&token.path, value)?;
-    chown(
-        &token.path,
-        Some(resolve_id("/etc/passwd", &token.owner)?),
-        Some(resolve_id("/etc/group", &token.group)?),
-    )?;
-    fs::set_permissions(&token.path, fs::Permissions::from_mode(token.mode_bits()?))?;
-    Ok(())
+    result
 }
 
 fn reconcile(
@@ -176,6 +200,10 @@ fn reconcile(
             eprintln!("user {name}: password applied");
         }
     }
+    // Revocation first: it must not depend on membership or token steps that
+    // can fail (for example while a changed email is being rolled over).
+    prune(state, marker_dir, db)?;
+
     for (id, ws) in &state.workspaces {
         if !wm.workspace_exists(&superadmin, id)? {
             wm.create_workspace(&superadmin, id, &ws.name)?;
@@ -246,20 +274,43 @@ fn reconcile(
         markers.commit(&spec_id, &spec)?;
         eprintln!("token {label}: minted");
     }
-    prune(state, marker_dir, db)
+    Ok(())
 }
 
 const TOKEN_REGISTRY: &str = "tokens.json";
 
-/// Labels recorded by earlier runs that are no longer declared.
+/// What an earlier run recorded about a token it manages.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Recorded {
+    path: PathBuf,
+    email: String,
+}
+
+fn declared_tokens(state: &State) -> BTreeMap<String, Recorded> {
+    state
+        .tokens
+        .iter()
+        .map(|(label, t)| {
+            (
+                label.clone(),
+                Recorded {
+                    path: t.path.clone(),
+                    email: state.users[&t.user].email.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Recorded tokens whose label is no longer declared.
 fn removed_tokens(
-    previous: &BTreeMap<String, PathBuf>,
-    declared: &BTreeMap<String, state::Token>,
-) -> Vec<(String, PathBuf)> {
+    previous: &BTreeMap<String, Recorded>,
+    declared: &BTreeMap<String, Recorded>,
+) -> Vec<(String, Recorded)> {
     previous
         .iter()
         .filter(|(label, _)| !declared.contains_key(*label))
-        .map(|(label, path)| (label.clone(), path.clone()))
+        .map(|(label, rec)| (label.clone(), rec.clone()))
         .collect()
 }
 
@@ -274,38 +325,53 @@ fn undeclared_emails(provisioned: Vec<String>, state: &State) -> Vec<String> {
 }
 
 /// Revoke what the declaration no longer names: tokens first, then logins.
-/// ponytail: the token registry is written once per successful run, so a label
+/// Tokens are revoked by the recorded label plus owner email, so adopted
+/// (unmarked) accounts are covered too; the file is deleted only afterwards.
+/// ponytail: the registry is written once per successful prune, so a label
 /// removed again before any run completes is not remembered; keep a journal
 /// if that window matters.
 fn prune(state: &State, marker_dir: &Path, db: &db::Psql) -> Result<()> {
     let registry = marker_dir.join(TOKEN_REGISTRY);
-    let previous: BTreeMap<String, PathBuf> = fs::read_to_string(&registry)
+    let previous: BTreeMap<String, Recorded> = fs::read_to_string(&registry)
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default();
-    for (label, path) in removed_tokens(&previous, &state.tokens) {
+    let declared = declared_tokens(state);
+    for (label, rec) in removed_tokens(&previous, &declared) {
         anyhow::ensure!(state::is_safe_ident(&label), "unsafe recorded token label");
-        db.run(&db::revoke_label_sql(&label))?;
-        match fs::remove_file(&path) {
+        anyhow::ensure!(
+            state::is_safe_ident(&rec.email),
+            "unsafe recorded token email"
+        );
+        let old_prefix = fs::read_to_string(&rec.path).ok();
+        let old_prefix = old_prefix
+            .as_deref()
+            .and_then(|t| db::token_prefix(t.trim()));
+        let column = db.token_prefix_column()?;
+        db.run(&db::revoke_label_sql(
+            &label, &rec.email, old_prefix, column,
+        ))?;
+        match fs::remove_file(&rec.path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
+            Err(e) => return Err(e).with_context(|| format!("removing {}", rec.path.display())),
         }
         eprintln!("token {label}: revoked (no longer declared)");
     }
     for email in undeclared_emails(db.provisioned_emails()?, state) {
         anyhow::ensure!(state::is_safe_ident(&email), "unsafe provisioned email");
         db.run(&db::lock_user_sql(&email))?;
+        eprintln!("user {email}: locked (no longer declared)");
     }
-    let current: BTreeMap<&String, &PathBuf> =
-        state.tokens.iter().map(|(l, t)| (l, &t.path)).collect();
     fs::create_dir_all(marker_dir)?;
-    fs::write(&registry, serde_json::to_vec(&current)?)?;
+    fs::write(&registry, serde_json::to_vec(&declared)?)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::MetadataExt as _;
+
     use super::*;
 
     #[test]
@@ -330,13 +396,17 @@ mod tests {
     #[test]
     fn removed_tokens_are_the_recorded_but_undeclared_ones() {
         let state = sample_state();
+        let rec = |p: &str| Recorded {
+            path: PathBuf::from(p),
+            email: "can@example.com".into(),
+        };
         let previous = BTreeMap::from([
-            ("keep".to_owned(), PathBuf::from("/x/keep")),
-            ("gone".to_owned(), PathBuf::from("/x/gone")),
+            ("keep".to_owned(), rec("/x/keep")),
+            ("gone".to_owned(), rec("/x/gone")),
         ]);
         assert_eq!(
-            removed_tokens(&previous, &state.tokens),
-            vec![("gone".to_owned(), PathBuf::from("/x/gone"))]
+            removed_tokens(&previous, &declared_tokens(&state)),
+            vec![("gone".to_owned(), rec("/x/gone"))]
         );
     }
 
@@ -347,6 +417,43 @@ mod tests {
         assert_eq!(
             undeclared_emails(provisioned, &state),
             vec!["old@example.com".to_owned()]
+        );
+    }
+
+    #[test]
+    fn install_token_sets_mode_without_following_a_planted_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let victim = root.path().join("victim");
+        fs::write(&victim, "keep").unwrap();
+        fs::set_permissions(&victim, fs::Permissions::from_mode(0o644)).unwrap();
+        let path = root.path().join("tok");
+        let token = state::Token {
+            user: "can".into(),
+            workspace: None,
+            scopes: vec![],
+            path: path.clone(),
+            owner: fs::metadata(root.path()).unwrap().uid().to_string(),
+            group: fs::metadata(root.path()).unwrap().gid().to_string(),
+            mode: "0640".into(),
+        };
+        // A symlink planted at the final path is replaced, never followed.
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        install_token(&token, "secret").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "secret");
+        assert!(
+            !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+        assert_eq!(
+            fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o644
         );
     }
 

@@ -211,6 +211,10 @@ in {
         message = "services.windmill.provision.tokens must reference declared users and workspaces.";
       }
       {
+        assertion = lib.all (t: t.workspace == null || cfg.users.${t.user}.admin || lib.elem t.workspace cfg.users.${t.user}.workspaces) (lib.filter (t: cfg.users ? ${t.user}) (lib.attrValues cfg.tokens));
+        message = "services.windmill.provision.tokens bound to a workspace need an admin user or a member of that workspace.";
+      }
+      {
         assertion = lib.all (u: lib.all (w: cfg.workspaces ? ${w}) u.workspaces) (lib.attrValues cfg.users);
         message = "services.windmill.provision.users.*.workspaces must be declared workspaces.";
       }
@@ -247,22 +251,22 @@ in {
       };
     };
 
-    # Runtime password files rotate in place, so the oneshot has no store-path
-    # change to restart on: watch them and restart it (RemainAfterExit makes a
-    # plain start a no-op).
-    systemd.paths.windmill-provision-rotate = {
+    # Runtime secret files rotate in place, so nothing in the store changes to
+    # restart on: watch them. A rotated password restarts the oneshot
+    # (RemainAfterExit makes a plain start a no-op); a rotated superadmin
+    # secret restarts the server (the env file is rendered at its start),
+    # which re-runs provisioning through partOf.
+    systemd.paths.windmill-provision-rotate = mkIf (cfg.users != {}) {
       wantedBy = ["multi-user.target"];
       pathConfig.PathChanged = map (u: toString u.passwordFile) (lib.attrValues cfg.users);
     };
-    systemd.services.windmill-provision-rotate = {
+    systemd.services.windmill-provision-rotate = mkIf (cfg.users != {}) {
       description = "Re-run Windmill provisioning after a password file rotates";
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-provision.service";
       };
     };
-
-    # The server reads SUPERADMIN_SECRET at start; provision follows via partOf.
     systemd.paths.windmill-superadmin-rotate = {
       wantedBy = ["multi-user.target"];
       pathConfig.PathChanged = cfg.superadminSecretFile;

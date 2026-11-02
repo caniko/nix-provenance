@@ -115,22 +115,37 @@ pub fn sqlstate_summary(stderr: &str) -> String {
 
 /// Lock a provisioned user that is no longer declared: no password verifies,
 /// no admin, no tokens. Only rows this tenant created (`company =
-/// 'provisioned'`) are touched. `email` must satisfy `state::is_safe_ident`.
+/// 'provisioned'`) are touched. Its workspace membership rows are deleted too,
+/// which frees the username for a replacement login (an email change).
+/// `email` must satisfy `state::is_safe_ident`.
 pub fn lock_user_sql(email: &str) -> String {
     format!(
         "UPDATE password SET password_hash = '{LOCKED_HASH}', super_admin = false \
          WHERE email = '{email}' AND company = 'provisioned';\n\
          DELETE FROM token WHERE email = '{email}' \
+         AND EXISTS (SELECT 1 FROM password WHERE email = '{email}' AND company = 'provisioned');\n\
+         DELETE FROM usr_to_group WHERE (workspace_id, usr) IN \
+         (SELECT workspace_id, username FROM usr WHERE email = '{email}') \
+         AND EXISTS (SELECT 1 FROM password WHERE email = '{email}' AND company = 'provisioned');\n\
+         DELETE FROM usr WHERE email = '{email}' \
          AND EXISTS (SELECT 1 FROM password WHERE email = '{email}' AND company = 'provisioned');\n"
     )
 }
 
-/// Revoke every token carrying `label` that belongs to a provisioned user.
-pub fn revoke_label_sql(label: &str) -> String {
-    format!(
-        "DELETE FROM token WHERE label = '{label}' \
-         AND email IN (SELECT email FROM password WHERE company = 'provisioned');\n"
-    )
+/// Revoke a removed token by its recorded identity: label plus owner email,
+/// and the recorded file's prefix when it can still be read. Works for adopted
+/// accounts too (no `provisioned` marker required). `label` and `email` must
+/// satisfy `state::is_safe_ident`; the prefix comes from [`token_prefix`].
+pub fn revoke_label_sql(
+    label: &str,
+    email: &str,
+    old_prefix: Option<&str>,
+    prefix_column: &str,
+) -> String {
+    let by_prefix = old_prefix
+        .map(|p| format!(" OR {prefix_column} = '{p}'"))
+        .unwrap_or_default();
+    format!("DELETE FROM token WHERE label = '{label}' AND (email = '{email}'{by_prefix});\n")
 }
 
 pub struct Psql {
@@ -274,7 +289,13 @@ mod tests {
         assert!(lock.contains("company = 'provisioned'"));
         assert!(lock.contains("super_admin = false"));
         assert!(lock.contains("DELETE FROM token WHERE email = 'gone@example.com'"));
-        assert!(revoke_label_sql("lbl").contains("company = 'provisioned'"));
+        assert!(lock.contains("DELETE FROM usr WHERE email = 'gone@example.com'"));
+        // Revocation of a removed token does not require the provisioned marker.
+        let revoke = revoke_label_sql("lbl", "a@b.c", Some("PREFIX0001"), "token_prefix");
+        assert!(!revoke.contains("provisioned"));
+        assert!(
+            revoke.contains("label = 'lbl' AND (email = 'a@b.c' OR token_prefix = 'PREFIX0001')")
+        );
     }
 
     #[test]
