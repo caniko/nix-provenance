@@ -44,6 +44,7 @@ Rust crate — the directory taxonomy makes that explicit:
 | **IdP** (`nix/modules/idp/`) | an identity provider | `rauthy-provision` |
 | **service-side OIDC** (`nix/modules/service-oidc/`) | a downstream service's users + OIDC wiring | `immich-provision`, `vikunja-provision`, Forgejo |
 | **config-only** (`nix/modules/config-only/`) | service OIDC via shared Nix only, no crate | Vikunja SSO |
+| **service bootstrap** (`nix/modules/service-bootstrap/`) | a no-OIDC service's app-local admin and API credentials via a trusted local path | `windmill-provision`, `n8n-provision` |
 | **LDAP** (`nix/modules/ldap/`) | LDAP-backed services | Stalwart, Stalwart 0.16 transport |
 | **adapter** (`nix/modules/adapter/`) | a non-tenant third-party app's users + OIDC client, into kanidm or rauthy | pink-raven (consumer) |
 
@@ -56,6 +57,8 @@ Rust crate — the directory taxonomy makes that explicit:
 | [`vikunja-provision`](crates/vikunja-provision) | Vikunja teams and memberships via the API | `MIT OR Apache-2.0` |
 | [`forgejo-provision`](crates/forgejo-provision) | Forgejo SSH public keys via the administrative API | `MIT OR Apache-2.0` |
 | [`github-provision`](crates/github-provision) | GitHub account SSH/OpenPGP public keys and repository collaborators | `MIT OR Apache-2.0` |
+| [`windmill-provision`](crates/windmill-provision) | Windmill superadmin env, operator logins, workspaces and minted API tokens | `MIT OR Apache-2.0` |
+| [`n8n-provision`](crates/n8n-provision) | n8n env-managed owner and named credentials | `MIT OR Apache-2.0` |
 | [`provenance-oauth`](crates/provenance-oauth) | Host/user-scoped OAuth enrollment, refresh, and access-only app adapters | `MIT OR Apache-2.0` |
 
 See [LICENSING.md](LICENSING.md) for the per-path SPDX map and the
@@ -68,8 +71,8 @@ tenant taxonomy and the add-a-tenant checklist.
   an account from a runtime credential file, including encrypted TOTP material.
   See [Proton VPN account login](docs/src/guides/proton-vpn.md).
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,github-provision,stalwart016-provision,forgejo-cli,forgejo-cli-nushell-completion,docs,site}`
-- `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,github-provision,stalwart016-provision,windmill-provision,n8n-provision,forgejo-cli,forgejo-cli-nushell-completion,docs,site}`
+- `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp,windmillProvision,n8nProvision}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}` — `usersFromKanidmPersons`
   for Immich/Rauthy, service-specific `kanidmOAuth2System` helpers for Immich,
