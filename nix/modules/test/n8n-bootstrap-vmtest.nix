@@ -99,29 +99,29 @@ in
               assert word not in journal, journal
           assert login_code("Fixture-owner-pw-1") == "200"
 
-        with subtest("a rotated credential file is re-applied by the path unit"):
-            machine.succeed("printf 'rotated-webhook-token' > /var/lib/fixture/webhook")
-            machine.wait_until_succeeds(
-                "journalctl -u n8n-provision.service -o cat | grep -q 'credential studio-webhook: updated'"
-            )
+      with subtest("a rotated credential file is re-applied by the path unit"):
+          machine.succeed("printf 'rotated-webhook-token' > /var/lib/fixture/webhook")
+          machine.wait_until_succeeds(
+              "journalctl -u n8n-provision.service -o cat | grep -q 'credential studio-webhook: updated'"
+          )
 
-        with subtest("a rotated owner password restarts n8n and takes effect"):
-            machine.succeed("printf 'Rotated-owner-pw-2' > /var/lib/fixture/owner")
-            machine.wait_until_succeeds(
-                f"curl -sf -X POST {base}/rest/login -H 'content-type: application/json' "
-                "-d '{\"emailOrLdapLoginId\":\"can@example.test\",\"password\":\"Rotated-owner-pw-2\"}'"
-            )
-            assert login_code("Fixture-owner-pw-1") != "200"
-            machine.wait_for_unit("n8n-provision.service")
+      with subtest("a rotated owner password restarts n8n and takes effect"):
+          machine.succeed("printf 'Rotated-owner-pw-2' > /var/lib/fixture/owner")
+          machine.wait_until_succeeds(
+              f"curl -sf -X POST {base}/rest/login -H 'content-type: application/json' "
+              "-d '{\"emailOrLdapLoginId\":\"can@example.test\",\"password\":\"Rotated-owner-pw-2\"}'"
+          )
+          assert login_code("Fixture-owner-pw-1") != "200"
+          machine.wait_for_unit("n8n-provision.service")
 
-        with subtest("removing a credential declaration deletes it from n8n"):
-            machine.succeed("/run/current-system/specialisation/nocreds/bin/switch-to-configuration test")
-            machine.wait_for_unit("n8n-provision.service")
-            machine.succeed(
-                f"curl -sf -c /tmp/jar2 -X POST {base}/rest/login -H 'content-type: application/json' "
-                "-d '{\"emailOrLdapLoginId\":\"can@example.test\",\"password\":\"Rotated-owner-pw-2\"}'"
-            )
-            out = machine.succeed(f"curl -sf -b /tmp/jar2 {base}/rest/credentials")
-            assert "studio-webhook" not in out, out
+      with subtest("removing a credential declaration deletes it from n8n"):
+          machine.succeed("/run/current-system/specialisation/nocreds/bin/switch-to-configuration test")
+          machine.wait_for_unit("n8n-provision.service")
+          machine.succeed(
+              f"curl -sf -c /tmp/jar2 -X POST {base}/rest/login -H 'content-type: application/json' "
+              "-d '{\"emailOrLdapLoginId\":\"can@example.test\",\"password\":\"Rotated-owner-pw-2\"}'"
+          )
+          out = machine.succeed(f"curl -sf -b /tmp/jar2 {base}/rest/credentials")
+          assert "studio-webhook" not in out, out
     '';
   }

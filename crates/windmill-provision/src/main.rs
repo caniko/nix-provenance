@@ -71,12 +71,16 @@ fn main() -> Result<()> {
             let raw = fs::read_to_string(&state)
                 .with_context(|| format!("reading {}", state.display()))?;
             let state: State = serde_json::from_str(&raw).context("parsing state")?;
-            state.validate()?;
             let db = db::Psql {
                 runuser,
                 psql,
                 database: state.database.clone(),
             };
+            // Fail closed: a rejected declaration must not leave the stock login open.
+            if state.disable_default_admin {
+                lock_default_admin(&db, Duration::from_secs(ready_timeout))?;
+            }
+            state.validate()?;
             reconcile(&state, &credential_dir, &marker_dir, &db, ready_timeout)
         }
     }
@@ -190,12 +194,6 @@ fn reconcile(
 ) -> Result<()> {
     let superadmin = read_password_file(credential_dir.join(&state.superadmin_credential))?;
     let wm = Windmill::new(&state.url)?;
-    // Lock the stock admin as soon as the DB is migrated, independent of the
-    // HTTP URL (a wrong port must not leave changeme usable). Retries until the
-    // `password` table exists.
-    if state.disable_default_admin {
-        lock_default_admin(db, Duration::from_secs(ready_timeout))?;
-    }
     wm.wait_ready(Duration::from_secs(ready_timeout))?;
     let markers = PasswordMarkerStore::new(marker_dir);
 

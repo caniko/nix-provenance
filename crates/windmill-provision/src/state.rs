@@ -79,14 +79,22 @@ pub fn is_username(value: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Lexical identity of a token path: absolute, no `.`/`..`, parent resolved
-/// through symlinks when it already exists, so aliases collide.
+/// Lexical identity of a token path: absolute, no `.`/`..`, longest existing ancestor resolved
+/// through symlinks, so aliases collide.
 fn same_file_key(path: &std::path::Path) -> PathBuf {
-    let parent = path.parent().unwrap_or(path);
-    let parent = parent
-        .canonicalize()
-        .unwrap_or_else(|_| parent.to_path_buf());
-    parent.join(path.file_name().unwrap_or_default())
+    // Resolve the longest existing ancestor; ensure_dir creates the rest below it.
+    let mut existing = path.parent().unwrap_or(path).to_path_buf();
+    let mut rest = vec![path.file_name().unwrap_or_default().to_owned()];
+    while !existing.exists() {
+        let Some(name) = existing.file_name().map(|n| n.to_owned()) else {
+            break;
+        };
+        rest.push(name);
+        existing.pop();
+    }
+    let mut key = existing.canonicalize().unwrap_or(existing);
+    key.extend(rest.iter().rev());
+    key
 }
 
 impl State {
@@ -182,6 +190,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn state(json: &str) -> State {
         serde_json::from_str(json).unwrap()
@@ -234,6 +243,18 @@ mod tests {
         let mut s = state(BASE);
         s.users.get_mut("can").unwrap().email = "Can@example.com".into();
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn aliased_token_paths_through_a_symlink_collide() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+        assert_eq!(
+            same_file_key(&real.join("new/t")),
+            same_file_key(&dir.path().join("link/new/t"))
+        );
     }
 
     #[test]

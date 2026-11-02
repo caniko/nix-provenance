@@ -163,7 +163,7 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = builtins.match "https://.+|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])(:[0-9]+)?(/[^@]*)?" cfg.url != null;
+        assertion = builtins.match "https://[^@/]+(/.*)?|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])(:[0-9]+)?(/[^@]*)?" cfg.url != null;
         message = "services.windmill.provision.url must be https:// or a loopback http:// URL: the superadmin bearer is sent over it.";
       }
       {
