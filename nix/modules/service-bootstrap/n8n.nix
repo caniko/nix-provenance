@@ -14,7 +14,8 @@
 
   envFile = "/run/n8n-provision/owner.env";
   ownerCredential = "owner-password";
-  fieldCredential = name: field: pw.credentialName "n8n-credential-${name}-${field}";
+  # Length-prefixed so (foo-bar, va) and (foo, bar-va) never share an id.
+  fieldCredential = name: field: pw.credentialName "n8n-credential:${toString (lib.stringLength name)}:${name}:${field}";
 
   notRuntime = f: !(lib.hasPrefix "/" f) || lib.hasPrefix builtins.storeDir f;
   fieldFiles = lib.concatLists (lib.mapAttrsToList (name: c: lib.mapAttrsToList (field: file: {inherit name field file;}) c.dataFiles) cfg.credentials);

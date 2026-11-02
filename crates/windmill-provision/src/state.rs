@@ -98,6 +98,11 @@ impl State {
             );
         }
         for (name, user) in &self.users {
+            ensure!(
+                !user.email.eq_ignore_ascii_case(crate::db::DEFAULT_ADMIN),
+                "user {name}: {} is the stock admin that disableDefaultAdmin locks",
+                user.email
+            );
             ensure!(is_safe_ident(&user.email), "user {name}: unsafe email");
             ensure!(
                 is_username(name),
@@ -121,6 +126,7 @@ impl State {
             ensure!(!ws.name.is_empty(), "workspace {id}: empty name");
         }
         for (label, token) in &self.tokens {
+            ensure!(is_safe_ident(label), "token label {label:?} is unsafe");
             ensure!(
                 self.users.contains_key(&token.user),
                 "token {label}: undeclared user {}",
@@ -188,6 +194,13 @@ mod tests {
                 mode: "0600".into(),
             },
         );
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_stock_admin_email_case_insensitively() {
+        let mut s = state(BASE);
+        s.users.get_mut("can").unwrap().email = "Admin@Windmill.DEV".into();
         assert!(s.validate().is_err());
     }
 

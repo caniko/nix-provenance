@@ -46,6 +46,39 @@ pub fn upsert_user_sql(email: &str, name: &str, hash: &str, super_admin: bool) -
     )
 }
 
+/// Windmill stores the first 10 characters of a token as its `token_prefix`.
+pub const TOKEN_PREFIX_LEN: usize = 10;
+
+pub fn token_prefix(token: &str) -> Option<&str> {
+    let prefix = token.get(..TOKEN_PREFIX_LEN)?;
+    prefix
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric())
+        .then_some(prefix)
+}
+
+/// Delete every previous token of `label`, keeping only `keep_prefix`: the
+/// declared user's older tokens of that label, plus the one the previous token
+/// file held (it may belong to a different user if the spec changed).
+/// `prefix_column` is `token_prefix`, or `left(token, 10)` on Windmill versions
+/// that predate that column. `label` and `email` must satisfy `state::is_safe_ident`; prefixes come from
+/// [`token_prefix`].
+pub fn revoke_old_tokens_sql(
+    label: &str,
+    email: &str,
+    keep_prefix: &str,
+    old_prefix: Option<&str>,
+    prefix_column: &str,
+) -> String {
+    let old = old_prefix
+        .map(|p| format!(" OR {prefix_column} = '{p}'"))
+        .unwrap_or_default();
+    format!(
+        "DELETE FROM token WHERE label = '{label}' AND {prefix_column} <> '{keep_prefix}' \
+         AND (email = '{email}'{old});\n"
+    )
+}
+
 pub fn lock_default_admin_sql() -> String {
     format!(
         "UPDATE password SET password_hash = '{LOCKED_HASH}' WHERE email = '{DEFAULT_ADMIN}' \
@@ -85,6 +118,18 @@ impl Psql {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// The SQL expression yielding a token's prefix on this Windmill version.
+    pub fn token_prefix_column(&self) -> Result<&'static str> {
+        let out = self.run(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'token' AND column_name = 'token_prefix';\n",
+        )?;
+        Ok(if out.trim() == "1" {
+            "token_prefix"
+        } else {
+            "left(token, 10)"
+        })
+    }
+
     pub fn user_has_argon2_hash(&self, email: &str) -> Result<bool> {
         let out = self.run(&format!(
             "SELECT 1 FROM password WHERE email = '{email}' AND password_hash LIKE '$argon2%';\n"
@@ -115,6 +160,27 @@ mod tests {
                 .is_err()
         );
         assert!(!hash.contains('\''));
+    }
+
+    #[test]
+    fn revocation_keeps_only_the_new_token() {
+        let sql = revoke_old_tokens_sql(
+            "lbl",
+            "can@example.com",
+            "NEWPREFIX1",
+            Some("OLDPREFIX2"),
+            "token_prefix",
+        );
+        assert!(sql.contains("label = 'lbl'"));
+        assert!(sql.contains("token_prefix <> 'NEWPREFIX1'"));
+        assert!(sql.contains("OR token_prefix = 'OLDPREFIX2'"));
+        assert!(
+            !revoke_old_tokens_sql("l", "e@x.y", "N", None, "left(token, 10)")
+                .contains("OR token_prefix")
+        );
+        assert_eq!(token_prefix("abcdefghijKLM"), Some("abcdefghij"));
+        assert_eq!(token_prefix("short"), None);
+        assert_eq!(token_prefix("abc'defghijk"), None);
     }
 
     #[test]

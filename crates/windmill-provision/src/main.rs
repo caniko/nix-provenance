@@ -201,10 +201,26 @@ fn reconcile(
             continue;
         }
         let user = &state.users[&token.user];
+        let old_token = fs::read_to_string(&token.path).ok();
         let password = read_password_file(credential_dir.join(&user.credential_name))?;
         let session = wm.login(&user.email, &password)?;
         let value = wm.create_token(&session, label, token.workspace.as_deref(), &token.scopes)?;
         install_token(token, &value)?;
+        // Exactly one live token per label: revoke the previous one(s). Done
+        // after the new file is installed so a failure never leaves no token.
+        if let Some(new_prefix) = db::token_prefix(&value) {
+            let old_prefix = old_token
+                .as_deref()
+                .and_then(|t| db::token_prefix(t.trim()));
+            let column = db.token_prefix_column()?;
+            db.run(&db::revoke_old_tokens_sql(
+                label,
+                &user.email,
+                new_prefix,
+                old_prefix,
+                column,
+            ))?;
+        }
         markers.commit(&spec_id, &spec)?;
         eprintln!("token {label}: minted");
     }

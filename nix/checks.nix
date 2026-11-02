@@ -896,12 +896,22 @@ in
       storeSecret = ext {services.windmill.provision.superadminSecretFile = lib.mkForce "/nix/store/x-secret";};
       lockout = ext {services.windmill.provision.users.can.admin = lib.mkForce false;};
       ghostToken = ext {services.windmill.provision.tokens.t.user = "ghost";};
+      stockAdmin = ext {services.windmill.provision.users.can.email = lib.mkForce "Admin@Windmill.dev";};
+      threeWorkspaces = ext {
+        services.windmill.provision.workspaces = {
+          a.name = "A";
+          b.name = "B";
+          c.name = "C";
+        };
+      };
     in
       runCommand "windmill-module-eval" {} ''
         test ${lib.escapeShellArg (json (failed windmillEval.config))} = '[]'
         test ${lib.escapeShellArg (json (failed storeSecret.config))} != '[]'
         test ${lib.escapeShellArg (json (failed lockout.config))} != '[]'
         test ${lib.escapeShellArg (json (failed ghostToken.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed stockAdmin.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed threeWorkspaces.config))} != '[]'
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-server.service
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
@@ -923,10 +933,30 @@ in
       json = builtins.toJSON;
       failed = c: lib.filter (m: lib.hasPrefix "services.n8n.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
       storeSecret = n8nEval.extendModules {modules = [{services.n8n.provision.owner.passwordFile = lib.mkForce "/nix/store/x-secret";}];};
+      # (foo-bar, va) and (foo, bar-va) must not share a credential id.
+      collide = n8nEval.extendModules {
+        modules = [
+          {
+            services.n8n.provision.credentials = {
+              foo-bar = {
+                type = "httpHeaderAuth";
+                dataFiles.va = "/run/agenix/a";
+              };
+              foo = {
+                type = "httpHeaderAuth";
+                dataFiles.bar-va = "/run/agenix/b";
+              };
+            };
+          }
+        ];
+      };
+      collideIds = map (e: lib.head (lib.splitString ":" e)) (lib.filter (e: lib.hasInfix "/run/agenix/a" e || lib.hasInfix "/run/agenix/b" e) collide.config.systemd.services.n8n-provision.serviceConfig.LoadCredential);
     in
       runCommand "n8n-module-eval" {} ''
         test ${lib.escapeShellArg (json (failed n8nEval.config))} = '[]'
         test ${lib.escapeShellArg (json (failed storeSecret.config))} != '[]'
+        test ${lib.escapeShellArg (toString (lib.length collideIds))} = 2
+        test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n.service
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'

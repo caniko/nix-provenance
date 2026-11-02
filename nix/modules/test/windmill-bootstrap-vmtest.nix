@@ -50,6 +50,13 @@ pkgs.testers.nixosTest {
         };
       };
     };
+    # A declared-token spec change (token rebound to a second workspace) must
+    # re-mint and revoke.
+    specialisation.rebound.configuration.services.windmill.provision = {
+      workspaces.other.name = "Other";
+      users.can.workspaces = ["studio" "other"];
+      tokens.paperclip-studio.workspace = lib.mkForce "other";
+    };
     # Jobs are out of scope; keep the VM small.
     systemd.services.windmill-worker.enable = lib.mkForce false;
     systemd.services.windmill-worker-native.enable = lib.mkForce false;
@@ -93,5 +100,24 @@ pkgs.testers.nixosTest {
         for word in ("minted", "created", "applied", "added"):
             assert word not in journal, journal
         assert machine.succeed("cat /var/lib/windmill-provision/tokens/paperclip-studio") == before
+
+    with subtest("a token spec change re-mints and revokes the old token"):
+        old = machine.succeed("cat /var/lib/windmill-provision/tokens/paperclip-studio").strip()
+        machine.succeed("/run/current-system/specialisation/rebound/bin/switch-to-configuration test")
+        machine.wait_for_unit("windmill-provision.service")
+        new = machine.succeed("cat /var/lib/windmill-provision/tokens/paperclip-studio").strip()
+        assert new != old
+        # Windmill caches authenticated tokens for up to two minutes; a restart
+        # flushes that cache so the revocation is observable immediately.
+        machine.succeed("systemctl restart windmill-server.service")
+        machine.wait_for_unit("windmill-provision.service")
+        machine.wait_until_succeeds(f"curl -sf {api}/version")
+        def code(token):
+            return machine.succeed(
+                f"curl -s -o /dev/null -w '%{{http_code}}' -H 'Authorization: Bearer {token}' {api}/w/other/users/whoami"
+            ).strip()
+        assert code(old) == "401", code(old)
+        assert code(new) == "200", code(new)
+        machine.succeed("test \"$(stat -c '%a %G' /var/lib/windmill-provision/tokens/paperclip-studio)\" = '640 studio'")
   '';
 }

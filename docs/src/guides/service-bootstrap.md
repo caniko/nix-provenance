@@ -53,6 +53,16 @@ tenant writes the `password` table directly. The `psql` step runs as the
 custom `identMap` must map `postgres` to the `postgres` role (a `/^(.*)$ \1`
 rule does).
 
+- Tokens: a re-mint (changed user, workspace or scopes, or an invalid file)
+  deletes the previous token(s) of that label, so one live token per label
+  remains. Windmill caches authenticated tokens for up to two minutes, so a
+  revoked token can keep working that long.
+- The tenant is **additive**: it does not rename users (changing a `users` key
+  after first apply leaves the old username in place) and does not revoke
+  workspace memberships that are no longer declared. Remove those in Windmill
+  directly. Declaring `admin@windmill.dev` is rejected, and at most two
+  workspaces besides `admins` can be declared (open-source limit).
+
 ## n8n
 
 ```nix

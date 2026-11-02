@@ -175,6 +175,18 @@ in {
         message = "services.windmill.provision secret files must be absolute runtime paths outside ${builtins.storeDir}.";
       }
       {
+        assertion = !(lib.any (u: lib.toLower u.email == "admin@windmill.dev") (lib.attrValues cfg.users));
+        message = "services.windmill.provision.users must not declare admin@windmill.dev: disableDefaultAdmin locks that account.";
+      }
+      {
+        assertion = lib.length (lib.filter (id: id != "admins") (lib.attrNames cfg.workspaces)) <= 2;
+        message = "services.windmill.provision.workspaces: open-source Windmill allows at most two workspaces besides `admins` (and `admins` is reserved).";
+      }
+      {
+        assertion = !(cfg.workspaces ? admins);
+        message = "services.windmill.provision.workspaces must not declare `admins`: it is reserved by Windmill.";
+      }
+      {
         assertion = lib.all (n: builtins.match "[A-Za-z][A-Za-z0-9_]*" n != null) (lib.attrNames cfg.users);
         message = "services.windmill.provision.users names become Windmill usernames and must match [A-Za-z][A-Za-z0-9_]*.";
       }
@@ -187,7 +199,7 @@ in {
         message = "services.windmill.provision.disableDefaultAdmin needs at least one user with admin = true.";
       }
       {
-        assertion = lib.all (t: cfg.users ? ${t.user} && (t.workspace == null || cfg.workspaces ? ${t.workspace})) (lib.attrValues cfg.tokens);
+        assertion = lib.all (l: builtins.match "[A-Za-z0-9._-]+" l != null) (lib.attrNames cfg.tokens) && lib.all (t: cfg.users ? ${t.user} && (t.workspace == null || cfg.workspaces ? ${t.workspace})) (lib.attrValues cfg.tokens);
         message = "services.windmill.provision.tokens must reference declared users and workspaces.";
       }
       {
