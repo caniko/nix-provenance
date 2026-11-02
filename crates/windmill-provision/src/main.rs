@@ -173,6 +173,8 @@ fn reconcile(
         if !wm.workspace_exists(&superadmin, id)? {
             wm.create_workspace(&superadmin, id, &ws.name)?;
             eprintln!("workspace {id}: created");
+        } else {
+            wm.rename_workspace(&superadmin, id, &ws.name)?;
         }
     }
     for (name, user) in &state.users {

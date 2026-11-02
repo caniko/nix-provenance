@@ -66,6 +66,19 @@ impl Windmill {
         Ok(())
     }
 
+    /// Set the display name of an existing workspace (idempotent).
+    pub fn rename_workspace(&self, bearer: &str, id: &str, name: &str) -> Result<()> {
+        let resp = self
+            .http
+            .post(format!("{}/api/w/{id}/workspaces/edit", self.base))
+            .bearer_auth(bearer)
+            .json(&json!({ "name": name }))
+            .send()?;
+        provenance_core::http::ensure_success(resp)
+            .with_context(|| format!("renaming workspace {id}"))?;
+        Ok(())
+    }
+
     /// Add an existing instance user to a workspace. "Already a member" is
     /// success so reruns are no-ops.
     pub fn add_user(

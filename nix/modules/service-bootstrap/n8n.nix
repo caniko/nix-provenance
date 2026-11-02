@@ -120,6 +120,10 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
+        assertion = builtins.match "https://.+|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])([:/].*)?" cfg.url != null;
+        message = "services.n8n.provision.url must be https:// or a loopback http:// URL: the owner session is sent over it.";
+      }
+      {
         assertion = n8n.enable;
         message = "services.n8n.provision requires services.n8n.enable = true.";
       }

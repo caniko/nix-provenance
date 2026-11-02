@@ -163,6 +163,10 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
+        assertion = builtins.match "https://.+|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])([:/].*)?" cfg.url != null;
+        message = "services.windmill.provision.url must be https:// or a loopback http:// URL: the superadmin bearer is sent over it.";
+      }
+      {
         assertion = wm.enable;
         message = "services.windmill.provision requires services.windmill.enable = true.";
       }
@@ -187,8 +191,8 @@ in {
         message = "services.windmill.provision.workspaces must not declare `admins`: it is reserved by Windmill.";
       }
       {
-        assertion = lib.all (n: builtins.match "[A-Za-z][A-Za-z0-9_]*" n != null) (lib.attrNames cfg.users);
-        message = "services.windmill.provision.users names become Windmill usernames and must match [A-Za-z][A-Za-z0-9_]*.";
+        assertion = lib.all (n: builtins.match "[A-Za-z][A-Za-z0-9_]*" n != null && lib.stringLength n <= 50) (lib.attrNames cfg.users);
+        message = "services.windmill.provision.users names become Windmill usernames and must match [A-Za-z][A-Za-z0-9_]* and be at most 50 characters.";
       }
       {
         assertion = lib.all (u: u.passwordFile != null) (lib.attrValues cfg.users);
