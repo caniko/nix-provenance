@@ -207,8 +207,11 @@ fn reconcile(
     // Delete credentials this tool created that are no longer declared, by
     // recorded id only: same-named UI or adopted credentials are never touched.
     for (name, id) in removed_credentials(&previous, state) {
-        n8n.delete_credential(&id)?;
-        eprintln!("credential {name}: deleted (no longer declared)");
+        // Already gone (deleted by hand): the desired state holds, nothing to do.
+        if existing.iter().any(|(i, _)| *i == id) {
+            n8n.delete_credential(&id)?;
+            eprintln!("credential {name}: deleted (no longer declared)");
+        }
     }
     fs::create_dir_all(marker_dir)?;
     atomic_write_secret(&registry, &serde_json::to_string(&owned)?)?;
