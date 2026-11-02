@@ -17,11 +17,12 @@ impl Windmill {
     pub fn new(base: &str) -> Result<Self> {
         Ok(Self {
             base: base.trim_end_matches('/').to_owned(),
-            http: provenance_core::http::build_blocking_client(
-                "windmill-provision",
-                false,
-                Some(Duration::from_secs(30)),
-            )?,
+            // Credentials travel over this client: never via an environment proxy.
+            http: Client::builder()
+                .user_agent("windmill-provision")
+                .timeout(Duration::from_secs(30))
+                .no_proxy()
+                .build()?,
         })
     }
 

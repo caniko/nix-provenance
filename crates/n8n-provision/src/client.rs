@@ -45,6 +45,8 @@ impl N8n {
         let http = Client::builder()
             .cookie_store(true)
             .user_agent("n8n-provision")
+            // Credentials travel over this client: never via an environment proxy.
+            .no_proxy()
             .timeout(Duration::from_secs(30))
             .build()?;
         Ok(Self {

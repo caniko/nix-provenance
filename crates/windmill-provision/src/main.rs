@@ -168,6 +168,19 @@ fn install_token(token: &state::Token, value: &str) -> Result<()> {
     result
 }
 
+fn lock_default_admin(db: &db::Psql, timeout: Duration) -> Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match db.run(&db::lock_default_admin_sql()) {
+            Ok(_) => return Ok(()),
+            Err(e) if std::time::Instant::now() >= deadline => {
+                return Err(e).context("locking the stock admin");
+            }
+            Err(_) => std::thread::sleep(Duration::from_secs(1)),
+        }
+    }
+}
+
 fn reconcile(
     state: &State,
     credential_dir: &Path,
@@ -177,21 +190,14 @@ fn reconcile(
 ) -> Result<()> {
     let superadmin = read_password_file(credential_dir.join(&state.superadmin_credential))?;
     let wm = Windmill::new(&state.url)?;
-    // Best effort before readiness: a wrong loopback URL must not leave the stock
-    // login open while the real server runs. Fails harmlessly until migrated.
-    if state.disable_default_admin
-        && let Err(e) = db.run(&db::lock_default_admin_sql())
-    {
-        eprintln!("stock admin lock deferred: {e}");
+    // Lock the stock admin as soon as the DB is migrated, independent of the
+    // HTTP URL (a wrong port must not leave changeme usable). Retries until the
+    // `password` table exists.
+    if state.disable_default_admin {
+        lock_default_admin(db, Duration::from_secs(ready_timeout))?;
     }
     wm.wait_ready(Duration::from_secs(ready_timeout))?;
     let markers = PasswordMarkerStore::new(marker_dir);
-
-    // Fail closed: lock the stock admin before anything below can error out.
-    // It needs the DB (migrated by the server), so it cannot precede readiness.
-    if state.disable_default_admin {
-        db.run(&db::lock_default_admin_sql())?;
-    }
 
     // Users first: workspace membership and token minting need the rows.
     for (name, user) in &state.users {
