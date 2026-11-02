@@ -151,6 +151,12 @@ fn reconcile(
     wm.wait_ready(Duration::from_secs(ready_timeout))?;
     let markers = PasswordMarkerStore::new(marker_dir);
 
+    // Fail closed: lock the stock admin before anything below can error out.
+    // It needs the DB (migrated by the server), so it cannot precede readiness.
+    if state.disable_default_admin {
+        db.run(&db::lock_default_admin_sql())?;
+    }
+
     // Users first: workspace membership and token minting need the rows.
     for (name, user) in &state.users {
         let password = read_password_file(credential_dir.join(&user.credential_name))?;
@@ -165,10 +171,6 @@ fn reconcile(
             eprintln!("user {name}: password applied");
         }
     }
-    if state.disable_default_admin {
-        db.run(&db::lock_default_admin_sql())?;
-    }
-
     for (id, ws) in &state.workspaces {
         if !wm.workspace_exists(&superadmin, id)? {
             wm.create_workspace(&superadmin, id, &ws.name)?;

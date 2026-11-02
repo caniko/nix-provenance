@@ -242,5 +242,20 @@ in {
         ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir ${stateDir}/markers --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql";
       };
     };
+
+    # Runtime password files rotate in place, so the oneshot has no store-path
+    # change to restart on: watch them and restart it (RemainAfterExit makes a
+    # plain start a no-op).
+    systemd.paths.windmill-provision-rotate = {
+      wantedBy = ["multi-user.target"];
+      pathConfig.PathChanged = map (u: toString u.passwordFile) (lib.attrValues cfg.users);
+    };
+    systemd.services.windmill-provision-rotate = {
+      description = "Re-run Windmill provisioning after a password file rotates";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-provision.service";
+      };
+    };
   };
 }

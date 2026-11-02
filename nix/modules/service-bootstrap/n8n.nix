@@ -162,5 +162,19 @@ in {
         ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir /var/lib/n8n-provision/markers";
       };
     };
+
+    # The owner hash is rendered in n8n ExecStartPre, so an in-place password
+    # rotation needs a restart (which also re-runs n8n-provision via partOf).
+    systemd.paths.n8n-provision-rotate = {
+      wantedBy = ["multi-user.target"];
+      pathConfig.PathChanged = toString cfg.owner.passwordFile;
+    };
+    systemd.services.n8n-provision-rotate = {
+      description = "Restart n8n after the owner password file rotates";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${config.systemd.package}/bin/systemctl restart n8n.service";
+      };
+    };
   };
 }

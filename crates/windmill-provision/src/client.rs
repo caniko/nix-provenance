@@ -153,7 +153,7 @@ impl Windmill {
         Ok(body.trim().trim_matches('"').to_owned())
     }
 
-    /// False only for 401: scoped tokens may legitimately get 403 on whoami.
+    /// False only for 401; 403 (scoped token) is valid, other statuses error.
     /// Workspace-bound tokens are checked on the workspace route, which is the
     /// one they are issued for.
     pub fn token_is_valid(&self, token: &str, workspace: Option<&str>) -> Result<bool> {
@@ -166,6 +166,29 @@ impl Windmill {
             .get(format!("{}{path}", self.base))
             .bearer_auth(token)
             .send()?;
-        Ok(resp.status() != StatusCode::UNAUTHORIZED)
+        token_status_valid(resp.status())
+    }
+}
+
+/// 401 means the token is dead; 403 is a scoped token that may not call
+/// whoami. Anything else (5xx, 404) is an unusable answer, not a verdict.
+fn token_status_valid(status: StatusCode) -> Result<bool> {
+    match status {
+        StatusCode::UNAUTHORIZED => Ok(false),
+        s if s.is_success() || s == StatusCode::FORBIDDEN => Ok(true),
+        s => bail!("unexpected token check status {s}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_401_invalidates_and_odd_statuses_error() {
+        assert!(!token_status_valid(StatusCode::UNAUTHORIZED).unwrap());
+        assert!(token_status_valid(StatusCode::OK).unwrap());
+        assert!(token_status_valid(StatusCode::FORBIDDEN).unwrap());
+        assert!(token_status_valid(StatusCode::BAD_GATEWAY).is_err());
     }
 }
