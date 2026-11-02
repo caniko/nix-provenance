@@ -5,6 +5,7 @@
   pkgs,
   lib,
   nixpkgs,
+  nixpkgs-windmill,
   craneLib,
   src,
   self,
@@ -54,6 +55,15 @@
   tuwunelPrivateRoomsVmTest = import ./modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};
   windmillEval = evalSystem ./modules/test/windmill-provision-eval.nix;
   windmillBootstrapVmTest = import ./modules/test/windmill-bootstrap-vmtest.nix {inherit pkgs self;};
+  # Same test against the windmill Canix/Atlas runs (1.839.0).
+  windmillBootstrapVmTestAtlas = let
+    atlasPkgs = import nixpkgs-windmill {inherit system;};
+  in
+    import ./modules/test/windmill-bootstrap-vmtest.nix {
+      inherit pkgs self;
+      windmillPackage = atlasPkgs.windmill;
+      nameSuffix = "-atlas";
+    };
   n8nEval = evalSystem ./modules/test/n8n-provision-eval.nix;
   n8nBootstrapVmTest = import ./modules/test/n8n-bootstrap-vmtest.nix {inherit pkgs self;};
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
@@ -874,6 +884,7 @@ in
     tuwunel-private-rooms-vmtest = tuwunelPrivateRoomsVmTest;
 
     windmill-bootstrap-vmtest = windmillBootstrapVmTest;
+    windmill-bootstrap-atlas-vmtest = windmillBootstrapVmTestAtlas;
     n8n-bootstrap-vmtest = n8nBootstrapVmTest;
 
     windmill-module-eval = let

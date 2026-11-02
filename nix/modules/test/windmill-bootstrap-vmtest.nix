@@ -1,10 +1,12 @@
 {
   pkgs,
   self,
+  windmillPackage ? null,
+  nameSuffix ? "",
   ...
 }:
 pkgs.testers.nixosTest {
-  name = "windmill-bootstrap";
+  name = "windmill-bootstrap${nameSuffix}";
 
   nodes.machine = {lib, ...}: {
     imports = [self.nixosModules.windmillProvision];
@@ -28,6 +30,7 @@ pkgs.testers.nixosTest {
 
     services.windmill = {
       enable = true;
+      package = lib.mkIf (windmillPackage != null) windmillPackage;
       baseUrl = "http://localhost:8001";
       provision = {
         enable = true;

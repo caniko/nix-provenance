@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # Test-only: the nixpkgs revision Canix/Atlas runs, which carries windmill
+    # 1.839.0. The Windmill VM test runs against it as well as against the
+    # default nixpkgs because the tenant writes Windmill's `password` table.
+    nixpkgs-windmill.url = "github:NixOS/nixpkgs/02c087f3fe673c9e317f206a627cb6b910336dbe";
     harbor-rs = {
       url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=ed89d0b13fc61dd1b2217bf4bba97f32cec27ba7";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -26,6 +30,7 @@
   outputs = {
     self,
     nixpkgs,
+    nixpkgs-windmill,
     flake-utils,
     harbor-rs,
     rust-overlay,
@@ -161,7 +166,7 @@
         inherit packages;
 
         checks = import ./nix/checks.nix {
-          inherit pkgs nixpkgs craneLib src self system;
+          inherit pkgs nixpkgs nixpkgs-windmill craneLib src self system;
           inherit lib;
           inherit packages;
           inherit (crates) args cargoArtifacts;

@@ -46,6 +46,13 @@ services.windmill = {
   `owner`/`group`/`mode`, kept while Windmill accepts them and re-minted
   otherwise.
 
+The VM test runs against both the default nixpkgs windmill (1.601.1) and the
+one Canix/Atlas runs (1.839.0, test-only input `nixpkgs-windmill`), because the
+tenant writes the `password` table directly. The `psql` step runs as the
+`postgres` OS user over the local socket (peer auth), so a cluster using a
+custom `identMap` must map `postgres` to the `postgres` role (a `/^(.*)$ \1`
+rule does).
+
 ## n8n
 
 ```nix

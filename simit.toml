@@ -26,6 +26,7 @@ nix_builds = [
   ".#checks.x86_64-linux.windmill-provision-clippy",
   ".#checks.x86_64-linux.windmill-module-eval",
   ".#checks.x86_64-linux.windmill-bootstrap-vmtest",
+  ".#checks.x86_64-linux.windmill-bootstrap-atlas-vmtest",
   ".#packages.x86_64-linux.n8n-provision",
   ".#checks.x86_64-linux.n8n-provision-test",
   ".#checks.x86_64-linux.n8n-provision-clippy",
@@ -76,6 +77,7 @@ windmill = [
   ".#checks.x86_64-linux.windmill-provision-clippy",
   ".#checks.x86_64-linux.windmill-module-eval",
   ".#checks.x86_64-linux.windmill-bootstrap-vmtest",
+  ".#checks.x86_64-linux.windmill-bootstrap-atlas-vmtest",
 ]
 n8n = [
   ".#packages.x86_64-linux.n8n-provision",
