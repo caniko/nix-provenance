@@ -135,7 +135,7 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = builtins.match "https://[^@/]+(/.*)?|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])(:[0-9]+)?(/[^@]*)?" cfg.url != null;
+        assertion = builtins.match "https://[^@/?#]+(/[A-Za-z0-9._~/-]*)?|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?" cfg.url != null;
         message = "services.n8n.provision.url must be https:// or a loopback http:// URL: the owner session is sent over it.";
       }
       {
@@ -157,12 +157,27 @@ in {
     ];
 
     # Env-managed owner: n8n reads N8N_INSTANCE_OWNER_* from its environment
-    # and applies it on every start. Only the bcrypt hash is rendered.
-    systemd.services.n8n.serviceConfig = {
-      RuntimeDirectory = "n8n-provision";
-      RuntimeDirectoryMode = "0700";
-      ExecStartPre = ["+${exe} owner-env --state ${ownerStateFile} --password-file ${cfg.owner.passwordFile} --hash-dir ${n8n.environment.N8N_USER_FOLDER} --out ${envFile}"];
-      EnvironmentFile = lib.mkAfter ["-${envFile}"];
+    # and applies it on every start. Only the bcrypt hash is rendered, by a
+    # root oneshot that holds the password as a systemd credential, so the
+    # plaintext is never a credential of n8n.service itself.
+    systemd.services.n8n-owner-env = {
+      description = "Render the n8n owner environment from the owner password";
+      before = ["n8n.service"];
+      wantedBy = ["n8n.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        RuntimeDirectory = "n8n-provision";
+        RuntimeDirectoryMode = "0700";
+        RuntimeDirectoryPreserve = "yes";
+        LoadCredential = ["${ownerCredential}:${cfg.owner.passwordFile}"];
+        ExecStart = "${exe} owner-env --state ${ownerStateFile} --password-file %d/${ownerCredential} --hash-dir ${n8n.environment.N8N_USER_FOLDER} --out ${envFile}";
+      };
+    };
+    systemd.services.n8n = {
+      requires = ["n8n-owner-env.service"];
+      after = ["n8n-owner-env.service"];
+      serviceConfig.EnvironmentFile = lib.mkAfter ["-${envFile}"];
     };
 
     systemd.services.n8n-provision = {
@@ -185,8 +200,8 @@ in {
       };
     };
 
-    # The owner hash is rendered in n8n ExecStartPre, so an in-place password
-    # rotation needs a restart (which also re-runs n8n-provision via partOf).
+    # The owner hash is rendered by n8n-owner-env, so an in-place password
+    # rotation restarts it (n8n follows via requires, n8n-provision via partOf).
     systemd.paths.n8n-provision-rotate = {
       wantedBy = ["multi-user.target"];
       pathConfig.PathChanged = toString cfg.owner.passwordFile;
@@ -195,7 +210,7 @@ in {
       description = "Restart n8n after the owner password file rotates";
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "${config.systemd.package}/bin/systemctl restart n8n.service";
+        ExecStart = "${config.systemd.package}/bin/systemctl restart n8n-owner-env.service";
       };
     };
 

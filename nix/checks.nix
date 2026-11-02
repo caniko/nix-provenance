@@ -948,6 +948,7 @@ in
 
     n8n-module-eval = let
       server = n8nEval.config.systemd.services.n8n;
+      owner = n8nEval.config.systemd.services.n8n-owner-env;
       svc = n8nEval.config.systemd.services.n8n-provision;
       json = builtins.toJSON;
       failed = c: lib.filter (m: lib.hasPrefix "services.n8n.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
@@ -984,8 +985,9 @@ in
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n.service
         # The owner password must not be a credential of the n8n unit itself.
         ! printf '%s' ${lib.escapeShellArg (json (server.serviceConfig.LoadCredential or []))} | grep -q 'owner-password'
-        printf '%s' ${lib.escapeShellArg (json server.serviceConfig.ExecStartPre)} | grep -q -- '--password-file /run/agenix/n8n-owner'
-        printf '%s' ${lib.escapeShellArg (json server.serviceConfig.ExecStartPre)} | grep -q 'owner-env'
+        printf '%s' ${lib.escapeShellArg (json owner.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'
+        printf '%s' ${lib.escapeShellArg owner.serviceConfig.ExecStart} | grep -q 'owner-env'
+        printf '%s' ${lib.escapeShellArg (json server.requires)} | grep -q n8n-owner-env.service
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.EnvironmentFile)} | grep -q '/run/n8n-provision/owner.env'
         printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q ':/run/agenix/n8n-webhook'
         state_file=$(printf '%s' ${lib.escapeShellArg svc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*n8n-provision-state.json')
