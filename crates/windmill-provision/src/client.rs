@@ -70,9 +70,12 @@ impl Windmill {
     pub fn rename_workspace(&self, bearer: &str, id: &str, name: &str) -> Result<()> {
         let resp = self
             .http
-            .post(format!("{}/api/w/{id}/workspaces/edit", self.base))
+            .post(format!(
+                "{}/api/w/{id}/workspaces/change_workspace_name",
+                self.base
+            ))
             .bearer_auth(bearer)
-            .json(&json!({ "name": name }))
+            .json(&json!({ "new_name": name }))
             .send()?;
         provenance_core::http::ensure_success(resp)
             .with_context(|| format!("renaming workspace {id}"))?;
