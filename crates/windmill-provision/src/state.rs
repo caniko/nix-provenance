@@ -79,6 +79,16 @@ pub fn is_username(value: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Lexical identity of a token path: absolute, no `.`/`..`, parent resolved
+/// through symlinks when it already exists, so aliases collide.
+fn same_file_key(path: &std::path::Path) -> PathBuf {
+    let parent = path.parent().unwrap_or(path);
+    let parent = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
+    parent.join(path.file_name().unwrap_or_default())
+}
+
 impl State {
     pub fn validate(&self) -> Result<()> {
         let mut emails = std::collections::BTreeSet::new();
@@ -92,7 +102,17 @@ impl State {
         }
         for (label, token) in &self.tokens {
             ensure!(
-                paths.insert(&token.path),
+                token.path.is_absolute()
+                    && !token.path.components().any(|c| matches!(
+                        c,
+                        std::path::Component::ParentDir | std::path::Component::CurDir
+                    )),
+                "token {label}: path must be absolute without . or .. components"
+            );
+        }
+        for (label, token) in &self.tokens {
+            ensure!(
+                paths.insert(same_file_key(&token.path)),
                 "token {label}: path {} used twice",
                 token.path.display()
             );
@@ -213,6 +233,13 @@ mod tests {
     fn rejects_uppercase_emails() {
         let mut s = state(BASE);
         s.users.get_mut("can").unwrap().email = "Can@example.com".into();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_dotdot_token_paths() {
+        let mut s = state(BASE);
+        s.tokens.get_mut("t").unwrap().path = "/x/../x/t".into();
         assert!(s.validate().is_err());
     }
 

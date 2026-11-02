@@ -17,6 +17,15 @@
   # Length-prefixed so (foo-bar, va) and (foo, bar-va) never share an id.
   fieldCredential = name: field: pw.credentialName "n8n-credential:${toString (lib.stringLength name)}:${name}:${field}";
 
+  # Secret-looking key anywhere in a data value (recursively): it would be
+  # serialized into the store, so it belongs in dataFiles.
+  looksSecret = v:
+    if builtins.isAttrs v
+    then lib.any (k: lib.any (s: lib.hasInfix s (lib.toLower k)) ["pass" "secret" "token" "key" "value"] || looksSecret v.${k}) (lib.attrNames v)
+    else if builtins.isList v
+    then lib.any looksSecret v
+    else false;
+
   notRuntime = f: !(lib.hasPrefix "/" f) || lib.hasPrefix builtins.storeDir f;
   fieldFiles = lib.concatLists (lib.mapAttrsToList (name: c: lib.mapAttrsToList (field: file: {inherit name field file;}) c.dataFiles) cfg.credentials);
   secretFiles = [cfg.owner.passwordFile] ++ map (f: toString f.file) fieldFiles;
@@ -130,7 +139,7 @@ in {
         message = "services.n8n.provision.url must be https:// or a loopback http:// URL: the owner session is sent over it.";
       }
       {
-        assertion = lib.all (c: lib.all (f: !(lib.any (s: lib.hasInfix s (lib.toLower f)) ["pass" "secret" "token" "key" "value"])) (lib.attrNames c.data)) (lib.attrValues cfg.credentials);
+        assertion = !(lib.any (c: lib.any looksSecret [c.data]) (lib.attrValues cfg.credentials));
         message = "services.n8n.provision.credentials.*.data would land in the Nix store; put secret-looking fields (pass, secret, token, key, value) in dataFiles.";
       }
       {

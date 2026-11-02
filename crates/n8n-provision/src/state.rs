@@ -39,6 +39,20 @@ pub struct Credential {
     pub data_files: BTreeMap<String, String>,
 }
 
+/// True when `key` or any nested object key names a secret; such values must
+/// come from dataFiles, never the Nix-rendered state.
+fn looks_secret(key: &str, value: &serde_json::Value) -> bool {
+    let k = key.to_lowercase();
+    ["pass", "secret", "token", "key", "value"]
+        .iter()
+        .any(|s| k.contains(s))
+        || match value {
+            serde_json::Value::Object(m) => m.iter().any(|(k, v)| looks_secret(k, v)),
+            serde_json::Value::Array(a) => a.iter().any(|v| looks_secret("", v)),
+            _ => false,
+        }
+}
+
 impl State {
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -50,12 +64,9 @@ impl State {
                 !name.is_empty() && name.len() <= 128,
                 "credential name {name:?} must be 1-128 chars"
             );
-            for field in cred.data.keys() {
-                let f = field.to_lowercase();
+            for (field, value) in &cred.data {
                 ensure!(
-                    !["pass", "secret", "token", "key", "value"]
-                        .iter()
-                        .any(|s| f.contains(s)),
+                    !looks_secret(field, value),
                     "credential {name}: field {field} looks secret; use dataFiles"
                 );
             }
@@ -73,6 +84,17 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_nested_secret_looking_data_field() {
+        let s: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "credentials":{"hook":{"type":"x","data":{"client":{"secret":"y"}}}}}"#,
+        )
+        .unwrap();
+        assert!(s.validate().is_err());
+    }
 
     #[test]
     fn rejects_secret_looking_data_field() {

@@ -177,6 +177,13 @@ fn reconcile(
 ) -> Result<()> {
     let superadmin = read_password_file(credential_dir.join(&state.superadmin_credential))?;
     let wm = Windmill::new(&state.url)?;
+    // Best effort before readiness: a wrong loopback URL must not leave the stock
+    // login open while the real server runs. Fails harmlessly until migrated.
+    if state.disable_default_admin
+        && let Err(e) = db.run(&db::lock_default_admin_sql())
+    {
+        eprintln!("stock admin lock deferred: {e}");
+    }
     wm.wait_ready(Duration::from_secs(ready_timeout))?;
     let markers = PasswordMarkerStore::new(marker_dir);
 
@@ -302,14 +309,15 @@ fn declared_tokens(state: &State) -> BTreeMap<String, Recorded> {
         .collect()
 }
 
-/// Recorded tokens whose label is no longer declared.
+/// Recorded tokens whose label is no longer declared, or whose owner or path
+/// changed: the recorded token is stale and is revoked by its old identity.
 fn removed_tokens(
     previous: &BTreeMap<String, Recorded>,
     declared: &BTreeMap<String, Recorded>,
 ) -> Vec<(String, Recorded)> {
     previous
         .iter()
-        .filter(|(label, _)| !declared.contains_key(*label))
+        .filter(|(label, rec)| declared.get(*label) != Some(*rec))
         .map(|(label, rec)| (label.clone(), rec.clone()))
         .collect()
 }
@@ -351,7 +359,14 @@ fn prune(state: &State, marker_dir: &Path, db: &db::Psql) -> Result<()> {
         db.run(&db::revoke_label_sql(
             &label, &rec.email, old_prefix, column,
         ))?;
-        match fs::remove_file(&rec.path) {
+        // A path another (or the same) declaration still uses is rewritten by the
+        // token step; never delete it here.
+        let reused = declared.values().any(|d| d.path == rec.path);
+        match if reused {
+            Ok(())
+        } else {
+            fs::remove_file(&rec.path)
+        } {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).with_context(|| format!("removing {}", rec.path.display())),
@@ -407,6 +422,16 @@ mod tests {
         assert_eq!(
             removed_tokens(&previous, &declared_tokens(&state)),
             vec![("gone".to_owned(), rec("/x/gone"))]
+        );
+        // A changed owner retires the old recorded token too.
+        let moved = BTreeMap::from([("t".to_owned(), rec("/x/t"))]);
+        let other = Recorded {
+            path: "/x/t".into(),
+            email: "other@example.com".into(),
+        };
+        assert_eq!(
+            removed_tokens(&moved, &BTreeMap::from([("t".to_owned(), other)])).len(),
+            1
         );
     }
 
