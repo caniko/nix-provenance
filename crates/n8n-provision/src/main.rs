@@ -198,10 +198,7 @@ fn reconcile(
     // Delete credentials this tool created earlier that are no longer
     // declared, so a removed entry does not stay usable by workflows.
     let registry = marker_dir.join(CREDENTIAL_REGISTRY);
-    let previous: BTreeSet<String> = fs::read_to_string(&registry)
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default();
+    let previous: BTreeSet<String> = read_registry(&registry)?;
     for name in removed_credentials(&previous, state) {
         for (id, _) in existing.iter().filter(|(_, n)| *n == name) {
             n8n.delete_credential(id)?;
@@ -216,6 +213,18 @@ fn reconcile(
 
 const CREDENTIAL_REGISTRY: &str = "credentials.json";
 
+/// Previous-run registry: only a missing file is an empty first run; an
+/// unreadable or corrupt one aborts so removals are never silently forgotten.
+fn read_registry<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T> {
+    match fs::read_to_string(path) {
+        Ok(raw) => {
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
 /// Names recorded by earlier runs that are no longer declared.
 fn removed_credentials(previous: &BTreeSet<String>, state: &State) -> Vec<String> {
     previous
@@ -228,6 +237,16 @@ fn removed_credentials(previous: &BTreeSet<String>, state: &State) -> Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrupt_registry_aborts_and_missing_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("r.json");
+        let empty: BTreeSet<String> = read_registry(&f).unwrap();
+        assert!(empty.is_empty());
+        fs::write(&f, "{not json").unwrap();
+        assert!(read_registry::<BTreeSet<String>>(&f).is_err());
+    }
 
     #[test]
     fn credential_value_keeps_inner_whitespace_and_drops_one_newline() {

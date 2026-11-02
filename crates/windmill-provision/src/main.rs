@@ -290,6 +290,18 @@ fn reconcile(
 
 const TOKEN_REGISTRY: &str = "tokens.json";
 
+/// Previous-run registry: only a missing file is an empty first run; an
+/// unreadable or corrupt one aborts so removals are never silently forgotten.
+fn read_registry<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T> {
+    match fs::read_to_string(path) {
+        Ok(raw) => {
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
 /// What an earlier run recorded about a token it manages.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Recorded {
@@ -344,10 +356,7 @@ fn undeclared_emails(provisioned: Vec<String>, state: &State) -> Vec<String> {
 /// if that window matters.
 fn prune(state: &State, marker_dir: &Path, db: &db::Psql) -> Result<()> {
     let registry = marker_dir.join(TOKEN_REGISTRY);
-    let previous: BTreeMap<String, Recorded> = fs::read_to_string(&registry)
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default();
+    let previous: BTreeMap<String, Recorded> = read_registry(&registry)?;
     let declared = declared_tokens(state);
     for (label, rec) in removed_tokens(&previous, &declared) {
         anyhow::ensure!(state::is_safe_ident(&label), "unsafe recorded token label");
@@ -392,6 +401,16 @@ mod tests {
     use std::os::unix::fs::MetadataExt as _;
 
     use super::*;
+
+    #[test]
+    fn corrupt_registry_aborts_and_missing_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("r.json");
+        let empty: BTreeSet<String> = read_registry(&f).unwrap();
+        assert!(empty.is_empty());
+        fs::write(&f, "{not json").unwrap();
+        assert!(read_registry::<BTreeSet<String>>(&f).is_err());
+    }
 
     #[test]
     fn env_line_quotes_and_rejects_control_chars() {
