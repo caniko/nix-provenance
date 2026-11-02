@@ -1,0 +1,36 @@
+[package]
+name = "windmill-provision"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Declarative bootstrap of Windmill workspaces, operator logins and API tokens"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage = "https://github.com/caniko/nix-provenance"
+authors.workspace = true
+keywords = ["windmill", "provisioning", "tokens", "iam"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "windmill-provision"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+argon2 = "0.5"
+clap.workspace = true
+provenance-core = { path = "../provenance-core" }
+rand.workspace = true
+# TLS features kept LOCAL (see root Cargo.toml). Windmill is only ever reached
+# on loopback over plain HTTP, but the client type still needs a backend.
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls-native-roots",
+  "blocking",
+] }
+serde.workspace = true
+serde_json.workspace = true
+
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

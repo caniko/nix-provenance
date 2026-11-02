@@ -119,6 +119,8 @@ jobs:
           nix build '.#packages.x86_64-linux.rauthy-state-render' --out-link '.simit-prebuild/ci-8' --print-build-logs --max-jobs 1 --cores 2
           nix build '.#packages.x86_64-linux.stalwart-oauth-bootstrap' --out-link '.simit-prebuild/ci-9' --print-build-logs --max-jobs 1 --cores 2
           nix build '.#packages.x86_64-linux.tuwunel-provision' --out-link '.simit-prebuild/ci-10' --print-build-logs --max-jobs 1 --cores 2
+          nix build '.#packages.x86_64-linux.windmill-provision' --out-link '.simit-prebuild/ci-11' --print-build-logs --max-jobs 1 --cores 2
+          nix build '.#packages.x86_64-linux.n8n-provision' --out-link '.simit-prebuild/ci-12' --print-build-logs --max-jobs 1 --cores 2
       - name: Publish flake inputs to Attic
         if: ${{ (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || (inputs.release && github.event_name != 'pull_request') }}
         env:

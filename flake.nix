@@ -205,6 +205,8 @@
             rauthy-state-render
             stalwart-oauth-bootstrap
             tuwunel-provision
+            windmill-provision
+            n8n-provision
           ];
         };
 
@@ -244,6 +246,8 @@
         externalApp = import ./nix/modules/adapter/external-app.nix {inherit self;};
         wireguardStatus = import ./nix/modules/adapter/wireguard-status.nix;
         tuwunel = import ./nix/modules/config-only/tuwunel.nix {inherit self;};
+        windmillProvision = import ./nix/modules/service-bootstrap/windmill.nix {inherit self;};
+        n8nProvision = import ./nix/modules/service-bootstrap/n8n.nix {inherit self;};
         default = {imports = [self.nixosModules.rauthy];};
       };
 
@@ -310,7 +314,7 @@
           '';
         });
       in {
-        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision github-provision stalwart016-provision tuwunel-provision;
+        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision github-provision stalwart016-provision tuwunel-provision windmill-provision n8n-provision;
         rauthy-vikunja-groups = rauthyVikunjaGroups;
       };
     };

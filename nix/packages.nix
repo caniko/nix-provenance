@@ -68,6 +68,8 @@
       buildInputs = [pkgs.dbus];
     };
   tuwunelArgs = mkArgs "tuwunel-provision";
+  windmillArgs = mkArgs "windmill-provision";
+  n8nArgs = mkArgs "n8n-provision";
 
   immichDeps = craneLib.buildDepsOnly immichArgs;
   kanidmStateRenderDeps = craneLib.buildDepsOnly kanidmStateRenderArgs;
@@ -83,6 +85,8 @@
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
   stalwartOauthBootstrapDeps = craneLib.buildDepsOnly stalwartOauthBootstrapArgs;
   tuwunelDeps = craneLib.buildDepsOnly tuwunelArgs;
+  windmillDeps = craneLib.buildDepsOnly windmillArgs;
+  n8nDeps = craneLib.buildDepsOnly n8nArgs;
 in {
   args = {
     immich-provision = immichArgs;
@@ -99,6 +103,8 @@ in {
     stalwart016-provision = stalwartProvisionArgs;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapArgs;
     tuwunel-provision = tuwunelArgs;
+    windmill-provision = windmillArgs;
+    n8n-provision = n8nArgs;
   };
 
   cargoArtifacts = {
@@ -116,6 +122,8 @@ in {
     stalwart016-provision = stalwartProvisionDeps;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapDeps;
     tuwunel-provision = tuwunelDeps;
+    windmill-provision = windmillDeps;
+    n8n-provision = n8nDeps;
   };
 
   packages = {
@@ -268,6 +276,26 @@ in {
           description = "Declarative provisioning client for Tuwunel Matrix users with auto-bootstrap";
           mainProgram = "tuwunel-provision";
           license = [lib.licenses.agpl3Only];
+        };
+      });
+
+    windmill-provision = craneLib.buildPackage (windmillArgs
+      // {
+        cargoArtifacts = windmillDeps;
+        meta = {
+          description = "Declarative Windmill superadmin, operator login, workspace and token bootstrap";
+          mainProgram = "windmill-provision";
+          license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    n8n-provision = craneLib.buildPackage (n8nArgs
+      // {
+        cargoArtifacts = n8nDeps;
+        meta = {
+          description = "Declarative n8n owner and credential bootstrap";
+          mainProgram = "n8n-provision";
+          license = with lib.licenses; [mit asl20];
         };
       });
   };
