@@ -159,10 +159,9 @@ in {
     # Env-managed owner: n8n reads N8N_INSTANCE_OWNER_* from its environment
     # and applies it on every start. Only the bcrypt hash is rendered.
     systemd.services.n8n.serviceConfig = {
-      LoadCredential = ["${ownerCredential}:${cfg.owner.passwordFile}"];
       RuntimeDirectory = "n8n-provision";
       RuntimeDirectoryMode = "0700";
-      ExecStartPre = ["+${exe} owner-env --state ${ownerStateFile} --credential-dir %d --hash-dir ${n8n.environment.N8N_USER_FOLDER} --out ${envFile}"];
+      ExecStartPre = ["+${exe} owner-env --state ${ownerStateFile} --password-file ${cfg.owner.passwordFile} --hash-dir ${n8n.environment.N8N_USER_FOLDER} --out ${envFile}"];
       EnvironmentFile = lib.mkAfter ["-${envFile}"];
     };
 

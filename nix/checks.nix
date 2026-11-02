@@ -982,7 +982,9 @@ in
         test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n.service
-        printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'
+        # The owner password must not be a credential of the n8n unit itself.
+        ! printf '%s' ${lib.escapeShellArg (json (server.serviceConfig.LoadCredential or []))} | grep -q 'owner-password'
+        printf '%s' ${lib.escapeShellArg (json server.serviceConfig.ExecStartPre)} | grep -q -- '--password-file /run/agenix/n8n-owner'
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.ExecStartPre)} | grep -q 'owner-env'
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.EnvironmentFile)} | grep -q '/run/n8n-provision/owner.env'
         printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q ':/run/agenix/n8n-webhook'

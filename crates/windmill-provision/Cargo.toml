@@ -19,6 +19,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 argon2 = "0.5"
 clap.workspace = true
+libc = "0.2"
 provenance-core = { path = "../provenance-core" }
 rand.workspace = true
 # TLS features kept LOCAL (see root Cargo.toml). Windmill is only ever reached

@@ -60,9 +60,13 @@ rule does).
 - Pruning: logins the tenant created are marked in Windmill (`company =
   'provisioned'`). A marked login whose email is no longer declared (removed
   or changed email) is locked (no password verifies, no instance admin, all its
-  tokens deleted), and a token entry removed from the declaration is revoked
-  and its file deleted. Rows the tenant did not create are never locked.
-  Workspace memberships of a locked user stay, but the login is dead.
+  tokens deleted, its workspace memberships removed), and a token entry removed
+  from the declaration is revoked and its file deleted. A pre-existing login
+  that is declared is adopted (marked), so it is locked too once its
+  declaration goes; undeclared logins the tenant never touched are left alone.
+- n8n: a credential this tool created is deleted when its declaration is
+  removed (tracked by id; same-named credentials made in the UI are never
+  deleted).
 - A token's spec includes its owner's email and admin flag, so demoting a user
   or changing an email re-mints and revokes the old token.
 - Not done: renaming a user (a changed `users` key leaves the old username in

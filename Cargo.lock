@@ -6076,6 +6076,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "clap",
+ "libc",
  "provenance-core",
  "rand 0.9.4",
  "reqwest 0.12.28",

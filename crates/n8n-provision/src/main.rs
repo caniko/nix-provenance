@@ -1,7 +1,7 @@
 mod client;
 mod state;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -32,8 +32,9 @@ enum Command {
     OwnerEnv {
         #[arg(long)]
         state: PathBuf,
+        /// Owner password file, read as root here so n8n itself never gets it.
         #[arg(long)]
-        credential_dir: PathBuf,
+        password_file: PathBuf,
         /// Directory persisting the last bcrypt hash so restarts do not churn it.
         #[arg(long)]
         hash_dir: PathBuf,
@@ -64,10 +65,10 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::OwnerEnv {
             state,
-            credential_dir,
+            password_file,
             hash_dir,
             out,
-        } => owner_env(&load_state(&state)?, &credential_dir, &hash_dir, &out),
+        } => owner_env(&load_state(&state)?, &password_file, &hash_dir, &out),
         Command::Reconcile {
             state,
             credential_dir,
@@ -120,8 +121,8 @@ fn owner_env_body(state: &State, hash: &str) -> String {
     )
 }
 
-fn owner_env(state: &State, credential_dir: &Path, hash_dir: &Path, out: &Path) -> Result<()> {
-    let password = read_password_file(credential_dir.join(&state.owner.credential_name))?;
+fn owner_env(state: &State, password_file: &Path, hash_dir: &Path, out: &Path) -> Result<()> {
+    let password = read_password_file(password_file)?;
     let hash = owner_hash(&password, &hash_dir.join("owner.bcrypt"))?;
     if let Some(dir) = out.parent() {
         fs::create_dir_all(dir)?;
@@ -170,6 +171,10 @@ fn reconcile(
     n8n.login(&state.owner.email, &password)?;
     let existing = n8n.list_credentials()?;
     let markers = PasswordMarkerStore::new(marker_dir);
+    let registry = marker_dir.join(CREDENTIAL_REGISTRY);
+    let previous: BTreeMap<String, String> = read_registry(&registry)?;
+    // name -> id of credentials this tool created (never adopted ones).
+    let mut owned: BTreeMap<String, String> = BTreeMap::new();
 
     for (name, cred) in &state.credentials {
         let data = resolve_data(cred, credential_dir)?;
@@ -181,34 +186,45 @@ fn reconcile(
             .find(|(_, n)| n == name)
             .map(|(i, _)| i.as_str());
         match found {
-            Some(_) if !markers.needs_update(&id, &fingerprint)? => {}
+            Some(cred_id) if !markers.needs_update(&id, &fingerprint)? => {
+                keep_owned(&mut owned, &previous, name, cred_id);
+            }
             Some(cred_id) => {
+                keep_owned(&mut owned, &previous, name, cred_id);
                 n8n.update_credential(cred_id, name, &cred.kind, &data)?;
                 markers.commit(&id, &fingerprint)?;
                 eprintln!("credential {name}: updated");
             }
             None => {
-                n8n.create_credential(name, &cred.kind, &data)?;
+                let new_id = n8n.create_credential(name, &cred.kind, &data)?;
+                owned.insert(name.clone(), new_id);
                 markers.commit(&id, &fingerprint)?;
                 eprintln!("credential {name}: created");
             }
         }
     }
 
-    // Delete credentials this tool created earlier that are no longer
-    // declared, so a removed entry does not stay usable by workflows.
-    let registry = marker_dir.join(CREDENTIAL_REGISTRY);
-    let previous: BTreeSet<String> = read_registry(&registry)?;
-    for name in removed_credentials(&previous, state) {
-        for (id, _) in existing.iter().filter(|(_, n)| *n == name) {
-            n8n.delete_credential(id)?;
-            eprintln!("credential {name}: deleted (no longer declared)");
-        }
+    // Delete credentials this tool created that are no longer declared, by
+    // recorded id only: same-named UI or adopted credentials are never touched.
+    for (name, id) in removed_credentials(&previous, state) {
+        n8n.delete_credential(&id)?;
+        eprintln!("credential {name}: deleted (no longer declared)");
     }
     fs::create_dir_all(marker_dir)?;
-    let declared: BTreeSet<&String> = state.credentials.keys().collect();
-    fs::write(&registry, serde_json::to_vec(&declared)?)?;
+    atomic_write_secret(&registry, &serde_json::to_string(&owned)?)?;
     Ok(())
+}
+
+/// Carry an id forward only if an earlier run recorded it as ours.
+fn keep_owned(
+    owned: &mut BTreeMap<String, String>,
+    previous: &BTreeMap<String, String>,
+    name: &str,
+    id: &str,
+) {
+    if previous.get(name).is_some_and(|p| p == id) {
+        owned.insert(name.to_owned(), id.to_owned());
+    }
 }
 
 const CREDENTIAL_REGISTRY: &str = "credentials.json";
@@ -225,12 +241,15 @@ fn read_registry<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Resul
     }
 }
 
-/// Names recorded by earlier runs that are no longer declared.
-fn removed_credentials(previous: &BTreeSet<String>, state: &State) -> Vec<String> {
+/// Credentials (name, id) recorded by earlier runs that are no longer declared.
+fn removed_credentials(
+    previous: &BTreeMap<String, String>,
+    state: &State,
+) -> Vec<(String, String)> {
     previous
         .iter()
-        .filter(|name| !state.credentials.contains_key(*name))
-        .cloned()
+        .filter(|(name, _)| !state.credentials.contains_key(*name))
+        .map(|(n, i)| (n.clone(), i.clone()))
         .collect()
 }
 
@@ -242,10 +261,10 @@ mod tests {
     fn corrupt_registry_aborts_and_missing_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("r.json");
-        let empty: BTreeSet<String> = read_registry(&f).unwrap();
+        let empty: BTreeMap<String, String> = read_registry(&f).unwrap();
         assert!(empty.is_empty());
         fs::write(&f, "{not json").unwrap();
-        assert!(read_registry::<BTreeSet<String>>(&f).is_err());
+        assert!(read_registry::<BTreeMap<String, String>>(&f).is_err());
     }
 
     #[test]
@@ -266,10 +285,13 @@ mod tests {
             "credentials":{"keep":{"type":"httpHeaderAuth"}}}"#,
         )
         .unwrap();
-        let previous = BTreeSet::from(["keep".to_owned(), "gone".to_owned()]);
+        let previous = BTreeMap::from([
+            ("keep".to_owned(), "1".to_owned()),
+            ("gone".to_owned(), "2".to_owned()),
+        ]);
         assert_eq!(
             removed_credentials(&previous, &state),
-            vec!["gone".to_owned()]
+            vec![("gone".to_owned(), "2".to_owned())]
         );
     }
 

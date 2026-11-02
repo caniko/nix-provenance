@@ -114,8 +114,8 @@ pub fn sqlstate_summary(stderr: &str) -> String {
 }
 
 /// Lock a provisioned user that is no longer declared: no password verifies,
-/// no admin, no tokens. Only rows this tenant created (`company =
-/// 'provisioned'`) are touched. Its workspace membership rows are deleted too,
+/// no admin, no tokens. Only rows marked `company = 'provisioned'` (created or adopted by this
+/// tenant's upsert) are touched. Its workspace membership rows are deleted too,
 /// which frees the username for a replacement login (an email change).
 /// `email` must satisfy `state::is_safe_ident`.
 pub fn lock_user_sql(email: &str) -> String {

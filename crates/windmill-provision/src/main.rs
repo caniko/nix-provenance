@@ -133,6 +133,26 @@ fn ensure_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Read an existing token file without following a symlink planted by its
+/// consumer: only a regular, singly-linked file counts; anything else is
+/// treated as absent (so the token is re-minted).
+fn read_token_file(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.nlink() != 1 {
+        return None;
+    }
+    let mut value = String::new();
+    file.read_to_string(&mut value).ok()?;
+    Some(value)
+}
+
 /// Install `value` at the token path atomically. Owner and mode are applied to
 /// the temporary file through its descriptor before the rename, so no
 /// path-based `chown`/`chmod` can follow a symlink planted by the consumer.
@@ -249,20 +269,20 @@ fn reconcile(
             token.user, owner.email, owner.admin, token.workspace, token.scopes
         );
         let valid = !markers.needs_update(&spec_id, &spec)?
-            && match fs::read_to_string(&token.path) {
-                Ok(existing) if !existing.trim().is_empty() => {
+            && match read_token_file(&token.path) {
+                Some(existing) if !existing.trim().is_empty() => {
                     wm.token_is_valid(existing.trim(), token.workspace.as_deref())?
                 }
                 _ => false,
             };
         if valid {
             // Re-assert ownership/mode so declared drift heals without a re-mint.
-            let existing = fs::read_to_string(&token.path)?;
+            let existing = read_token_file(&token.path).context("re-reading kept token")?;
             install_token(token, existing.trim())?;
             continue;
         }
         let user = &state.users[&token.user];
-        let old_token = fs::read_to_string(&token.path).ok();
+        let old_token = read_token_file(&token.path);
         let password = read_password_file(credential_dir.join(&user.credential_name))?;
         let session = wm.login(&user.email, &password)?;
         let value = wm.create_token(&session, label, token.workspace.as_deref(), &token.scopes)?;
@@ -364,7 +384,7 @@ fn prune(state: &State, marker_dir: &Path, db: &db::Psql) -> Result<()> {
             state::is_safe_ident(&rec.email),
             "unsafe recorded token email"
         );
-        let old_prefix = fs::read_to_string(&rec.path).ok();
+        let old_prefix = read_token_file(&rec.path);
         let old_prefix = old_prefix
             .as_deref()
             .and_then(|t| db::token_prefix(t.trim()));
@@ -392,7 +412,7 @@ fn prune(state: &State, marker_dir: &Path, db: &db::Psql) -> Result<()> {
         eprintln!("user {email}: locked (no longer declared)");
     }
     fs::create_dir_all(marker_dir)?;
-    fs::write(&registry, serde_json::to_vec(&declared)?)?;
+    atomic_write_secret(&registry, &serde_json::to_string(&declared)?)?;
     Ok(())
 }
 
@@ -466,6 +486,22 @@ mod tests {
             undeclared_emails(provisioned, &state),
             vec!["old@example.com".to_owned()]
         );
+    }
+
+    #[test]
+    fn token_reads_refuse_symlinks_and_hardlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let secret = root.path().join("secret");
+        fs::write(&secret, "other-secret").unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        assert_eq!(read_token_file(&link), None);
+        let hard = root.path().join("hard");
+        fs::hard_link(&secret, &hard).unwrap();
+        assert_eq!(read_token_file(&hard), None);
+        let plain = root.path().join("plain");
+        fs::write(&plain, "tok").unwrap();
+        assert_eq!(read_token_file(&plain).as_deref(), Some("tok"));
     }
 
     #[test]
