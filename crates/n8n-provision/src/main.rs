@@ -130,13 +130,29 @@ fn owner_env(state: &State, credential_dir: &Path, hash_dir: &Path, out: &Path) 
     Ok(())
 }
 
+/// Credential field value: the file verbatim minus one terminal line ending, so
+/// significant leading/trailing whitespace survives (unlike the trimmed password reader).
+fn read_secret_value(path: &Path) -> Result<String> {
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let value = raw
+        .strip_suffix("\n")
+        .map(|v| v.strip_suffix("\r").unwrap_or(v))
+        .unwrap_or(&raw);
+    anyhow::ensure!(
+        !value.is_empty(),
+        "credential file {} is empty",
+        path.display()
+    );
+    Ok(value.to_owned())
+}
+
 /// Resolved credential payload; secrets are read from systemd credentials.
 fn resolve_data(cred: &state::Credential, credential_dir: &Path) -> Result<Value> {
     let mut data: BTreeMap<String, Value> = cred.data.clone();
     for (field, file) in &cred.data_files {
         data.insert(
             field.clone(),
-            json!(read_password_file(credential_dir.join(file))?),
+            json!(read_secret_value(&credential_dir.join(file))?),
         );
     }
     Ok(serde_json::to_value(data)?)
@@ -184,6 +200,16 @@ fn reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_value_keeps_inner_whitespace_and_drops_one_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("v");
+        fs::write(&f, " pw \n").unwrap();
+        assert_eq!(read_secret_value(&f).unwrap(), " pw ");
+        fs::write(&f, "\n").unwrap();
+        assert!(read_secret_value(&f).is_err());
+    }
 
     #[test]
     fn overlong_password_is_rejected() {

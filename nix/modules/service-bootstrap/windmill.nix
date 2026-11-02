@@ -163,7 +163,7 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = builtins.match "https://.+|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])([/:].*)?" cfg.url != null;
+        assertion = builtins.match "https://.+|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])(:[0-9]+)?(/[^@]*)?" cfg.url != null;
         message = "services.windmill.provision.url must be https:// or a loopback http:// URL: the superadmin bearer is sent over it.";
       }
       {
@@ -259,6 +259,19 @@ in {
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-provision.service";
+      };
+    };
+
+    # The server reads SUPERADMIN_SECRET at start; provision follows via partOf.
+    systemd.paths.windmill-superadmin-rotate = {
+      wantedBy = ["multi-user.target"];
+      pathConfig.PathChanged = cfg.superadminSecretFile;
+    };
+    systemd.services.windmill-superadmin-rotate = {
+      description = "Restart Windmill after the superadmin secret rotates";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-server.service";
       };
     };
   };

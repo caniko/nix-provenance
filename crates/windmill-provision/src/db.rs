@@ -36,11 +36,22 @@ pub fn hash_password(password: &str) -> Result<String> {
 /// rule (`state::is_username`); `hash` is a PHC string (no quotes). The
 /// instance-wide `username` is required by workspace `add_user`.
 pub fn upsert_user_sql(email: &str, name: &str, hash: &str, super_admin: bool) -> String {
+    // Windmill snapshots the admin flag into tokens at mint time, so a demotion
+    // must drop every token the user already holds, not just tracked ones.
+    let demote = if super_admin {
+        String::new()
+    } else {
+        format!(
+            "DELETE FROM token WHERE email = '{email}' \
+             AND EXISTS (SELECT 1 FROM password WHERE email = '{email}' AND super_admin);\n"
+        )
+    };
     format!(
-        "INSERT INTO password (email, verified, password_hash, login_type, super_admin, name, company, username) \
+        "{demote}INSERT INTO password (email, verified, password_hash, login_type, super_admin, name, company, username) \
          VALUES ('{email}', true, '{hash}', 'password', {super_admin}, '{name}', 'provisioned', '{name}') \
          ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, \
          login_type = 'password', super_admin = EXCLUDED.super_admin, verified = true, \
+         company = 'provisioned', \
          username = COALESCE(password.username, EXCLUDED.username);\n\
          DELETE FROM token WHERE email = '{email}' AND label = 'session';\n"
     )
@@ -271,6 +282,10 @@ mod tests {
         let sql = upsert_user_sql("can@example.com", "can", "$argon2id$x", true);
         assert!(sql.contains("ON CONFLICT (email) DO UPDATE"));
         assert!(sql.contains("'can@example.com'"));
+        assert!(sql.contains("company = 'provisioned', username"));
+        assert!(!sql.contains("AND super_admin)"));
+        let demote = upsert_user_sql("can@example.com", "can", "$argon2id$x", false);
+        assert!(demote.starts_with("DELETE FROM token WHERE email = 'can@example.com'"));
         assert!(lock_default_admin_sql().contains(DEFAULT_ADMIN));
     }
 }

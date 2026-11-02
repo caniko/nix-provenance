@@ -120,8 +120,12 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = builtins.match "https://.+|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])([/:].*)?" cfg.url != null;
+        assertion = builtins.match "https://.+|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])(:[0-9]+)?(/[^@]*)?" cfg.url != null;
         message = "services.n8n.provision.url must be https:// or a loopback http:// URL: the owner session is sent over it.";
+      }
+      {
+        assertion = lib.all (c: lib.all (f: !(lib.any (s: lib.hasInfix s (lib.toLower f)) ["pass" "secret" "token" "key" "value"])) (lib.attrNames c.data)) (lib.attrValues cfg.credentials);
+        message = "services.n8n.provision.credentials.*.data would land in the Nix store; put secret-looking fields (pass, secret, token, key, value) in dataFiles.";
       }
       {
         assertion = n8n.enable;
@@ -174,6 +178,18 @@ in {
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${config.systemd.package}/bin/systemctl restart n8n.service";
+      };
+    };
+
+    systemd.paths.n8n-provision-credentials-rotate = mkIf (fieldFiles != []) {
+      wantedBy = ["multi-user.target"];
+      pathConfig.PathChanged = map (f: toString f.file) fieldFiles;
+    };
+    systemd.services.n8n-provision-credentials-rotate = mkIf (fieldFiles != []) {
+      description = "Re-run n8n credential provisioning after a credential file rotates";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${config.systemd.package}/bin/systemctl restart n8n-provision.service";
       };
     };
   };

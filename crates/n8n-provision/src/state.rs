@@ -50,6 +50,15 @@ impl State {
                 !name.is_empty() && name.len() <= 128,
                 "credential name {name:?} must be 1-128 chars"
             );
+            for field in cred.data.keys() {
+                let f = field.to_lowercase();
+                ensure!(
+                    !["pass", "secret", "token", "key", "value"]
+                        .iter()
+                        .any(|s| f.contains(s)),
+                    "credential {name}: field {field} looks secret; use dataFiles"
+                );
+            }
             for field in cred.data_files.keys() {
                 ensure!(
                     !cred.data.contains_key(field),
@@ -66,11 +75,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_secret_looking_data_field() {
+        let s: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "credentials":{"hook":{"type":"httpHeaderAuth","data":{"value":"y"}}}}"#,
+        )
+        .unwrap();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
     fn rejects_field_declared_twice() {
         let s: State = serde_json::from_str(
             r#"{"url":"http://127.0.0.1:5678",
             "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
-            "credentials":{"hook":{"type":"httpHeaderAuth","data":{"name":"X","value":"y"},"data_files":{"value":"c"}}}}"#,
+            "credentials":{"hook":{"type":"httpHeaderAuth","data":{"name":"X"},"data_files":{"name":"c"}}}}"#,
         )
         .unwrap();
         assert!(s.validate().is_err());
