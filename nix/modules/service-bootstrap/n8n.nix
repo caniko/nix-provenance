@@ -135,8 +135,8 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = builtins.match "https://[^@/?#]+(/[A-Za-z0-9._~/-]*)?|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?" cfg.url != null;
-        message = "services.n8n.provision.url must be https:// or a loopback http:// URL: the owner session is sent over it.";
+        assertion = builtins.match "https://[^@/?#]+/?|http://(127\\.0\\.0\\.1|localhost|[[]::1[]])(:[0-9]+)?/?" cfg.url != null;
+        message = "services.n8n.provision.url must be an https:// or loopback http:// origin (no path, query or credentials): the owner session is sent over it.";
       }
       {
         assertion = !(lib.any (c: lib.any looksSecret [c.data]) (lib.attrValues cfg.credentials));
