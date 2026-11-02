@@ -293,6 +293,7 @@ in
     rbw-test = craneLib.cargoTest (
       args.provenance-rbw // {cargoArtifacts = cargoArtifacts.provenance-rbw;}
     );
+    paperclip-archive-module-eval = import ./modules/test/paperclip-archive-eval.nix {inherit pkgs;};
     rbw-home-module-eval = import ./modules/test/rbw-home-eval.nix {inherit pkgs self;};
     identity-test = craneLib.cargoTest (
       args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;}

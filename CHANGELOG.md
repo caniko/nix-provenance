@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `homeModules.paperclip-archive` (`nix-provenance.paperclip-archive`) exports
+  every Paperclip company on a timer into a git-LFS repository and restores
+  declared companies from a pinned copy only when no company with that slug
+  exists. The forge token is read at runtime by a git credential helper and
+  never enters the store, argv, or the remote URL.
+
 ### Fixed
 
 - Rauthy provisioning evicts users that Rauthy's email lookup still serves

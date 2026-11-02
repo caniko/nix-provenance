@@ -252,6 +252,7 @@
         proton-vpn = import ./nix/modules/home/proton-vpn.nix {inherit self;};
         oauth = import ./nix/modules/home/oauth.nix {inherit self;};
         rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
+        paperclip-archive = import ./nix/modules/home/paperclip-archive.nix;
         fj = import ./nix/modules/home/fj.nix {inherit self;};
         stalwart-oauth-bootstrap = import ./nix/modules/home/stalwart-oauth-bootstrap.nix {inherit self;};
         github = import ./nix/modules/home/github.nix {inherit self;};

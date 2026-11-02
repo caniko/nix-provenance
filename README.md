@@ -75,6 +75,12 @@ tenant taxonomy and the add-a-tenant checklist.
   for Immich/Rauthy, service-specific `kanidmOAuth2System` helpers for Immich,
   Vikunja, and Forgejo, Stalwart's kanidm LDAP helpers, and `adapter` — the
   backend-agnostic primitives third-party flakes use (see below)
+- `homeModules.paperclip-archive` — timed export of every Paperclip company
+  into a private git-LFS repository, plus restore-if-missing from a pinned copy
+  of it (`nix-provenance.paperclip-archive`). Binaries (`images/`, `assets/`,
+  common media extensions) go to LFS; secrets are never exported. Restore never
+  overwrites an existing company. The pinned copy needs `?lfs=1` on a git flake
+  input to fetch the LFS binaries.
 - `homeModules.fj` — installs nixpkgs' `forgejo-cli` plus its validated Nushell
   completion and provides `nix-provenance.fj.enable`.
 - `homeModules.github` — per-account user units that reconcile a GitHub
