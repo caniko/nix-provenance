@@ -392,14 +392,9 @@ fn prune(state: &State, marker_dir: &Path, db: &db::Psql) -> Result<()> {
         db.run(&db::revoke_label_sql(
             &label, &rec.email, old_prefix, column,
         ))?;
-        // A path another (or the same) declaration still uses is rewritten by the
-        // token step; never delete it here.
-        let reused = declared.values().any(|d| d.path == rec.path);
-        match if reused {
-            Ok(())
-        } else {
-            fs::remove_file(&rec.path)
-        } {
+        // Always drop the file: a declaration reusing this path then sees no
+        // token and mints a fresh one, never trusting the just-revoked value.
+        match fs::remove_file(&rec.path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).with_context(|| format!("removing {}", rec.path.display())),

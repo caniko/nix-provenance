@@ -19,6 +19,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 bcrypt = "0.17"
 clap.workspace = true
+libc = "0.2"
 provenance-core = { path = "../provenance-core" }
 # TLS features kept LOCAL (see root Cargo.toml). n8n is reached on loopback only;
 # `cookies` carries the session cookie from /rest/login.

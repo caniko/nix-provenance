@@ -88,11 +88,11 @@ in
           assert "studio-webhook" in out, out
 
       with subtest("second reconcile and restart are no-ops"):
-          hash_before = machine.succeed("cat /var/lib/n8n/owner.bcrypt")
+          hash_before = machine.succeed("cat /var/lib/n8n-owner-env/owner.bcrypt")
           machine.succeed("systemctl restart n8n.service")
           machine.wait_for_unit("n8n.service")
           machine.succeed("systemctl restart n8n-provision.service")
-          assert machine.succeed("cat /var/lib/n8n/owner.bcrypt") == hash_before
+          assert machine.succeed("cat /var/lib/n8n-owner-env/owner.bcrypt") == hash_before
           inv = machine.succeed("systemctl show -p InvocationID --value n8n-provision.service").strip()
           journal = machine.succeed(f"journalctl -o cat _SYSTEMD_INVOCATION_ID={inv}")
           for word in ("created", "updated"):

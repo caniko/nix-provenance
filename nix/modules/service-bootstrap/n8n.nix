@@ -170,8 +170,10 @@ in {
         RuntimeDirectory = "n8n-provision";
         RuntimeDirectoryMode = "0700";
         RuntimeDirectoryPreserve = "yes";
+        StateDirectory = "n8n-owner-env";
+        StateDirectoryMode = "0700";
         LoadCredential = ["${ownerCredential}:${cfg.owner.passwordFile}"];
-        ExecStart = "${exe} owner-env --state ${ownerStateFile} --password-file %d/${ownerCredential} --hash-dir ${n8n.environment.N8N_USER_FOLDER} --out ${envFile}";
+        ExecStart = "${exe} owner-env --state ${ownerStateFile} --password-file %d/${ownerCredential} --hash-dir /var/lib/n8n-owner-env --out ${envFile}";
       };
     };
     systemd.services.n8n = {

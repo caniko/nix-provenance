@@ -89,6 +89,23 @@ fn quote(value: &str) -> String {
 
 /// Reuse the stored hash while it still verifies the current password;
 /// otherwise hash anew and persist.
+/// Stored hash: regular file, no symlink, at most 128 bytes (a bcrypt hash is 60).
+fn read_hash(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut buf = String::new();
+    file.take(128).read_to_string(&mut buf).ok()?;
+    Some(buf)
+}
+
 fn owner_hash(password: &str, hash_file: &Path) -> Result<String> {
     // bcrypt silently truncates beyond 72 bytes, which would accept any
     // password sharing that prefix.
@@ -96,7 +113,7 @@ fn owner_hash(password: &str, hash_file: &Path) -> Result<String> {
         password.len() <= 72,
         "owner password exceeds bcrypt's 72-byte limit"
     );
-    if let Ok(existing) = fs::read_to_string(hash_file) {
+    if let Some(existing) = read_hash(hash_file) {
         let existing = existing.trim();
         if bcrypt::verify(password, existing).unwrap_or(false) {
             return Ok(existing.to_owned());
@@ -179,22 +196,24 @@ fn reconcile(
     for (name, cred) in &state.credentials {
         let data = resolve_data(cred, credential_dir)?;
         // Digest over type + resolved data: the marker says "n8n holds exactly this".
-        let fingerprint = secret_digest(&format!("{}\n{data}", cred.kind));
         let id = format!("n8n-credential:{name}");
         let found = pick_target(&existing, &previous, name)?;
+        // The target id is part of the fingerprint: a different n8n credential
+        // under this name (recreated, or a UI one) must always be written.
+        let fingerprint = |target: &str| secret_digest(&format!("{target}\n{}\n{data}", cred.kind));
         match found {
-            Some(_) if !markers.needs_update(&id, &fingerprint)? => {}
+            Some(cred_id) if !markers.needs_update(&id, &fingerprint(cred_id))? => {}
             Some(cred_id) => {
                 n8n.update_credential(cred_id, name, &cred.kind, &data)?;
-                markers.commit(&id, &fingerprint)?;
+                markers.commit(&id, &fingerprint(cred_id))?;
                 eprintln!("credential {name}: updated");
             }
             None => {
                 let new_id = n8n.create_credential(name, &cred.kind, &data)?;
-                owned.insert(name.clone(), new_id);
+                owned.insert(name.clone(), new_id.clone());
                 // Persist at once: a later failure must not forget this ownership.
                 save_registry(&registry, &owned, marker_dir)?;
-                markers.commit(&id, &fingerprint)?;
+                markers.commit(&id, &fingerprint(&new_id))?;
                 eprintln!("credential {name}: created");
             }
         }
@@ -203,10 +222,10 @@ fn reconcile(
     // Delete credentials this tool created that are no longer declared, by
     // recorded id only: same-named UI or adopted credentials are never touched.
     for (name, id) in removed_credentials(&previous, state) {
+        owned.remove(&name);
         // Already gone (deleted by hand): the desired state holds, nothing to do.
         if existing.iter().any(|(i, _)| *i == id) {
             n8n.delete_credential(&id)?;
-            owned.remove(&name);
             eprintln!("credential {name}: deleted (no longer declared)");
         }
     }
@@ -325,6 +344,23 @@ mod tests {
             removed_credentials(&previous, &state),
             vec![("gone".to_owned(), "2".to_owned())]
         );
+    }
+
+    #[test]
+    fn stored_hash_ignores_symlinks_and_oversize_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::write(&real, "x".repeat(1000)).unwrap();
+        assert_eq!(read_hash(&real).unwrap().len(), 128);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(read_hash(&link).is_none());
+    }
+
+    #[test]
+    fn credential_target_change_changes_fingerprint() {
+        let fp = |t: &str| secret_digest(&format!("{t}\nk\n{{}}"));
+        assert_ne!(fp("1"), fp("2"));
     }
 
     #[test]

@@ -3397,6 +3397,7 @@ dependencies = [
  "anyhow",
  "bcrypt",
  "clap",
+ "libc",
  "provenance-core",
  "reqwest 0.12.28",
  "serde",
