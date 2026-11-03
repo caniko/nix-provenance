@@ -43,9 +43,12 @@ pub struct Credential {
 /// come from dataFiles, never the Nix-rendered state.
 fn looks_secret(key: &str, value: &serde_json::Value) -> bool {
     let k = key.to_lowercase();
-    ["pass", "secret", "token", "key", "value"]
-        .iter()
-        .any(|s| k.contains(s))
+    [
+        "pass", "secret", "token", "key", "value", "auth", "cred", "bearer", "private", "cert",
+        "jwt", "cookie", "session", "sign", "pin",
+    ]
+    .iter()
+    .any(|s| k.contains(s))
         || match value {
             serde_json::Value::Object(m) => m.iter().any(|(k, v)| looks_secret(k, v)),
             serde_json::Value::Array(a) => a.iter().any(|v| looks_secret("", v)),
@@ -84,6 +87,17 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_authorization_data_field() {
+        let s: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "credentials":{"hook":{"type":"x","data":{"authorization":"y"}}}}"#,
+        )
+        .unwrap();
+        assert!(s.validate().is_err());
+    }
 
     #[test]
     fn rejects_nested_secret_looking_data_field() {

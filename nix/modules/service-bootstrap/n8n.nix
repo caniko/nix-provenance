@@ -21,7 +21,7 @@
   # serialized into the store, so it belongs in dataFiles.
   looksSecret = v:
     if builtins.isAttrs v
-    then lib.any (k: lib.any (s: lib.hasInfix s (lib.toLower k)) ["pass" "secret" "token" "key" "value"] || looksSecret v.${k}) (lib.attrNames v)
+    then lib.any (k: lib.any (s: lib.hasInfix s (lib.toLower k)) ["pass" "secret" "token" "key" "value" "auth" "cred" "bearer" "private" "cert" "jwt" "cookie" "session" "sign" "pin"] || looksSecret v.${k}) (lib.attrNames v)
     else if builtins.isList v
     then lib.any looksSecret v
     else false;
@@ -140,7 +140,7 @@ in {
       }
       {
         assertion = !(lib.any (c: lib.any looksSecret [c.data]) (lib.attrValues cfg.credentials));
-        message = "services.n8n.provision.credentials.*.data would land in the Nix store; put secret-looking fields (pass, secret, token, key, value) in dataFiles.";
+        message = "services.n8n.provision.credentials.*.data would land in the Nix store; put secret-looking fields (pass, secret, token, key, value, auth, cred, bearer, ...) in dataFiles.";
       }
       {
         assertion = lib.all (c: lib.all (f: !(c.data ? ${f})) (lib.attrNames c.dataFiles)) (lib.attrValues cfg.credentials);
