@@ -21,6 +21,17 @@ nix_builds = [
   ".#checks.x86_64-linux.rbw-home-module-eval",
   ".#checks.x86_64-linux.stalwart016-proxy-eval",
   ".#checks.x86_64-linux.stalwart016-proxy-vmtest",
+  ".#packages.x86_64-linux.windmill-provision",
+  ".#checks.x86_64-linux.windmill-provision-test",
+  ".#checks.x86_64-linux.windmill-provision-clippy",
+  ".#checks.x86_64-linux.windmill-module-eval",
+  ".#checks.x86_64-linux.windmill-bootstrap-vmtest",
+  ".#checks.x86_64-linux.windmill-bootstrap-atlas-vmtest",
+  ".#packages.x86_64-linux.n8n-provision",
+  ".#checks.x86_64-linux.n8n-provision-test",
+  ".#checks.x86_64-linux.n8n-provision-clippy",
+  ".#checks.x86_64-linux.n8n-module-eval",
+  ".#checks.x86_64-linux.n8n-bootstrap-vmtest",
 ]
 workspace = true
 # Validate PR heads once (pull_request); push runs cover the default branch
@@ -60,6 +71,21 @@ stalwart = [
   ".#checks.x86_64-linux.stalwart016-proxy-eval",
   ".#checks.x86_64-linux.stalwart016-proxy-vmtest",
 ]
+windmill = [
+  ".#packages.x86_64-linux.windmill-provision",
+  ".#checks.x86_64-linux.windmill-provision-test",
+  ".#checks.x86_64-linux.windmill-provision-clippy",
+  ".#checks.x86_64-linux.windmill-module-eval",
+  ".#checks.x86_64-linux.windmill-bootstrap-vmtest",
+  ".#checks.x86_64-linux.windmill-bootstrap-atlas-vmtest",
+]
+n8n = [
+  ".#packages.x86_64-linux.n8n-provision",
+  ".#checks.x86_64-linux.n8n-provision-test",
+  ".#checks.x86_64-linux.n8n-provision-clippy",
+  ".#checks.x86_64-linux.n8n-module-eval",
+  ".#checks.x86_64-linux.n8n-bootstrap-vmtest",
+]
 
 [prebuild]
 publish_attic = true
@@ -78,6 +104,8 @@ nix_builds = [
   ".#packages.x86_64-linux.rauthy-state-render",
   ".#packages.x86_64-linux.stalwart-oauth-bootstrap",
   ".#packages.x86_64-linux.tuwunel-provision",
+  ".#packages.x86_64-linux.windmill-provision",
+  ".#packages.x86_64-linux.n8n-provision",
 ]
 
 [prebuild.system_runners]
