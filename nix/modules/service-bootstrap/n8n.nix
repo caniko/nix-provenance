@@ -26,6 +26,15 @@
     then lib.any looksSecret v
     else false;
 
+  # Rotation watch list: each file plus its parent directory (agenix swaps a
+  # symlinked generation directory, which only the parent watch sees). Never
+  # "/" or the store.
+  watchPaths = files: let
+    fs = map toString files;
+    dirs = lib.filter (d: d != "/" && !(lib.hasPrefix builtins.storeDir d)) (map dirOf fs);
+  in
+    lib.unique (fs ++ dirs);
+
   notRuntime = f: !(lib.hasPrefix "/" f) || lib.hasPrefix builtins.storeDir f;
   fieldFiles = lib.concatLists (lib.mapAttrsToList (name: c: lib.mapAttrsToList (field: file: {inherit name field file;}) c.dataFiles) cfg.credentials);
   secretFiles = [cfg.owner.passwordFile] ++ map (f: toString f.file) fieldFiles;
@@ -206,7 +215,7 @@ in {
     # rotation restarts it (n8n follows via requires, n8n-provision via partOf).
     systemd.paths.n8n-provision-rotate = {
       wantedBy = ["multi-user.target"];
-      pathConfig.PathChanged = toString cfg.owner.passwordFile;
+      pathConfig.PathChanged = watchPaths [cfg.owner.passwordFile];
     };
     systemd.services.n8n-provision-rotate = {
       description = "Restart n8n after the owner password file rotates";
@@ -218,7 +227,7 @@ in {
 
     systemd.paths.n8n-provision-credentials-rotate = mkIf (fieldFiles != []) {
       wantedBy = ["multi-user.target"];
-      pathConfig.PathChanged = map (f: toString f.file) fieldFiles;
+      pathConfig.PathChanged = watchPaths (map (f: f.file) fieldFiles);
     };
     systemd.services.n8n-provision-credentials-rotate = mkIf (fieldFiles != []) {
       description = "Re-run n8n credential provisioning after a credential file rotates";

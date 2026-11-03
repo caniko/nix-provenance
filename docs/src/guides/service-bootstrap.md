@@ -106,3 +106,16 @@ services.n8n = {
   through the internal REST API (n8n's public API has no credential list).
   A digest marker per credential keeps reruns from rewriting unchanged
   credentials. `httpHeaderAuth` takes the fields `name` and `value`.
+
+## Known limits
+
+- Rotation watch: path units watch each secret file and its parent directory,
+  so an agenix generation switch (symlink swap) re-runs provisioning.
+- Token ownership: a token kept on disk is trusted when Windmill answers 200
+  with the declared user's email, or 403 (a scoped token that cannot call
+  `whoami` on a workspace it is not a member of). A 403 cannot reveal the
+  owner, so treating it as invalid would re-mint on every run. Token
+  directories must therefore be writable only by root.
+- Token directories must sit under root-owned ancestors that are not group or
+  world writable. The reconciler runs as root and renames into the declared
+  path; an ancestor a consumer can modify could be swapped for a symlink.

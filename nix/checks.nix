@@ -931,6 +931,8 @@ in
         test ${lib.escapeShellArg (json (failed plainHttpUrl.config))} != '[]'
         test ${lib.escapeShellArg (json (failed upperEmail.config))} != '[]'
         test ${lib.escapeShellArg (json (failed memberless.config))} != '[]'
+        # Rotation watch covers the secret and its parent dir (agenix symlink swap).
+        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-superadmin-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-server.service
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
@@ -979,6 +981,7 @@ in
         test ${lib.escapeShellArg (json (failed n8nEval.config))} = '[]'
         test ${lib.escapeShellArg (json (failed storeSecret.config))} != '[]'
         test ${lib.escapeShellArg (json (failed overlap.config))} != '[]'
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.paths.n8n-provision-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg (toString (lib.length collideIds))} = 2
         test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot

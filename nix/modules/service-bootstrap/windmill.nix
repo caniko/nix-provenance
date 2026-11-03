@@ -15,6 +15,15 @@
   envFile = "/run/windmill-provision/env";
   superadminCredential = "superadmin";
 
+  # Rotation watch list: each file plus its parent directory (agenix swaps a
+  # symlinked generation directory, which only the parent watch sees). Never
+  # "/" or the store.
+  watchPaths = files: let
+    fs = map toString files;
+    dirs = lib.filter (d: d != "/" && !(lib.hasPrefix builtins.storeDir d)) (map dirOf fs);
+  in
+    lib.unique (fs ++ dirs);
+
   notRuntime = f: !(lib.hasPrefix "/" f) || lib.hasPrefix builtins.storeDir f;
   secretFiles = [cfg.superadminSecretFile] ++ map (u: toString u.passwordFile) (lib.attrValues cfg.users);
 
@@ -258,7 +267,7 @@ in {
     # which re-runs provisioning through partOf.
     systemd.paths.windmill-provision-rotate = mkIf (cfg.users != {}) {
       wantedBy = ["multi-user.target"];
-      pathConfig.PathChanged = map (u: toString u.passwordFile) (lib.attrValues cfg.users);
+      pathConfig.PathChanged = watchPaths (map (u: u.passwordFile) (lib.attrValues cfg.users));
     };
     systemd.services.windmill-provision-rotate = mkIf (cfg.users != {}) {
       description = "Re-run Windmill provisioning after a password file rotates";
@@ -269,7 +278,7 @@ in {
     };
     systemd.paths.windmill-superadmin-rotate = {
       wantedBy = ["multi-user.target"];
-      pathConfig.PathChanged = cfg.superadminSecretFile;
+      pathConfig.PathChanged = watchPaths [cfg.superadminSecretFile];
     };
     systemd.services.windmill-superadmin-rotate = {
       description = "Restart Windmill after the superadmin secret rotates";
