@@ -119,3 +119,8 @@ services.n8n = {
 - Token directories must sit under root-owned ancestors that are not group or
   world writable. The reconciler runs as root and renames into the declared
   path; an ancestor a consumer can modify could be swapped for a symlink.
+- n8n credential drift: a credential edited in the n8n UI is not detected,
+  because the marker covers the declared data and credential id, and n8n does
+  not hand stored secrets back for comparison. Re-applying happens when the
+  declaration, a secret file, or the target credential changes; remove the
+  marker (`/var/lib/n8n-provision/markers`) to force a rewrite.
