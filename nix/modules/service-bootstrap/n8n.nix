@@ -207,7 +207,8 @@ in {
         LoadCredential =
           ["${ownerCredential}:${cfg.owner.passwordFile}"]
           ++ map (f: "${fieldCredential f.name f.field}:${f.file}") fieldFiles;
-        ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir /var/lib/n8n-provision/markers";
+        ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir /var/lib/n8n-provision/markers --ready-timeout 600";
+        TimeoutStartSec = "15min";
       };
     };
 
