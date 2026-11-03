@@ -87,4 +87,5 @@ pub mod reconcile;
 pub mod secret;
 pub mod serde_ext;
 pub mod setops;
+pub mod stamp;
 pub mod validate;

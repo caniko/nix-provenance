@@ -160,6 +160,10 @@ impl State {
         for (label, token) in &self.tokens {
             ensure!(is_safe_ident(label), "token label {label:?} is unsafe");
             ensure!(
+                label != "session",
+                "token label \"session\" is reserved by Windmill"
+            );
+            ensure!(
                 self.users.contains_key(&token.user),
                 "token {label}: undeclared user {}",
                 token.user
@@ -261,6 +265,14 @@ mod tests {
     fn rejects_dotdot_token_paths() {
         let mut s = state(BASE);
         s.tokens.get_mut("t").unwrap().path = "/x/../x/t".into();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_reserved_session_label() {
+        let mut s = state(BASE);
+        let t = s.tokens.remove("t").unwrap();
+        s.tokens.insert("session".into(), t);
         assert!(s.validate().is_err());
     }
 

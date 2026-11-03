@@ -216,7 +216,7 @@ in {
         message = "services.windmill.provision.disableDefaultAdmin needs at least one user with admin = true.";
       }
       {
-        assertion = lib.all (l: builtins.match "[A-Za-z0-9._-]+" l != null) (lib.attrNames cfg.tokens) && lib.all (t: cfg.users ? ${t.user} && (t.workspace == null || cfg.workspaces ? ${t.workspace})) (lib.attrValues cfg.tokens);
+        assertion = lib.all (l: l != "session" && builtins.match "[A-Za-z0-9._-]+" l != null) (lib.attrNames cfg.tokens) && lib.all (t: cfg.users ? ${t.user} && (t.workspace == null || cfg.workspaces ? ${t.workspace})) (lib.attrValues cfg.tokens);
         message = "services.windmill.provision.tokens must reference declared users and workspaces.";
       }
       {
@@ -236,7 +236,7 @@ in {
       LoadCredential = ["${superadminCredential}:${cfg.superadminSecretFile}"];
       RuntimeDirectory = "windmill-provision";
       RuntimeDirectoryMode = "0700";
-      ExecStartPre = ["+${exe} env --secret-file %d/${superadminCredential} --out ${envFile}"];
+      ExecStartPre = ["+${exe} env --secret-file %d/${superadminCredential} --out ${envFile} --stamp /run/windmill-provision/superadmin.sha"];
       EnvironmentFile = lib.mkAfter ["-${envFile}"];
     };
 
@@ -284,6 +284,9 @@ in {
       description = "Restart Windmill after the superadmin secret rotates";
       serviceConfig = {
         Type = "oneshot";
+        # Only a real secret change restarts the server; an agenix generation
+        # switch that leaves the content alone is skipped (exit 1 = unmet).
+        ExecCondition = "${exe} changed --secret-file ${cfg.superadminSecretFile} --stamp /run/windmill-provision/superadmin.sha";
         ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-server.service";
       };
     };

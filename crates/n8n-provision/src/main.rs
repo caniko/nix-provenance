@@ -40,6 +40,17 @@ enum Command {
         hash_dir: PathBuf,
         #[arg(long)]
         out: PathBuf,
+        /// Where to record the password digest for `changed`.
+        #[arg(long)]
+        stamp: PathBuf,
+    },
+    /// Exit 0 only when the owner password differs from the digest recorded at
+    /// the last render (ExecCondition of the rotation restart; exit 1 skips it).
+    Changed {
+        #[arg(long)]
+        password_file: PathBuf,
+        #[arg(long)]
+        stamp: PathBuf,
     },
     /// Upsert declared credentials by name through the owner session.
     Reconcile {
@@ -68,7 +79,23 @@ fn main() -> Result<()> {
             password_file,
             hash_dir,
             out,
-        } => owner_env(&load_state(&state)?, &password_file, &hash_dir, &out),
+            stamp,
+        } => owner_env(
+            &load_state(&state)?,
+            &password_file,
+            &hash_dir,
+            &out,
+            &stamp,
+        ),
+        Command::Changed {
+            password_file,
+            stamp,
+        } => {
+            if provenance_core::stamp::secret_unchanged(&password_file, &stamp)? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Command::Reconcile {
             state,
             credential_dir,
@@ -138,8 +165,15 @@ fn owner_env_body(state: &State, hash: &str) -> String {
     )
 }
 
-fn owner_env(state: &State, password_file: &Path, hash_dir: &Path, out: &Path) -> Result<()> {
+fn owner_env(
+    state: &State,
+    password_file: &Path,
+    hash_dir: &Path,
+    out: &Path,
+    stamp: &Path,
+) -> Result<()> {
     let password = read_password_file(password_file)?;
+    provenance_core::stamp::record(stamp, &password)?;
     let hash = owner_hash(&password, &hash_dir.join("owner.bcrypt"))?;
     if let Some(dir) = out.parent() {
         fs::create_dir_all(dir)?;

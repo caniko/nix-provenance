@@ -37,6 +37,17 @@ enum Command {
         /// EnvironmentFile to write (mode 0600).
         #[arg(long)]
         out: PathBuf,
+        /// Where to record the secret digest, so `changed` can tell a real rotation.
+        #[arg(long)]
+        stamp: PathBuf,
+    },
+    /// Exit 0 only when the secret differs from the digest recorded at the last
+    /// start (ExecCondition of the rotation restart; exit 1 skips it).
+    Changed {
+        #[arg(long)]
+        secret_file: PathBuf,
+        #[arg(long)]
+        stamp: PathBuf,
     },
     /// Reconcile users, workspaces, memberships and tokens.
     Reconcile {
@@ -59,7 +70,17 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Env { secret_file, out } => write_env(&secret_file, &out),
+        Command::Env {
+            secret_file,
+            out,
+            stamp,
+        } => write_env(&secret_file, &out, &stamp),
+        Command::Changed { secret_file, stamp } => {
+            if provenance_core::stamp::secret_unchanged(&secret_file, &stamp)? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Command::Reconcile {
             state,
             credential_dir,
@@ -95,8 +116,9 @@ fn env_line(secret: &str) -> Result<String> {
     Ok(format!("SUPERADMIN_SECRET=\"{escaped}\"\n"))
 }
 
-fn write_env(secret_file: &Path, out: &Path) -> Result<()> {
+fn write_env(secret_file: &Path, out: &Path, stamp: &Path) -> Result<()> {
     let secret = read_password_file(secret_file)?;
+    provenance_core::stamp::record(stamp, &secret)?;
     if let Some(dir) = out.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -139,7 +161,7 @@ fn ensure_dir(dir: &Path) -> Result<()> {
 fn read_token_file(path: &Path) -> Option<String> {
     use std::io::Read as _;
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-    let mut file = fs::OpenOptions::new()
+    let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
@@ -149,8 +171,9 @@ fn read_token_file(path: &Path) -> Option<String> {
         return None;
     }
     let mut value = String::new();
-    file.read_to_string(&mut value).ok()?;
-    Some(value)
+    // A token is a few dozen bytes; a larger file (consumer-writable) is invalid.
+    file.take(4096).read_to_string(&mut value).ok()?;
+    (value.len() < 4096).then_some(value)
 }
 
 /// Install `value` at the token path atomically. Owner and mode are applied to

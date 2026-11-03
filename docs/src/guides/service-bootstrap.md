@@ -110,7 +110,10 @@ services.n8n = {
 ## Known limits
 
 - Rotation watch: path units watch each secret file and its parent directory,
-  so an agenix generation switch (symlink swap) re-runs provisioning.
+  so an agenix generation switch (symlink swap) is noticed. Restarting the
+  server or n8n for the superadmin secret or owner password only happens when
+  the secret content really changed (a recorded digest is compared); plain
+  deploys do not restart them.
 - Token ownership: a token kept on disk is trusted when Windmill answers 200
   with the declared user's email, or 403 (a scoped token that cannot call
   `whoami` on a workspace it is not a member of). A 403 cannot reveal the
