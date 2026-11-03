@@ -141,7 +141,7 @@ fn read_token_file(path: &Path) -> Option<String> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     let mut file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .ok()?;
     let meta = file.metadata().ok()?;
@@ -224,7 +224,9 @@ fn reconcile(
         // The marker covers the instance-admin flag too, so flipping `admin`
         // re-applies the row even when the password file is unchanged.
         let fingerprint = format!("admin={}\n{password}", user.admin);
-        if markers.needs_update(&id, &fingerprint)? || !db.user_has_argon2_hash(&user.email)? {
+        if markers.needs_update(&id, &fingerprint)?
+            || !db.account_in_sync(&user.email, &password, user.admin)?
+        {
             let hash = db::hash_password(&password)?;
             db.run(&db::upsert_user_sql(&user.email, name, &hash, user.admin))?;
             markers.commit(&id, &fingerprint)?;
@@ -270,9 +272,11 @@ fn reconcile(
         );
         let valid = !markers.needs_update(&spec_id, &spec)?
             && match read_token_file(&token.path) {
-                Some(existing) if !existing.trim().is_empty() => {
-                    wm.token_is_valid(existing.trim(), token.workspace.as_deref())?
-                }
+                Some(existing) if !existing.trim().is_empty() => wm.token_is_valid(
+                    existing.trim(),
+                    token.workspace.as_deref(),
+                    &state.users[&token.user].email,
+                )?,
                 _ => false,
             };
         if valid {

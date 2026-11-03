@@ -19,6 +19,7 @@ impl Windmill {
             base: base.trim_end_matches('/').to_owned(),
             // Credentials travel over this client: never via an environment proxy.
             http: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .user_agent("windmill-provision")
                 .timeout(Duration::from_secs(30))
                 .no_proxy()
@@ -162,7 +163,12 @@ impl Windmill {
     /// False only for 401; 403 (scoped token) is valid, other statuses error.
     /// Workspace-bound tokens are checked on the workspace route, which is the
     /// one they are issued for.
-    pub fn token_is_valid(&self, token: &str, workspace: Option<&str>) -> Result<bool> {
+    pub fn token_is_valid(
+        &self,
+        token: &str,
+        workspace: Option<&str>,
+        email: &str,
+    ) -> Result<bool> {
         let path = match workspace {
             Some(ws) => format!("/api/w/{ws}/users/whoami"),
             None => "/api/users/whoami".to_owned(),
@@ -172,7 +178,19 @@ impl Windmill {
             .get(format!("{}{path}", self.base))
             .bearer_auth(token)
             .send()?;
-        token_status_valid(resp.status())
+        let status = resp.status();
+        if !token_status_valid(status)? {
+            return Ok(false);
+        }
+        // A readable identity must be the declared user: a foreign (still valid)
+        // bearer dropped at this path is not ours. 403 (scoped) cannot say.
+        if status.is_success() {
+            let who: serde_json::Value = resp.json()?;
+            return Ok(who["email"]
+                .as_str()
+                .is_some_and(|e| e.eq_ignore_ascii_case(email)));
+        }
+        Ok(true)
     }
 }
 

@@ -15,6 +15,11 @@ use rand::RngCore;
 
 /// Default account seeded by Windmill's first migration with password `changeme`.
 pub const DEFAULT_ADMIN: &str = "admin@windmill.dev";
+/// Keep statements (which embed password hashes) out of the PostgreSQL server
+/// log, even when they fail; we are the superuser so these SETs are allowed.
+const NO_STATEMENT_LOG: &str =
+    "SET log_min_error_statement = 'panic';\nSET log_statement = 'none';\n";
+
 /// Hash that no password verifies against; works on every Windmill version
 /// (the `disabled` column only exists in newer ones).
 const LOCKED_HASH: &str = "!locked-by-windmill-provision";
@@ -174,7 +179,7 @@ impl Psql {
             .stdin
             .take()
             .context("psql stdin")?
-            .write_all(sql.as_bytes())?;
+            .write_all(format!("{NO_STATEMENT_LOG}{sql}").as_bytes())?;
         let out = child.wait_with_output()?;
         if !out.status.success() {
             bail!(
@@ -220,12 +225,26 @@ impl Psql {
             .map(str::to_owned))
     }
 
-    pub fn user_has_argon2_hash(&self, email: &str) -> Result<bool> {
+    /// True when the stored login still verifies `password` and carries the
+    /// declared instance-admin flag (guards against out-of-band changes).
+    pub fn account_in_sync(&self, email: &str, password: &str, admin: bool) -> Result<bool> {
         let out = self.run(&format!(
-            "SELECT 1 FROM password WHERE email = '{email}' AND password_hash LIKE '$argon2%';\n"
+            "SELECT password_hash || ' ' || super_admin::text FROM password WHERE email = '{email}';\n"
         ))?;
-        Ok(out.trim() == "1")
+        let Some((hash, flag)) = out.trim().rsplit_once(' ') else {
+            return Ok(false);
+        };
+        Ok(flag == admin.to_string() && hash_verifies(hash, password))
     }
+}
+
+fn hash_verifies(hash: &str, password: &str) -> bool {
+    use argon2::PasswordVerifier as _;
+    argon2::password_hash::PasswordHash::new(hash).is_ok_and(|h| {
+        Argon2::default()
+            .verify_password(password.as_bytes(), &h)
+            .is_ok()
+    })
 }
 
 #[cfg(test)]
@@ -281,6 +300,14 @@ mod tests {
         assert_eq!(summary, "SQLSTATE 23502");
         assert!(!summary.contains("argon2"));
         assert_eq!(sqlstate_summary("garbage"), "no SQLSTATE");
+    }
+
+    #[test]
+    fn stored_hash_must_verify_the_declared_password() {
+        let h = hash_password("pw").unwrap();
+        assert!(hash_verifies(&h, "pw"));
+        assert!(!hash_verifies(&h, "other"));
+        assert!(!hash_verifies("!locked", "pw"));
     }
 
     #[test]

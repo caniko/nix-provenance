@@ -47,6 +47,8 @@ impl N8n {
             .user_agent("n8n-provision")
             // Credentials travel over this client: never via an environment proxy.
             .no_proxy()
+            // A 307/308 would replay the secret-bearing POST body elsewhere.
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30))
             .build()?;
         Ok(Self {
