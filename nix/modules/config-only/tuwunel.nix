@@ -16,6 +16,47 @@
   registrationBootstrapRuntimeConfig = "/var/lib/tuwunel/provision-registration.toml";
   registrationBootstrapReloadCommand = "server reload-config ${registrationBootstrapRuntimeConfig}";
 
+  matches = pattern: value: builtins.match pattern value != null;
+  validIpv4 = host: matches "[0-9]{1,3}([.][0-9]{1,3}){3}" host && lib.all (part: lib.strings.toIntBase10 part <= 255) (lib.splitString "." host);
+  validIpv6 = host: let
+    # nixpkgs' IPv6 parser does not handle an embedded IPv4 tail; convert it to
+    # two hextets, then reuse the parser for compression and group-count checks.
+    mixed = builtins.match "(.*:)([0-9]+([.][0-9]+){3})" host;
+    octets =
+      if mixed == null
+      then []
+      else map lib.strings.toIntBase10 (lib.splitString "." (builtins.elemAt mixed 1));
+    expanded =
+      if mixed == null
+      then host
+      else "${builtins.head mixed}${lib.toHexString ((builtins.elemAt octets 0) * 256 + builtins.elemAt octets 1)}:${lib.toHexString ((builtins.elemAt octets 2) * 256 + builtins.elemAt octets 3)}";
+  in
+    (mixed == null || (validIpv4 (builtins.elemAt mixed 1) && lib.all (part: part == "0" || !lib.hasPrefix "0" part) (lib.splitString "." (builtins.elemAt mixed 1))))
+    && lib.all (part: part == "" || matches "[0-9A-Fa-f]{1,4}" part) (lib.splitString ":" expanded)
+    && (builtins.tryEval (lib.network.ipv6.fromString expanded).address).success;
+  validServerName = server: let
+    ipv6 = builtins.match "[[]([0-9A-Fa-f:.]+)[]](:[0-9]{1,5})?" server;
+    dns = builtins.match "([A-Za-z0-9.-]{1,255})(:[0-9]{1,5})?" server;
+    host =
+      if dns == null
+      then ""
+      else builtins.head dns;
+  in
+    if ipv6 != null
+    then validIpv6 (builtins.head ipv6)
+    else dns != null && (!matches "[0-9]+([.][0-9]+){3}" host || validIpv4 host);
+  validRoomId = id: let
+    legacy = builtins.match "!([^:]+):(.+)" id;
+  in
+    builtins.stringLength id
+    <= 255
+    && (
+      if legacy != null
+      then validServerName (builtins.elemAt legacy 1)
+      # A 32-byte hash leaves two zero padding bits in the final sextet.
+      else matches "![A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]" id
+    );
+
   userSubmodule = types.submodule {
     options = {
       passwordFile = passwords.passwordFileOption;
@@ -67,9 +108,9 @@
         description = "Require encryption in the initial room state and verify it on reconciliation.";
       };
       expectedRoomId = mkOption {
-        type = types.nullOr (types.strMatching "^![^:]+:.+$");
+        type = types.nullOr (types.addCheck types.str validRoomId);
         default = null;
-        description = "Live room ID pinned after bootstrap; fail if this alias resolves elsewhere.";
+        description = "Live room ID (legacy domain-qualified or v12 hash-based) pinned after bootstrap; fail if this alias resolves elsewhere.";
       };
     };
   };

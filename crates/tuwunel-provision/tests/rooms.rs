@@ -23,6 +23,9 @@ fn private_state() -> Value {
         {"type":"m.room.join_rules", "state_key":"", "content":{"join_rule":"invite"}},
         {"type":"m.room.guest_access", "state_key":"", "content":{"guest_access":"forbidden"}},
         {"type":"m.room.encryption", "state_key":"", "content":{"algorithm":"m.megolm.v1.aes-sha2"}},
+        {"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"joined"}},
+        {"type":"m.room.create", "state_key":"", "sender":"@iris:example.test", "content":{}},
+        {"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":100,"events":{"m.room.redaction":100}}},
         {"type":"m.room.member", "state_key":"@iris:example.test", "content":{"membership":"join"}}
     ])
 }
@@ -35,6 +38,13 @@ struct Scenario {
     logout_status: u16,
     invite_status: u16,
     legacy: bool,
+    lost_login_response: bool,
+    malformed_login_response: bool,
+    first_login_status: u16,
+    room_declarations: Option<Value>,
+    second_creator_credential: Option<&'static str>,
+    lost_logout_response: bool,
+    fail_first_logout: bool,
 }
 
 impl Default for Scenario {
@@ -47,6 +57,13 @@ impl Default for Scenario {
             logout_status: 200,
             invite_status: 200,
             legacy: false,
+            lost_login_response: false,
+            malformed_login_response: false,
+            first_login_status: 200,
+            room_declarations: None,
+            second_creator_credential: None,
+            lost_logout_response: false,
+            fail_first_logout: false,
         }
     }
 }
@@ -58,7 +75,7 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("iris-password"), "fixture-password").unwrap();
     std::fs::write(temp.path().join("admin-token"), "fixture-admin").unwrap();
-    let state = json!({
+    let mut state = json!({
         "server_name":"example.test", "port":port, "admin_token_user":null,
         "users":{"iris":{"admin":false,"credential_name":"iris-password"}},
         "rooms":{"iris":{
@@ -68,6 +85,22 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
             "invite":["@can:example.test"]
         }}
     });
+    if let Some(rooms) = &scenario.room_declarations {
+        state["rooms"] = rooms.clone();
+    }
+    if let Some(invalid) = scenario.second_creator_credential {
+        state["users"]["zeta"] = json!({"admin":false,"credential_name":"zeta-password"});
+        let path = temp.path().join("zeta-password");
+        match invalid {
+            "missing" => {}
+            "directory" => std::fs::create_dir(path).unwrap(),
+            "empty" => std::fs::write(path, b"").unwrap(),
+            "whitespace" => std::fs::write(path, b" \n\t").unwrap(),
+            "invalid-utf8" => std::fs::write(path, [0xff]).unwrap(),
+            "valid" => std::fs::write(path, "fixture-second-password").unwrap(),
+            _ => panic!("unknown credential fixture"),
+        }
+    }
     std::fs::write(temp.path().join("state.json"), state.to_string()).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let server_stop = stop.clone();
@@ -122,7 +155,24 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
                 ("GET", "/_matrix/client/versions") => (200, json!({"versions":["v1.11"]})),
                 ("POST", "/_synapse/admin/v2/users/@iris:example.test") => (200, json!({})),
                 ("POST", "/_matrix/client/v3/login") => {
-                    (200, json!({"access_token":"fixture-owner"}))
+                    if scenario.first_login_status != 200
+                        && !requests
+                            .iter()
+                            .any(|r: &Request| r.path.ends_with("/login"))
+                    {
+                        (
+                            scenario.first_login_status,
+                            json!({"errcode":"M_FORBIDDEN","error":"fixture refusal"}),
+                        )
+                    } else if scenario.malformed_login_response
+                        && !requests
+                            .iter()
+                            .any(|r: &Request| r.path.ends_with("/login"))
+                    {
+                        (200, json!({}))
+                    } else {
+                        (200, json!({"access_token":"fixture-owner"}))
+                    }
                 }
                 ("GET", path) if path.starts_with("/_matrix/client/v3/directory/room/") => (
                     scenario.alias_status,
@@ -143,7 +193,19 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
                     invited = scenario.invite_status == 200;
                     (scenario.invite_status, json!({}))
                 }
-                ("POST", "/_matrix/client/v3/logout") => (scenario.logout_status, json!({})),
+                ("POST", "/_matrix/client/v3/logout") => {
+                    let first = !requests
+                        .iter()
+                        .any(|r: &Request| r.path.ends_with("/logout"));
+                    (
+                        if first && scenario.fail_first_logout {
+                            500
+                        } else {
+                            scenario.logout_status
+                        },
+                        json!({}),
+                    )
+                }
                 _ => (500, json!({"error":"Unexpected fixture request"})),
             };
             requests.push(Request {
@@ -152,6 +214,26 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
                 auth,
                 body,
             });
+            if scenario.lost_login_response
+                && requests.last().unwrap().path.ends_with("/login")
+                && requests
+                    .iter()
+                    .filter(|r| r.path.ends_with("/login"))
+                    .count()
+                    == 1
+            {
+                continue;
+            }
+            if scenario.lost_logout_response
+                && requests.last().unwrap().path.ends_with("/logout")
+                && requests
+                    .iter()
+                    .filter(|r| r.path.ends_with("/logout"))
+                    .count()
+                    == 1
+            {
+                continue;
+            }
             let response = response.to_string();
             write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
         }
@@ -185,6 +267,13 @@ fn run(scenario: Scenario) -> (Output, Vec<Request>) {
     let output = child.wait_with_output().unwrap();
     stop.store(true, Ordering::Release);
     let requests = server.join().unwrap();
+    if requests.is_empty() {
+        assert!(!temp.path().join("markers").exists());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("admin-token")).unwrap(),
+            "fixture-admin"
+        );
+    }
     assert!(
         !timed_out,
         "provisioner exceeded fixture deadline: {}",
@@ -225,6 +314,11 @@ fn creates_encrypted_room_as_owner_and_revokes_provisioning_session() {
     assert_eq!(create.body["visibility"], "private");
     assert_eq!(create.body["preset"], "private_chat");
     assert_eq!(create.body["invite"], json!(["@can:example.test"]));
+    assert_eq!(create.body["power_level_content_override"]["invite"], 100);
+    assert_eq!(
+        create.body["power_level_content_override"]["events"]["m.room.redaction"],
+        100
+    );
     assert_eq!(create.body["initial_state"][2]["state_key"], "");
     assert_eq!(
         create.body["initial_state"][2]["content"]["algorithm"],
@@ -307,6 +401,102 @@ fn alias_lookup_failure_still_revokes_the_owner_session() {
 }
 
 #[test]
+fn ambiguous_login_failure_recovers_and_revokes_the_same_device() {
+    for lost_login_response in [false, true] {
+        let (output, requests) = run(Scenario {
+            lost_login_response,
+            malformed_login_response: !lost_login_response,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        let logins: Vec<_> = requests
+            .iter()
+            .filter(|r| r.path.ends_with("/login"))
+            .collect();
+        assert_eq!(logins.len(), 2);
+        for login in logins {
+            assert_eq!(login.body["device_id"], "TUWUNEL_PROVISION");
+        }
+        assert!(
+            !requests
+                .iter()
+                .any(|r| r.path.ends_with("/createRoom") || r.path.ends_with("/invite"))
+        );
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn explicit_login_refusals_do_not_repeat_credentials() {
+    for status in [400, 401, 403, 404, 405, 409, 429] {
+        let (output, requests) = run(Scenario {
+            first_login_status: status,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/login"))
+                .count(),
+            1
+        );
+        assert!(!requests.iter().any(|r| r.path.ends_with("/logout")
+            || r.path.contains("/rooms/")
+            || r.path.ends_with("/createRoom")));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("HTTP {status}")));
+    }
+}
+
+#[test]
+fn ambiguous_http_login_failure_only_recovers_for_revocation() {
+    for status in [408, 500, 502, 503] {
+        let (output, requests) = run(Scenario {
+            first_login_status: status,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/login"))
+                .count(),
+            2
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|r| r.path.contains("/rooms/") || r.path.ends_with("/createRoom"))
+        );
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn existing_room_with_public_history_or_wrong_owner_is_not_adopted() {
+    for bad_state in [
+        json!({"type":"m.room.history_visibility", "state_key":"", "content":{"history_visibility":"world_readable"}}),
+        json!({"type":"m.room.create", "state_key":"", "sender":"@other:example.test", "content":{}}),
+        json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":0}}}),
+        json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100, "@other:example.test":100}}}),
+    ] {
+        let mut state = private_state();
+        for event in state.as_array_mut().unwrap() {
+            if event["type"] == bad_state["type"] {
+                *event = bad_state.clone();
+            }
+        }
+        let (output, requests) = run(Scenario {
+            state,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(!requests.iter().any(|r| r.path.ends_with("/invite")));
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
 fn invitation_failure_still_revokes_the_owner_session() {
     let (output, requests) = run(Scenario {
         invite_status: 500,
@@ -342,6 +532,465 @@ fn logout_failure_prevents_successful_reconciliation() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("logging out"));
     assert_logged_out(&requests);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path.ends_with("/login"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path.ends_with("/logout"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn ambiguous_logout_recovers_and_revokes_same_device_without_repeating_reconciliation() {
+    for lost_logout_response in [false, true] {
+        let (output, requests) = run(Scenario {
+            lost_logout_response,
+            fail_first_logout: !lost_logout_response,
+            ..Scenario::default()
+        });
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let logins: Vec<_> = requests
+            .iter()
+            .filter(|r| r.path.ends_with("/login"))
+            .collect();
+        assert_eq!(logins.len(), 2);
+        for login in logins {
+            assert_eq!(login.body["device_id"], "TUWUNEL_PROVISION");
+        }
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/logout"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/invite"))
+                .count(),
+            1
+        );
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn logout_recovery_preserves_the_original_reconciliation_failure() {
+    for logout_status in [200, 500] {
+        let (output, requests) = run(Scenario {
+            alias_status: 500,
+            fail_first_logout: true,
+            logout_status,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("resolving Matrix room"), "{stderr}");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/login"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("/logout"))
+                .count(),
+            2
+        );
+        if logout_status == 500 {
+            assert!(stderr.contains("same-device cleanup also failed"));
+        }
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn every_room_version_checks_redaction_before_inviting() {
+    for version in 1..=12 {
+        for safe in [false, true] {
+            let mut state = private_state();
+            state[4]["content"]["room_version"] = version.to_string().into();
+            state[5]["content"] = json!({"invite":100,"events":{"m.poll.response":0}});
+            if version < 12 {
+                state[5]["content"]["users"]["@iris:example.test"] = 100.into();
+            }
+            if safe {
+                state[5]["content"]["events"]["m.room.redaction"] = 100.into();
+            }
+            let (output, requests) = run(Scenario {
+                state,
+                ..Scenario::default()
+            });
+            assert_eq!(
+                output.status.success(),
+                safe,
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(requests.iter().any(|r| r.path.ends_with("/invite")), safe);
+            assert_logged_out(&requests);
+        }
+    }
+}
+
+#[test]
+fn legacy_string_powers_are_versioned_and_checked_before_inviting() {
+    for version in 1..=12 {
+        for safe in [false, true] {
+            let mut state = private_state();
+            state[4]["content"]["room_version"] = version.to_string().into();
+            state[5]["content"] = json!({
+                "users":{"@iris:example.test":" +00100 ","@can:example.test":" -01 "},
+                "users_default":"-01", "events_default":"000", "state_default":"+050",
+                "invite":" 100 ", "kick":"50", "ban":"50", "redact":"50",
+                "events":{"m.room.redaction":if safe { "\t+100\n" } else { "-01" },"m.room.encrypted":"0"}
+            });
+            let (output, requests) = run(Scenario {
+                state,
+                ..Scenario::default()
+            });
+            let expected = version < 10 && safe;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.success(),
+                expected,
+                "room version {version}: {stderr}"
+            );
+            assert_eq!(
+                requests.iter().any(|r| r.path.ends_with("/invite")),
+                expected
+            );
+            if !expected {
+                assert!(
+                    stderr.contains(if version < 10 {
+                        "nonowner can change room policy through m.room.redaction"
+                    } else {
+                        "invalid Matrix power level"
+                    }),
+                    "{stderr}"
+                );
+            }
+            assert_logged_out(&requests);
+        }
+    }
+}
+
+#[test]
+fn legacy_float_powers_are_versioned_and_truncated_before_inviting() {
+    for version in 1..=12 {
+        for safe in [false, true] {
+            let mut state = private_state();
+            state[4]["content"]["room_version"] = version.to_string().into();
+            state[5]["content"] = json!({
+                "users":{"@iris:example.test":100.9}, "users_default":-0.9,
+                "state_default":50.9, "invite":100.5, "kick":50.9, "ban":50.9, "redact":50.9,
+                "events":{"m.room.redaction":if safe { 100.5 } else { 0.9 }}
+            });
+            let (output, requests) = run(Scenario {
+                state,
+                ..Scenario::default()
+            });
+            let expected = version < 6 && safe;
+            assert_eq!(
+                output.status.success(),
+                expected,
+                "room version {version}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                requests.iter().any(|r| r.path.ends_with("/invite")),
+                expected
+            );
+            assert_logged_out(&requests);
+        }
+    }
+}
+
+#[test]
+fn every_room_declaration_is_validated_before_network_or_local_mutation() {
+    let valid = json!({
+        "alias":"#hermes-iris:example.test", "creator":"iris", "encrypted":true,
+        "invite":["@can:example.test"]
+    });
+    for patch in [
+        json!({"encrypted":false}),
+        json!({"creator":null}),
+        json!({"alias":"#hermes-iris:other.test"}),
+        json!({"creator":"missing"}),
+        json!({"alias":"hermes-iris:example.test"}),
+        json!({"alias":"#hermes-iris"}),
+        json!({"alias":"#:example.test"}),
+        json!({"alias":"#hermes-iris:garbage:example.test"}),
+        json!({"alias":"#hermes-iris:example.test:"}),
+        json!({"alias":"#hermes-iris:"}),
+    ] {
+        let mut invalid = valid.clone();
+        for (key, value) in patch.as_object().unwrap() {
+            invalid[key] = value.clone();
+        }
+        let (output, requests) = run(Scenario {
+            room_declarations: Some(json!({"a-valid":valid,"z-invalid":invalid})),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "invalid later declaration must precede even readiness/bootstrap/user requests"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Matrix room z-invalid"));
+    }
+}
+
+#[test]
+fn every_creator_credential_is_validated_before_network_or_local_mutation() {
+    for invalid in [
+        "missing",
+        "directory",
+        "empty",
+        "whitespace",
+        "invalid-utf8",
+    ] {
+        let (output, requests) = run(Scenario {
+            second_creator_credential: Some(invalid),
+            room_declarations: Some(json!({
+                "a-valid":{"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true},
+                "z-invalid":{"alias":"#hermes-zeta:example.test","creator":"zeta","encrypted":true}
+            })),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "invalid later creator credential must precede readiness/bootstrap/user requests: {invalid}"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Matrix room z-invalid creator"));
+    }
+}
+
+#[test]
+fn duplicate_aliases_are_rejected_before_network_or_local_mutation() {
+    let first = json!({"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"invite":["@can:example.test"]});
+    for patch in [
+        json!({}),
+        json!({"creator":"zeta"}),
+        json!({"invite":["@other:example.test"]}),
+    ] {
+        let mut second = first.clone();
+        for (key, value) in patch.as_object().unwrap() {
+            second[key] = value.clone();
+        }
+        let (output, requests) = run(Scenario {
+            second_creator_credential: Some("valid"),
+            room_declarations: Some(json!({"a-first":first,"z-second":second})),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "duplicate aliases must fail before any readiness/user/room mutation"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate Matrix room alias"));
+    }
+}
+
+#[test]
+fn conflicting_duplicate_pins_are_rejected_before_mutation() {
+    let first = json!({"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"expectedRoomId":"!iris:example.test","invite":["@can:example.test"]});
+    for patch in [
+        json!({"creator":"zeta"}),
+        json!({"invite":["@other:example.test"]}),
+        json!({"creator":null,"encrypted":false}),
+    ] {
+        let mut second = first.clone();
+        second["alias"] = json!("#hermes-other:example.test");
+        for (key, value) in patch.as_object().unwrap() {
+            second[key] = value.clone();
+        }
+        let (output, requests) = run(Scenario {
+            second_creator_credential: Some("valid"),
+            room_declarations: Some(json!({"a-first":first,"z-second":second})),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "conflicting room pins must fail before readiness/users/room mutations"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("conflicting declarations for pinned Matrix room ID")
+        );
+    }
+}
+
+#[test]
+fn multiple_aliases_with_the_same_pin_and_policy_remain_valid() {
+    let first = json!({"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"expectedRoomId":"!iris:example.test","invite":["@can:example.test"]});
+    let mut second = first.clone();
+    second["alias"] = json!("#hermes-other:example.test");
+    second["invite"] = json!(["@can:example.test", "@can:example.test"]);
+    let (output, requests) = run(Scenario {
+        room_declarations: Some(json!({"a-first":first,"z-second":second})),
+        ..Scenario::default()
+    });
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path.ends_with("/invite"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.path.ends_with("/logout"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn noncanonical_v12_pins_are_rejected_before_mutation() {
+    for tail in ['B', '_', '9'] {
+        let (output, requests) = run(Scenario {
+            room_declarations: Some(
+                json!({"iris":{"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"expectedRoomId":format!("!{}{}", "A".repeat(42), tail)}}),
+            ),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "noncanonical hash pin must fail before readiness/users"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("invalid Matrix room ID"));
+    }
+}
+
+#[test]
+fn malformed_room_pins_are_rejected_before_network_or_local_mutation() {
+    for pin in [
+        "!room:not a server".to_owned(),
+        "!room:example.test:garbage".to_owned(),
+        "!room:[12345::]".to_owned(),
+        format!("!{}:example.test", "é".repeat(122)),
+        "!room\0:example.test".to_owned(),
+    ] {
+        let (output, requests) = run(Scenario {
+            room_declarations: Some(
+                json!({"iris":{"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"expectedRoomId":pin}}),
+            ),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "invalid pin must fail before readiness/user mutation"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("invalid Matrix room ID"));
+    }
+}
+
+#[test]
+fn unsupported_room_version_identifiers_never_invite_and_revoke_the_session() {
+    for version in [
+        "012",
+        "01",
+        "+12",
+        "+1",
+        "001",
+        "0",
+        "13",
+        "org.example.room",
+        " 12",
+        "12 ",
+        "1.0",
+    ] {
+        let mut state = private_state();
+        state[4]["content"]["room_version"] = version.into();
+        let (output, requests) = run(Scenario {
+            state,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success(), "unsupported identifier {version}");
+        assert!(!requests.iter().any(|r| r.path.ends_with("/invite")));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unsupported Matrix room version")
+        );
+        assert_logged_out(&requests);
+    }
+}
+
+#[test]
+fn v12_ignores_obsolete_redact_without_relaxing_event_control() {
+    for version in [11, 12] {
+        for safe in [false, true] {
+            let mut state = private_state();
+            state[4]["content"]["room_version"] = version.to_string().into();
+            state[5]["content"]["redact"] = 0.into();
+            state[5]["content"]["events"]["m.room.redaction"] = if safe { 100 } else { 0 }.into();
+            let (output, requests) = run(Scenario {
+                state,
+                ..Scenario::default()
+            });
+            let expected = version == 12 && safe;
+            assert_eq!(
+                output.status.success(),
+                expected,
+                "room version {version}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                requests.iter().any(|r| r.path.ends_with("/invite")),
+                expected
+            );
+            assert_logged_out(&requests);
+        }
+    }
+}
+
+#[test]
+fn nonowner_policy_power_and_third_party_invites_are_rejected_before_inviting() {
+    for bad_state in [
+        json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100,"@can:example.test":50},"invite":100}}),
+        json!({"type":"m.room.power_levels", "state_key":"", "content":{"users":{"@iris:example.test":100},"invite":0}}),
+        json!({"type":"m.room.third_party_invite", "state_key":"invitation-token", "content":{"display_name":"outsider","public_key":"key"}}),
+    ] {
+        let mut state = private_state();
+        state
+            .as_array_mut()
+            .unwrap()
+            .retain(|event| event["type"] != bad_state["type"]);
+        state.as_array_mut().unwrap().push(bad_state);
+        let (output, requests) = run(Scenario {
+            state,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(!requests.iter().any(|r| r.path.ends_with("/invite")));
+        assert_logged_out(&requests);
+    }
 }
 
 #[test]
