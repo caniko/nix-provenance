@@ -340,6 +340,10 @@ in
           touch $out
         '';
     oauth-home-module-eval = import ./modules/test/oauth-home-eval.nix {inherit pkgs self;};
+    t3code-credentials-module-eval = let
+      result = import ./modules/test/t3code-credentials-eval.nix {inherit pkgs;};
+    in
+      assert result.pass; pkgs.writeText "t3code-credentials-module-eval.json" result.manifest;
     immich-test = craneLib.cargoTest (
       args.immich-provision // {cargoArtifacts = cargoArtifacts.immich-provision;}
     );
