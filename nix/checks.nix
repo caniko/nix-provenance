@@ -340,6 +340,8 @@ in
           touch $out
         '';
     oauth-home-module-eval = import ./modules/test/oauth-home-eval.nix {inherit pkgs self;};
+    claude-code-home-module-eval = assert (import ./modules/test/claude-code-home-eval.nix {inherit pkgs;}).pass;
+      pkgs.writeText "claude-code-home-module-eval" "ok";
     t3code-credentials-module-eval = let
       result = import ./modules/test/t3code-credentials-eval.nix {inherit pkgs;};
     in

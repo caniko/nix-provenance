@@ -25,6 +25,15 @@ belong to the consumer. Declare a separate OpenAI enrollment for each host/user
 with the [shared-OAuth module](shared-oauth.md); never clone rotating grants.
 Use the resulting `helperPackage` so checkpoint recovery plugins are available.
 
+For standalone Claude Code, import `homeModules.claude-code` and set
+`nix-provenance.claudeCode.tokenFile` to that user's private runtime token file,
+plus `package` to the native Claude Code package. The module installs a native
+binary wrapper using `provenance-claude`, which passes the token as descriptor 3
+without writing Claude's credential store. Do not also install the unwrapped
+package. A null token file leaves package selection and native login unchanged;
+once configured, an unavailable or unsafe credential fails closed. One encrypted
+source may be rekeyed to multiple users/hosts when sharing is explicitly intended.
+
 For Claude, supply a runtime file containing a token from the native
 `claude setup-token` flow. The adapter uses systemd `LoadCredential`; a compatible
 T3 runner opens that file for the native Claude subprocess and sets only its file

@@ -258,6 +258,7 @@
       };
 
       homeModules = {
+        claude-code = import ./nix/modules/home/claude-code.nix {inherit self;};
         rbw = import ./nix/modules/home/rbw.nix {inherit self;};
         proton-vpn = import ./nix/modules/home/proton-vpn.nix {inherit self;};
         oauth = import ./nix/modules/home/oauth.nix {inherit self;};
