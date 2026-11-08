@@ -23,7 +23,12 @@ are supported only as runtime password-file references, normally
 `config.age.secrets.<name>.path`; modules load those files through systemd
 credentials and reconcilers store only rotation-marker hashes. Plaintext
 passwords must never enter Nix-rendered JSON, the Nix store, argv, logs, or
-environment variables. PINs, app-local password-reset flows, and notification
+environment variables. The one exception is a service with no OIDC/SSO
+support (ntfy is the first): its module may provision app-local accounts and
+API tokens from runtime secret files loaded as systemd credentials, hashing at
+runtime, and write them only to the service's own `/run` `EnvironmentFile`
+(mode 0600, built at start) because that is ntfy's only declarative interface.
+PINs, app-local password-reset flows, and notification
 emails remain out of scope unless the identity model changes again. Public keys are a separate non-secret exception: Forgejo may reconcile declared
 SSH public keys, and GitHub accounts may reconcile declared SSH and OpenPGP
 public keys plus repository collaborator invitations and their acceptance.
@@ -70,6 +75,12 @@ tenant taxonomy and the add-a-tenant checklist.
   for Immich/Rauthy, service-specific `kanidmOAuth2System` helpers for Immich,
   Vikunja, and Forgejo, Stalwart's kanidm LDAP helpers, and `adapter` — the
   backend-agnostic primitives third-party flakes use (see below)
+- `homeModules.paperclip-archive` — timed export of every Paperclip company
+  into a private git-LFS repository, plus restore-if-missing from a pinned copy
+  of it (`nix-provenance.paperclip-archive`). Binaries (`images/`, `assets/`,
+  common media extensions) go to LFS; secrets are never exported. Restore never
+  overwrites an existing company. The pinned copy needs `?lfs=1` on a git flake
+  input to fetch the LFS binaries.
 - `homeModules.fj` — installs nixpkgs' `forgejo-cli` plus its validated Nushell
   completion and provides `nix-provenance.fj.enable`.
 - `homeModules.github` — per-account user units that reconcile a GitHub

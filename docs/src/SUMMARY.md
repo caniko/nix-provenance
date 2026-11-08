@@ -19,6 +19,7 @@
 - [Proton VPN Account Login](./guides/proton-vpn.md)
 - [Tuwunel Private Rooms](./guides/tuwunel-private-rooms.md)
 - [GitHub Accounts](./guides/github-accounts.md)
+- [ntfy Users, Tokens and ACLs](./guides/ntfy.md)
 
 # Reference
 
