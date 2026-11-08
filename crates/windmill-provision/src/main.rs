@@ -49,6 +49,19 @@ enum Command {
         #[arg(long)]
         stamp: PathBuf,
     },
+    /// Lock the stock admin@windmill.dev account. Runs in its own unit so a
+    /// missing user password file cannot keep it from running.
+    LockDefaultAdmin {
+        /// Nix-rendered state JSON.
+        #[arg(long)]
+        state: PathBuf,
+        #[arg(long, default_value = "runuser")]
+        runuser: PathBuf,
+        #[arg(long, default_value = "psql")]
+        psql: PathBuf,
+        #[arg(long, default_value_t = 120)]
+        ready_timeout: u64,
+    },
     /// Reconcile users, workspaces, memberships and tokens.
     Reconcile {
         /// Nix-rendered state JSON.
@@ -81,6 +94,23 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::LockDefaultAdmin {
+            state,
+            runuser,
+            psql,
+            ready_timeout,
+        } => {
+            let state = read_state(&state)?;
+            if !state.disable_default_admin {
+                return Ok(());
+            }
+            let db = db::Psql {
+                runuser,
+                psql,
+                database: state.database,
+            };
+            lock_default_admin(&db, Duration::from_secs(ready_timeout))
+        }
         Command::Reconcile {
             state,
             credential_dir,
@@ -89,15 +119,15 @@ fn main() -> Result<()> {
             psql,
             ready_timeout,
         } => {
-            let raw = fs::read_to_string(&state)
-                .with_context(|| format!("reading {}", state.display()))?;
-            let state: State = serde_json::from_str(&raw).context("parsing state")?;
+            let state = read_state(&state)?;
             let db = db::Psql {
                 runuser,
                 psql,
                 database: state.database.clone(),
             };
             // Fail closed: a rejected declaration must not leave the stock login open.
+            // The dedicated unit is the load-order-safe path; this stays because
+            // the lock is idempotent and reconcile may run outside systemd.
             if state.disable_default_admin {
                 lock_default_admin(&db, Duration::from_secs(ready_timeout))?;
             }
@@ -105,6 +135,11 @@ fn main() -> Result<()> {
             reconcile(&state, &credential_dir, &marker_dir, &db, ready_timeout)
         }
     }
+}
+
+fn read_state(path: &Path) -> Result<State> {
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&raw).context("parsing state")
 }
 
 /// systemd EnvironmentFile value: double-quoted, `\` and `"` escaped.

@@ -14,6 +14,7 @@
   stateDir = "/var/lib/windmill-provision";
   envFile = "/run/windmill-provision/env";
   superadminCredential = "superadmin";
+  lockOrder = lib.optional cfg.disableDefaultAdmin "windmill-lock-default-admin.service";
 
   # Rotation watch list: each file plus its parent directory (agenix swaps a
   # symlinked generation directory, which only the parent watch sees). Never
@@ -240,10 +241,29 @@ in {
       EnvironmentFile = lib.mkAfter ["-${envFile}"];
     };
 
-    systemd.services.windmill-provision = {
-      description = "Declaratively provision Windmill users, workspaces and tokens";
+    # Locking the stock login must not depend on any secret file: systemd
+    # resolves LoadCredential before ExecStart, so a missing user password
+    # would fail reconcile and leave admin@windmill.dev / changeme open. This
+    # unit loads no credentials at all and runs before reconcile.
+    systemd.services.windmill-lock-default-admin = mkIf cfg.disableDefaultAdmin {
+      description = "Lock Windmill's stock admin@windmill.dev account";
       after = ["windmill-server.service" "postgresql.target"];
       requires = ["windmill-server.service"];
+      partOf = ["windmill-server.service"];
+      wantedBy = ["multi-user.target"];
+      restartTriggers = [stateFile];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        UMask = "0077";
+        ExecStart = "${exe} lock-default-admin --state ${stateFile} --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql";
+      };
+    };
+
+    systemd.services.windmill-provision = {
+      description = "Declaratively provision Windmill users, workspaces and tokens";
+      after = ["windmill-server.service" "postgresql.target"] ++ lockOrder;
+      requires = ["windmill-server.service"] ++ lockOrder;
       partOf = ["windmill-server.service"];
       wantedBy = ["multi-user.target"];
       restartTriggers = [stateFile];
