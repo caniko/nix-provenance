@@ -111,11 +111,12 @@ impl State {
         for (label, token) in &self.tokens {
             ensure!(
                 token.path.is_absolute()
+                    && token.path.file_name().is_some()
                     && !token.path.components().any(|c| matches!(
                         c,
                         std::path::Component::ParentDir | std::path::Component::CurDir
                     )),
-                "token {label}: path must be absolute without . or .. components"
+                "token {label}: path must be absolute, name a file and have no . or .. components"
             );
         }
         for (label, token) in &self.tokens {
@@ -265,6 +266,13 @@ mod tests {
     fn rejects_dotdot_token_paths() {
         let mut s = state(BASE);
         s.tokens.get_mut("t").unwrap().path = "/x/../x/t".into();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_token_path_without_a_file_name() {
+        let mut s = state(BASE);
+        s.tokens.get_mut("t").unwrap().path = "/".into();
         assert!(s.validate().is_err());
     }
 
