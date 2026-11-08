@@ -304,9 +304,10 @@ in {
       description = "Restart Windmill after the superadmin secret rotates";
       serviceConfig = {
         Type = "oneshot";
+        LoadCredential = ["${superadminCredential}:${cfg.superadminSecretFile}"];
         # Only a real secret change restarts the server; an agenix generation
         # switch that leaves the content alone is skipped (exit 1 = unmet).
-        ExecCondition = "${exe} changed --secret-file ${cfg.superadminSecretFile} --stamp /run/windmill-provision/superadmin.sha";
+        ExecCondition = "${exe} changed --secret-file %d/${superadminCredential} --stamp /run/windmill-provision/superadmin.sha";
         ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-server.service";
       };
     };

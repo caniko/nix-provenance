@@ -222,9 +222,10 @@ in {
       description = "Restart n8n after the owner password file rotates";
       serviceConfig = {
         Type = "oneshot";
+        LoadCredential = ["${ownerCredential}:${cfg.owner.passwordFile}"];
         # Only a real password change restarts n8n; an agenix generation switch
         # that leaves the content alone is skipped (exit 1 = condition unmet).
-        ExecCondition = "${exe} changed --password-file ${cfg.owner.passwordFile} --stamp /run/n8n-provision/owner.sha";
+        ExecCondition = "${exe} changed --password-file %d/${ownerCredential} --stamp /run/n8n-provision/owner.sha";
         ExecStart = "${config.systemd.package}/bin/systemctl restart n8n-owner-env.service";
       };
     };

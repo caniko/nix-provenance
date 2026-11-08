@@ -890,6 +890,8 @@ in
     windmill-module-eval = let
       server = windmillEval.config.systemd.services.windmill-server;
       svc = windmillEval.config.systemd.services.windmill-provision;
+      lock = windmillEval.config.systemd.services.windmill-lock-default-admin;
+      rotate = windmillEval.config.systemd.services.windmill-superadmin-rotate;
       json = builtins.toJSON;
       failed = c: lib.filter (m: lib.hasPrefix "services.windmill.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
       ext = m: windmillEval.extendModules {modules = [m];};
@@ -935,6 +937,13 @@ in
         printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-superadmin-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-server.service
+        # Locking the stock admin must not wait on (or load) any secret file.
+        test ${lib.escapeShellArg (json (lock.serviceConfig.LoadCredential or []))} = '[]'
+        printf '%s' ${lib.escapeShellArg (json svc.requires)} | grep -q windmill-lock-default-admin.service
+        printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-lock-default-admin.service
+        # The rotation check reads the secret as a credential, not from its path.
+        printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
+        printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--secret-file %d/superadmin'
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.ExecStartPre)} | grep -q ' env '
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.EnvironmentFile)} | grep -q '/run/windmill-provision/env'
@@ -952,6 +961,7 @@ in
       server = n8nEval.config.systemd.services.n8n;
       owner = n8nEval.config.systemd.services.n8n-owner-env;
       svc = n8nEval.config.systemd.services.n8n-provision;
+      rotate = n8nEval.config.systemd.services.n8n-provision-rotate;
       json = builtins.toJSON;
       failed = c: lib.filter (m: lib.hasPrefix "services.n8n.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
       storeSecret = n8nEval.extendModules {modules = [{services.n8n.provision.owner.passwordFile = lib.mkForce "/nix/store/x-secret";}];};
@@ -986,6 +996,9 @@ in
         test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n.service
+        # The rotation check reads the password as a credential, not from its path.
+        printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'
+        printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--password-file %d/owner-password'
         # The owner password must not be a credential of the n8n unit itself.
         ! printf '%s' ${lib.escapeShellArg (json (server.serviceConfig.LoadCredential or []))} | grep -q 'owner-password'
         printf '%s' ${lib.escapeShellArg (json owner.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'
