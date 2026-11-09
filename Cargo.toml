@@ -16,6 +16,8 @@ members = [
   "crates/stalwart-oauth-bootstrap",
   "crates/proton-vpn-auth",
   "crates/tuwunel-provision",
+  "crates/windmill-provision",
+  "crates/n8n-provision",
 ]
 
 # Shared package metadata. `version` is intentionally NOT inherited — each crate
