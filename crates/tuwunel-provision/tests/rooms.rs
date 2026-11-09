@@ -366,12 +366,12 @@ fn pinned_alias_missing_or_drifted_never_creates_a_replacement() {
             ..Scenario::default()
         });
         assert!(!output.status.success());
+        // Pins are compared before bootstrap, users or any login.
         assert!(
-            !requests
-                .iter()
-                .any(|r| r.path.ends_with("/createRoom") || r.path.ends_with("/invite"))
+            requests.iter().all(|r| r.method == "GET"),
+            "pin mismatch must fail before any write: {:?}",
+            requests.iter().map(|r| &r.path).collect::<Vec<_>>()
         );
-        assert_logged_out(&requests);
     }
 }
 
@@ -868,6 +868,24 @@ fn multiple_aliases_with_the_same_pin_and_policy_remain_valid() {
             .count(),
         2
     );
+}
+
+#[test]
+fn malformed_invites_are_rejected_before_mutation() {
+    for invite in ["can", "@can", "@:example.test", "can:example.test"] {
+        let (output, requests) = run(Scenario {
+            room_declarations: Some(
+                json!({"iris":{"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"invite":[invite]}}),
+            ),
+            ..Scenario::default()
+        });
+        assert!(!output.status.success());
+        assert!(
+            requests.is_empty(),
+            "malformed invite must fail before readiness/users"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Matrix user ID"));
+    }
 }
 
 #[test]

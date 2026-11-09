@@ -95,6 +95,10 @@ fn main() -> Result<()> {
                 bail!("Matrix room {name} has conflicting declarations for pinned Matrix room ID");
             }
         }
+        for user_id in &room.invite {
+            client::parse_user_id(user_id)
+                .with_context(|| format!("validating Matrix room {name} invite"))?;
+        }
         if room.encrypted != room.creator.is_some() {
             bail!(
                 "Matrix room {name} requires both creator and encrypted for private owner reconciliation"
@@ -122,6 +126,25 @@ fn main() -> Result<()> {
     probe_client
         .wait_ready(cli.ready_timeout, Duration::from_secs(1))
         .context("waiting for tuwunel to be ready")?;
+
+    // Pins are compared before any mutation; the per-room check below still
+    // catches drift during the run. Alias lookup needs no authentication.
+    for (name, room) in &state.rooms {
+        if let Some(expected) = room.expected_room_id.as_deref() {
+            match probe_client
+                .resolve_room_alias(&room.alias)
+                .with_context(|| format!("resolving Matrix room {name} alias {}", room.alias))?
+            {
+                Some(room_id) if room_id == expected => {}
+                Some(room_id) => bail!(
+                    "Matrix room {name} alias resolves to {room_id}, not its declared room ID {expected}"
+                ),
+                None => bail!(
+                    "Matrix room {name} has a pinned ID but its alias is missing; refusing to create a replacement"
+                ),
+            }
+        }
+    }
 
     // Bootstrap: resolve or create the admin token.
     let admin_token = bootstrap_admin_token(
