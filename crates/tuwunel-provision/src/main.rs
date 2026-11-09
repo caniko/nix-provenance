@@ -1,6 +1,7 @@
 mod client;
 mod state;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -71,6 +72,53 @@ fn main() -> Result<()> {
     let state: State = serde_json::from_str(&raw)
         .with_context(|| format!("parsing state file {}", cli.state.display()))?;
 
+    // Validate every declaration before any readiness, bootstrap or user work:
+    // a bad later room must not leave earlier accounts or markers mutated.
+    let mut room_aliases = BTreeSet::new();
+    let mut pinned_rooms = BTreeMap::new();
+    for (name, room) in &state.rooms {
+        let (_, alias_server) = client::parse_room_alias(&room.alias)
+            .with_context(|| format!("validating Matrix room {name} alias"))?;
+        if !room_aliases.insert(&room.alias) {
+            bail!("Matrix room {name} has a duplicate Matrix room alias");
+        }
+        if let Some(id) = room.expected_room_id.as_deref() {
+            if !state::valid_room_id(id) {
+                bail!("Matrix room {name} has an invalid Matrix room ID pin");
+            }
+            if let Some(previous) = pinned_rooms.insert(id, room)
+                && (previous.creator != room.creator
+                    || previous.encrypted != room.encrypted
+                    || previous.invite.iter().collect::<BTreeSet<_>>()
+                        != room.invite.iter().collect::<BTreeSet<_>>())
+            {
+                bail!("Matrix room {name} has conflicting declarations for pinned Matrix room ID");
+            }
+        }
+        if !room
+            .invite
+            .iter()
+            .all(|user_id| state::valid_user_id(user_id))
+        {
+            bail!("Matrix room {name} has an invalid Matrix user ID invite");
+        }
+        if room.encrypted != room.creator.is_some() {
+            bail!(
+                "Matrix room {name} requires both creator and encrypted for private owner reconciliation"
+            );
+        }
+        if let Some(creator) = &room.creator {
+            if alias_server != state.server_name {
+                bail!("Matrix room {name} alias does not belong to the provisioned server");
+            }
+            let user = state.users.get(creator).with_context(|| {
+                format!("Matrix room {name} creator {creator} is not a provisioned user")
+            })?;
+            read_password_file(cli.credential_dir.join(&user.credential_name))
+                .with_context(|| format!("reading credential for Matrix room {name} creator"))?;
+        }
+    }
+
     let base_url = format!("http://127.0.0.1:{}", state.port);
     let registration_bootstrap = RegistrationBootstrap::from_cli(&cli)?;
     let cred_dir = cli.credential_dir;
@@ -81,6 +129,25 @@ fn main() -> Result<()> {
     probe_client
         .wait_ready(cli.ready_timeout, Duration::from_secs(1))
         .context("waiting for tuwunel to be ready")?;
+
+    // Pins are compared before any mutation; the per-room check below still
+    // catches drift during the run. Alias lookup needs no authentication.
+    for (name, room) in &state.rooms {
+        if let Some(expected) = room.expected_room_id.as_deref() {
+            match probe_client
+                .resolve_room_alias(&room.alias)
+                .with_context(|| format!("resolving Matrix room {name} alias {}", room.alias))?
+            {
+                Some(room_id) if room_id == expected => {}
+                Some(room_id) => bail!(
+                    "Matrix room {name} alias resolves to {room_id}, not its declared room ID {expected}"
+                ),
+                None => bail!(
+                    "Matrix room {name} has a pinned ID but its alias is missing; refusing to create a replacement"
+                ),
+            }
+        }
+    }
 
     // Bootstrap: resolve or create the admin token.
     let admin_token = bootstrap_admin_token(
@@ -165,23 +232,44 @@ fn main() -> Result<()> {
         // Private assistant rooms are created with the assistant's own Matrix
         // identity, so neither the provisioning admin nor a third-party bot
         // ever joins their encrypted conversation.
-        if room.encrypted != room.creator.is_some() {
-            bail!(
-                "Matrix room {name} requires both creator and encrypted for private owner reconciliation"
-            );
-        }
         let creator_client = if let Some(creator) = &room.creator {
-            if !room.alias.ends_with(&format!(":{}", state.server_name)) {
-                bail!("Matrix room {name} alias does not belong to the provisioned server");
-            }
             let user = state.users.get(creator).with_context(|| {
                 format!("Matrix room {name} creator {creator} is not a provisioned user")
             })?;
             let password = read_password_file(cred_dir.join(&user.credential_name))
                 .with_context(|| format!("reading credential for Matrix room {name} creator"))?;
-            let token = probe_client
-                .login_password_with_device(creator, &password, Some("TUWUNEL_PROVISION"))
-                .with_context(|| format!("logging in Matrix room {name} creator"))?;
+            let token = match probe_client.login_password_with_device(
+                creator,
+                &password,
+                Some("TUWUNEL_PROVISION"),
+            ) {
+                Ok(token) => token,
+                Err(login_error)
+                    if login_error
+                        .downcast_ref::<reqwest::Error>()
+                        .and_then(reqwest::Error::status)
+                        .is_some_and(|status| {
+                            status.is_client_error()
+                                && status != reqwest::StatusCode::REQUEST_TIMEOUT
+                        }) =>
+                {
+                    return Err(login_error).with_context(|| {
+                        format!("logging in Matrix room {name} creator was refused")
+                    });
+                }
+                Err(login_error) => {
+                    // The server may have created the device before its response
+                    // was lost. Recover this same device once solely to revoke it;
+                    // never continue reconciliation after an ambiguous login.
+                    let cleanup = probe_client
+                        .login_password_with_device(creator, &password, Some("TUWUNEL_PROVISION"))
+                        .and_then(|token| probe_client.with_token(&token).logout());
+                    return Err(login_error).context(match cleanup {
+                        Ok(()) => format!("logging in Matrix room {name} creator failed; recovered provisioning device was revoked"),
+                        Err(error) => format!("logging in Matrix room {name} creator failed; provisioning device recovery/revocation also failed: {error:#}"),
+                    });
+                }
+            };
             Some(probe_client.with_token(&token))
         } else {
             None
@@ -262,14 +350,30 @@ fn main() -> Result<()> {
         if let Some(creator_client) = &creator_client
             && let Err(err) = creator_client.logout()
         {
-            if reconciliation.is_ok() {
-                return Err(err).with_context(|| {
-                    format!("logging out Matrix room {name} provisioning device")
-                });
+            // The response may be lost before or after logout commits. Recover
+            // the fixed device once, invalidating its previous tokens, then revoke.
+            let cleanup = (|| -> Result<()> {
+                let creator = room.creator.as_ref().context("missing room creator")?;
+                let user = state
+                    .users
+                    .get(creator)
+                    .context("missing provisioned creator")?;
+                let password = read_password_file(cred_dir.join(&user.credential_name))?;
+                let token = probe_client.login_password_with_device(
+                    creator,
+                    &password,
+                    Some("TUWUNEL_PROVISION"),
+                )?;
+                probe_client.with_token(&token).logout()
+            })();
+            if let Err(cleanup_err) = cleanup {
+                eprintln!(
+                    "tuwunel-provision: logging out Matrix room {name} provisioning device failed: {err:#}; same-device cleanup also failed: {cleanup_err:#}"
+                );
+                if reconciliation.is_ok() {
+                    return Err(err).with_context(|| format!("logging out Matrix room {name} provisioning device; same-device cleanup also failed: {cleanup_err:#}"));
+                }
             }
-            eprintln!(
-                "tuwunel-provision: failed to log out Matrix room {name} provisioning device: {err:#}"
-            );
         }
         reconciliation?;
     }
@@ -603,7 +707,11 @@ mod tests {
             attempts.set(attempts.get() + 1);
             Err(anyhow::anyhow!("registration_disabled"))
         });
-        assert!(registration_required(&result.unwrap_err()));
+        let error = result.unwrap_err();
+        assert!(
+            registration_required(&error),
+            "unexpected bootstrap error: {error:#}"
+        );
         assert!(attempts.get() > 1 && attempts.get() <= 20);
         assert_eq!(
             fs::read(&fixture.runtime_config).unwrap(),
