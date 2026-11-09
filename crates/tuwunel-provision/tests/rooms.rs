@@ -961,30 +961,18 @@ fn unsupported_room_version_identifiers_never_invite_and_revoke_the_session() {
 }
 
 #[test]
-fn v12_ignores_obsolete_redact_without_relaxing_event_control() {
+fn permissive_redact_level_is_rejected_in_every_room_version() {
     for version in [11, 12] {
-        for safe in [false, true] {
-            let mut state = private_state();
-            state[4]["content"]["room_version"] = version.to_string().into();
-            state[5]["content"]["redact"] = 0.into();
-            state[5]["content"]["events"]["m.room.redaction"] = if safe { 100 } else { 0 }.into();
-            let (output, requests) = run(Scenario {
-                state,
-                ..Scenario::default()
-            });
-            let expected = version == 12 && safe;
-            assert_eq!(
-                output.status.success(),
-                expected,
-                "room version {version}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert_eq!(
-                requests.iter().any(|r| r.path.ends_with("/invite")),
-                expected
-            );
-            assert_logged_out(&requests);
-        }
+        let mut state = private_state();
+        state[4]["content"]["room_version"] = version.to_string().into();
+        state[5]["content"]["redact"] = 0.into();
+        let (output, requests) = run(Scenario {
+            state,
+            ..Scenario::default()
+        });
+        assert!(!output.status.success(), "room version {version}");
+        assert!(!requests.iter().any(|r| r.path.ends_with("/invite")));
+        assert_logged_out(&requests);
     }
 }
 

@@ -671,10 +671,6 @@ fn verify_private_room_state(
         ("ban", 50),
         ("redact", 50),
     ] {
-        if key == "redact" && version >= 12 {
-            // v12 redaction sending is controlled by the event threshold below.
-            continue;
-        }
         let required = level(powers.get(key), default)?;
         if owner_power < required {
             bail!("declared owner lacks room control for {key}");
@@ -1112,16 +1108,14 @@ mod private_room_tests {
     }
 
     #[test]
-    fn v12_ignores_redact_but_requires_owner_only_redaction_events() {
+    fn redact_level_applies_in_every_room_version() {
+        // Receiving servers apply a redaction of another user's event by the
+        // redact level in every version, v12 included ("Handling redactions").
         for version in 1..=12 {
             let mut events = state();
             events[4]["content"]["room_version"] = version.to_string().into();
             events[5]["content"]["redact"] = 0.into();
-            assert_eq!(
-                verify(&events).is_ok(),
-                version == 12,
-                "room version {version}"
-            );
+            assert!(verify(&events).is_err(), "room version {version}");
             events[5]["content"]["events"]["m.room.redaction"] = 0.into();
             assert!(
                 verify(&events).is_err(),
