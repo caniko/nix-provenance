@@ -16,9 +16,11 @@ use rand::RngCore;
 /// Default account seeded by Windmill's first migration with password `changeme`.
 pub const DEFAULT_ADMIN: &str = "admin@windmill.dev";
 /// Keep statements (which embed password hashes) out of the PostgreSQL server
-/// log, even when they fail; we are the superuser so these SETs are allowed.
-const NO_STATEMENT_LOG: &str =
-    "SET log_min_error_statement = 'panic';\nSET log_statement = 'none';\n";
+/// log, even when they fail or are slow; we are the superuser so these SETs
+/// are allowed.
+const NO_STATEMENT_LOG: &str = "SET log_min_error_statement = 'panic';\nSET log_statement = 'none';\n\
+     SET log_min_duration_statement = -1;\nSET log_min_duration_sample = -1;\n\
+     SET log_transaction_sample_rate = 0;\n";
 
 /// Hash that no password verifies against; works on every Windmill version
 /// (the `disabled` column only exists in newer ones).
