@@ -14,8 +14,9 @@
   adapter = import ./adapter.nix {inherit lib;};
   passwords = import ./passwords.nix {inherit lib;};
   caddy = import ./caddy.nix {inherit lib;};
+  ntfy = import ./ntfy.nix {inherit lib;};
 in {
-  inherit immich rauthy vikunja forgejo stalwart adapter passwords caddy;
+  inherit immich rauthy vikunja forgejo stalwart adapter passwords caddy ntfy;
 
   # Back-compat alias retained ONLY during the canix migration: the live consumer
   # historically called `lib.usersFromKanidmPersons` on the rauthy-provision

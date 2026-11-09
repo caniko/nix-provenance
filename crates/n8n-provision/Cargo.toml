@@ -1,0 +1,39 @@
+[package]
+name = "n8n-provision"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Declarative bootstrap of the n8n owner account and credentials"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage = "https://github.com/caniko/nix-provenance"
+authors.workspace = true
+keywords = ["n8n", "provisioning", "credentials", "iam"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "n8n-provision"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+bcrypt = "0.17"
+clap.workspace = true
+libc = "0.2"
+provenance-core = { path = "../provenance-core" }
+# TLS features kept LOCAL (see root Cargo.toml). n8n is reached on loopback only;
+# `cookies` carries the session cookie from /rest/login.
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls-native-roots",
+  "blocking",
+  "cookies",
+] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

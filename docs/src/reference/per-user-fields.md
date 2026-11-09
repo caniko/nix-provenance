@@ -10,7 +10,12 @@ Password files should normally be agenix secrets referenced as
 `LoadCredential`, reconcilers read the runtime credential path, and only a
 password-content hash is stored in the service state directory as a rotation
 marker. Plaintext passwords must never be rendered into JSON, the Nix store,
-argv, logs, or environment variables.
+argv, logs, or environment variables. Exception: services without OIDC/SSO
+support (ntfy first) may have app-local accounts and API tokens provisioned
+from runtime secret files loaded as systemd credentials, hashed at runtime and
+written only to the service's own `/run` `EnvironmentFile` (mode 0600, built at
+start), since that is ntfy's only declarative interface. Anonymous access must
+be denied by default. See [ntfy](../guides/ntfy.md).
 
 PINs, app-local password-reset flows, and notification-email flows remain
 unsupported unless the repository identity model changes again.

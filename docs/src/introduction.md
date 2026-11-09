@@ -9,7 +9,10 @@ set-password flow or through runtime password files. Service-side provisioners
 may manage platform-local passwords only via agenix-style password-file
 references loaded with systemd credentials; plaintext passwords never enter
 Nix-rendered state, the Nix store, argv, logs, or environment variables. PINs,
-reset links, and notification emails remain out of scope. See
+reset links, and notification emails remain out of scope. Services without
+OIDC/SSO (ntfy first) are the one exception: app-local accounts and tokens come
+only from runtime secret files, hashed at runtime into the service's own `/run`
+`EnvironmentFile` (0600). See
 [Per-user Fields](./reference/per-user-fields.md) for the supported
 per-platform surface.
 

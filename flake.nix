@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # Test-only: the nixpkgs revision Canix/Atlas runs, which carries windmill
+    # 1.839.0. The Windmill VM test runs against it as well as against the
+    # default nixpkgs because the tenant writes Windmill's `password` table.
+    nixpkgs-windmill.url = "github:NixOS/nixpkgs/02c087f3fe673c9e317f206a627cb6b910336dbe";
     harbor-rs = {
       url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=ed89d0b13fc61dd1b2217bf4bba97f32cec27ba7";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -26,6 +30,7 @@
   outputs = {
     self,
     nixpkgs,
+    nixpkgs-windmill,
     flake-utils,
     harbor-rs,
     rust-overlay,
@@ -161,7 +166,7 @@
         inherit packages;
 
         checks = import ./nix/checks.nix {
-          inherit pkgs nixpkgs craneLib src self system;
+          inherit pkgs nixpkgs nixpkgs-windmill craneLib src self system;
           inherit lib;
           inherit packages;
           inherit (crates) args cargoArtifacts;
@@ -205,6 +210,8 @@
             rauthy-state-render
             stalwart-oauth-bootstrap
             tuwunel-provision
+            windmill-provision
+            n8n-provision
           ];
         };
 
@@ -235,6 +242,7 @@
         rauthyServer = import ./nix/modules/idp/rauthy-server.nix;
         rauthy = import ./nix/modules/idp/rauthy.nix {inherit self;};
         vikunja = import ./nix/modules/config-only/vikunja.nix {inherit self;};
+        ntfy = import ./nix/modules/config-only/ntfy.nix {inherit self;};
         vikunjaProvision = import ./nix/modules/service-oidc/vikunja.nix {inherit self;};
         forgejo = import ./nix/modules/service-oidc/forgejo.nix {inherit self;};
         stalwart = import ./nix/modules/ldap/stalwart.nix {inherit self;};
@@ -243,6 +251,8 @@
         externalApp = import ./nix/modules/adapter/external-app.nix {inherit self;};
         wireguardStatus = import ./nix/modules/adapter/wireguard-status.nix;
         tuwunel = import ./nix/modules/config-only/tuwunel.nix {inherit self;};
+        windmillProvision = import ./nix/modules/service-bootstrap/windmill.nix {inherit self;};
+        n8nProvision = import ./nix/modules/service-bootstrap/n8n.nix {inherit self;};
         default = {imports = [self.nixosModules.rauthy];};
       };
 
@@ -251,6 +261,7 @@
         proton-vpn = import ./nix/modules/home/proton-vpn.nix {inherit self;};
         oauth = import ./nix/modules/home/oauth.nix {inherit self;};
         rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
+        paperclip-archive = import ./nix/modules/home/paperclip-archive.nix;
         fj = import ./nix/modules/home/fj.nix {inherit self;};
         stalwart-oauth-bootstrap = import ./nix/modules/home/stalwart-oauth-bootstrap.nix {inherit self;};
         github = import ./nix/modules/home/github.nix {inherit self;};
@@ -308,7 +319,7 @@
           '';
         });
       in {
-        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision github-provision stalwart016-provision tuwunel-provision;
+        inherit (crates.packages) identity-cli immich-provision kanidm-state-render rauthy-provision rauthy-state-render vikunja-provision forgejo-provision github-provision stalwart016-provision tuwunel-provision windmill-provision n8n-provision;
         rauthy-vikunja-groups = rauthyVikunjaGroups;
       };
     };

@@ -15,7 +15,14 @@
     inherit src pname;
     version = crateVersion pname;
     strictDeps = true;
-    nativeBuildInputs = [pkgs.clang pkgs.mold];
+    # Build tools must run on the build machine and target it: `pkgs` may be a
+    # cross set (the Canix overlay path), where `buildPackages` clang/mold are
+    # wrappers targeting the host platform (needing target compiler-rt).
+    # pkgsBuildBuild is the plain native toolchain (== pkgs on native sets).
+    # llvmPackages_latest tracks the newest cached
+    # LLVM; its clang wrapper brings the matching lld/bintools, and mold is
+    # selected with -fuse-ld=mold.
+    nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages_latest.clang pkgs.pkgsBuildBuild.mold];
     cargoExtraArgs = "-p ${pname}";
     # Tests run as their own checks; keep the package build lean.
     doCheck = false;
@@ -28,7 +35,14 @@
     inherit pname;
     version = ver;
     strictDeps = true;
-    nativeBuildInputs = [pkgs.clang pkgs.mold];
+    # Build tools must run on the build machine and target it: `pkgs` may be a
+    # cross set (the Canix overlay path), where `buildPackages` clang/mold are
+    # wrappers targeting the host platform (needing target compiler-rt).
+    # pkgsBuildBuild is the plain native toolchain (== pkgs on native sets).
+    # llvmPackages_latest tracks the newest cached
+    # LLVM; its clang wrapper brings the matching lld/bintools, and mold is
+    # selected with -fuse-ld=mold.
+    nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages_latest.clang pkgs.pkgsBuildBuild.mold];
     cargoExtraArgs = "-p ${pname}";
     doCheck = false;
   };
@@ -50,10 +64,12 @@
   stalwartOauthBootstrapArgs =
     buildArgs "stalwart-oauth-bootstrap" "0.1.0"
     // {
-      nativeBuildInputs = [pkgs.clang pkgs.mold pkgs.pkg-config];
+      nativeBuildInputs = [pkgs.pkgsBuildBuild.llvmPackages_latest.clang pkgs.pkgsBuildBuild.mold pkgs.pkg-config];
       buildInputs = [pkgs.dbus];
     };
   tuwunelArgs = mkArgs "tuwunel-provision";
+  windmillArgs = mkArgs "windmill-provision";
+  n8nArgs = mkArgs "n8n-provision";
 
   immichDeps = craneLib.buildDepsOnly immichArgs;
   kanidmStateRenderDeps = craneLib.buildDepsOnly kanidmStateRenderArgs;
@@ -69,6 +85,8 @@
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
   stalwartOauthBootstrapDeps = craneLib.buildDepsOnly stalwartOauthBootstrapArgs;
   tuwunelDeps = craneLib.buildDepsOnly tuwunelArgs;
+  windmillDeps = craneLib.buildDepsOnly windmillArgs;
+  n8nDeps = craneLib.buildDepsOnly n8nArgs;
 in {
   args = {
     immich-provision = immichArgs;
@@ -85,6 +103,8 @@ in {
     stalwart016-provision = stalwartProvisionArgs;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapArgs;
     tuwunel-provision = tuwunelArgs;
+    windmill-provision = windmillArgs;
+    n8n-provision = n8nArgs;
   };
 
   cargoArtifacts = {
@@ -102,6 +122,8 @@ in {
     stalwart016-provision = stalwartProvisionDeps;
     stalwart-oauth-bootstrap = stalwartOauthBootstrapDeps;
     tuwunel-provision = tuwunelDeps;
+    windmill-provision = windmillDeps;
+    n8n-provision = n8nDeps;
   };
 
   packages = {
@@ -254,6 +276,26 @@ in {
           description = "Declarative provisioning client for Tuwunel Matrix users with auto-bootstrap";
           mainProgram = "tuwunel-provision";
           license = [lib.licenses.agpl3Only];
+        };
+      });
+
+    windmill-provision = craneLib.buildPackage (windmillArgs
+      // {
+        cargoArtifacts = windmillDeps;
+        meta = {
+          description = "Declarative Windmill superadmin, operator login, workspace and token bootstrap";
+          mainProgram = "windmill-provision";
+          license = with lib.licenses; [mit asl20];
+        };
+      });
+
+    n8n-provision = craneLib.buildPackage (n8nArgs
+      // {
+        cargoArtifacts = n8nDeps;
+        meta = {
+          description = "Declarative n8n owner and credential bootstrap";
+          mainProgram = "n8n-provision";
+          license = with lib.licenses; [mit asl20];
         };
       });
   };

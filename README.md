@@ -23,7 +23,12 @@ are supported only as runtime password-file references, normally
 `config.age.secrets.<name>.path`; modules load those files through systemd
 credentials and reconcilers store only rotation-marker hashes. Plaintext
 passwords must never enter Nix-rendered JSON, the Nix store, argv, logs, or
-environment variables. PINs, app-local password-reset flows, and notification
+environment variables. The one exception is a service with no OIDC/SSO
+support (ntfy is the first): its module may provision app-local accounts and
+API tokens from runtime secret files loaded as systemd credentials, hashing at
+runtime, and write them only to the service's own `/run` `EnvironmentFile`
+(mode 0600, built at start) because that is ntfy's only declarative interface.
+PINs, app-local password-reset flows, and notification
 emails remain out of scope unless the identity model changes again. Public keys are a separate non-secret exception: Forgejo may reconcile declared
 SSH public keys, and GitHub accounts may reconcile declared SSH and OpenPGP
 public keys plus repository collaborator invitations and their acceptance.
@@ -39,6 +44,7 @@ Rust crate — the directory taxonomy makes that explicit:
 | **IdP** (`nix/modules/idp/`) | an identity provider | `rauthy-provision` |
 | **service-side OIDC** (`nix/modules/service-oidc/`) | a downstream service's users + OIDC wiring | `immich-provision`, `vikunja-provision`, Forgejo |
 | **config-only** (`nix/modules/config-only/`) | service OIDC via shared Nix only, no crate | Vikunja SSO |
+| **service bootstrap** (`nix/modules/service-bootstrap/`) | a no-OIDC service's app-local admin and API credentials via a trusted local path | `windmill-provision`, `n8n-provision` |
 | **LDAP** (`nix/modules/ldap/`) | LDAP-backed services | Stalwart, Stalwart 0.16 transport |
 | **adapter** (`nix/modules/adapter/`) | a non-tenant third-party app's users + OIDC client, into kanidm or rauthy | pink-raven (consumer) |
 
@@ -51,6 +57,8 @@ Rust crate — the directory taxonomy makes that explicit:
 | [`vikunja-provision`](crates/vikunja-provision) | Vikunja teams and memberships via the API | `MIT OR Apache-2.0` |
 | [`forgejo-provision`](crates/forgejo-provision) | Forgejo SSH public keys via the administrative API | `MIT OR Apache-2.0` |
 | [`github-provision`](crates/github-provision) | GitHub account SSH/OpenPGP public keys and repository collaborators | `MIT OR Apache-2.0` |
+| [`windmill-provision`](crates/windmill-provision) | Windmill superadmin env, operator logins, workspaces and minted API tokens | `MIT OR Apache-2.0` |
+| [`n8n-provision`](crates/n8n-provision) | n8n env-managed owner and named credentials | `MIT OR Apache-2.0` |
 | [`provenance-oauth`](crates/provenance-oauth) | Host/user-scoped OAuth enrollment, refresh, and access-only app adapters | `MIT OR Apache-2.0` |
 
 See [LICENSING.md](LICENSING.md) for the per-path SPDX map and the
@@ -63,13 +71,19 @@ tenant taxonomy and the add-a-tenant checklist.
   an account from a runtime credential file, including encrypted TOTP material.
   See [Proton VPN account login](docs/src/guides/proton-vpn.md).
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,github-provision,stalwart016-provision,forgejo-cli,forgejo-cli-nushell-completion,docs,site}`
-- `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}` (plus
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,github-provision,stalwart016-provision,windmill-provision,n8n-provision,forgejo-cli,forgejo-cli-nushell-completion,docs,site}`
+- `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp,windmillProvision,n8nProvision}` (plus
   `default = rauthy`, a back-compat alias retained only during the canix migration)
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}` — `usersFromKanidmPersons`
   for Immich/Rauthy, service-specific `kanidmOAuth2System` helpers for Immich,
   Vikunja, and Forgejo, Stalwart's kanidm LDAP helpers, and `adapter` — the
   backend-agnostic primitives third-party flakes use (see below)
+- `homeModules.paperclip-archive` — timed export of every Paperclip company
+  into a private git-LFS repository, plus restore-if-missing from a pinned copy
+  of it (`nix-provenance.paperclip-archive`). Binaries (`images/`, `assets/`,
+  common media extensions) go to LFS; secrets are never exported. Restore never
+  overwrites an existing company. The pinned copy needs `?lfs=1` on a git flake
+  input to fetch the LFS binaries.
 - `homeModules.fj` — installs nixpkgs' `forgejo-cli` plus its validated Nushell
   completion and provides `nix-provenance.fj.enable`.
 - `homeModules.github` — per-account user units that reconcile a GitHub

@@ -5,6 +5,7 @@
   pkgs,
   lib,
   nixpkgs,
+  nixpkgs-windmill,
   craneLib,
   src,
   self,
@@ -42,6 +43,7 @@
   rauthyGeneratedEval = evalSystem ./modules/test/rauthy-generated-api-key-eval.nix;
   vikunjaEval = evalSystem ./modules/test/vikunja-eval.nix;
   vikunjaProvisionEval = evalSystem ./modules/test/vikunja-provision-eval.nix;
+  ntfyEval = evalSystem ./modules/test/ntfy-eval.nix;
   forgejoEval = evalSystem ./modules/test/forgejo-eval.nix;
   forgejoGeneratedEval = evalSystem ./modules/test/forgejo-generated-eval.nix;
   stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
@@ -51,6 +53,19 @@
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
   tuwunelPrivateRoomsVmTest = import ./modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};
+  windmillEval = evalSystem ./modules/test/windmill-provision-eval.nix;
+  windmillBootstrapVmTest = import ./modules/test/windmill-bootstrap-vmtest.nix {inherit pkgs self;};
+  # Same test against the windmill Canix/Atlas runs (1.839.0).
+  windmillBootstrapVmTestAtlas = let
+    atlasPkgs = import nixpkgs-windmill {inherit system;};
+  in
+    import ./modules/test/windmill-bootstrap-vmtest.nix {
+      inherit pkgs self;
+      windmillPackage = atlasPkgs.windmill;
+      nameSuffix = "-atlas";
+    };
+  n8nEval = evalSystem ./modules/test/n8n-provision-eval.nix;
+  n8nBootstrapVmTest = import ./modules/test/n8n-bootstrap-vmtest.nix {inherit pkgs self;};
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
   stalwartOauthBootstrapPasswordFile = "\${XDG_RUNTIME_DIR}/agenix/stalwart_account_can";
 
@@ -163,6 +178,8 @@ in
     inherit (packages) stalwart016-provision;
     inherit (packages) stalwart-oauth-bootstrap;
     inherit (packages) tuwunel-provision;
+    inherit (packages) windmill-provision;
+    inherit (packages) n8n-provision;
     inherit (packages) provenance-rbw;
     inherit docs;
     site = docs;
@@ -287,11 +304,14 @@ in
     stalwart016-provision-clippy = mkClippy "stalwart016-provision";
     stalwart-oauth-bootstrap-clippy = mkClippy "stalwart-oauth-bootstrap";
     tuwunel-provision-clippy = mkClippy "tuwunel-provision";
+    windmill-provision-clippy = mkClippy "windmill-provision";
+    n8n-provision-clippy = mkClippy "n8n-provision";
 
     # Tests: immich keeps cargoTest, rauthy keeps cargoNextest (preserved semantics).
     rbw-test = craneLib.cargoTest (
       args.provenance-rbw // {cargoArtifacts = cargoArtifacts.provenance-rbw;}
     );
+    paperclip-archive-module-eval = import ./modules/test/paperclip-archive-eval.nix {inherit pkgs;};
     rbw-home-module-eval = import ./modules/test/rbw-home-eval.nix {inherit pkgs self;};
     identity-test = craneLib.cargoTest (
       args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;}
@@ -375,6 +395,22 @@ in
       args.tuwunel-provision
       // {
         cargoArtifacts = cargoArtifacts.tuwunel-provision;
+        doCheck = true;
+      }
+    );
+
+    windmill-provision-test = craneLib.cargoTest (
+      args.windmill-provision
+      // {
+        cargoArtifacts = cargoArtifacts.windmill-provision;
+        doCheck = true;
+      }
+    );
+
+    n8n-provision-test = craneLib.cargoTest (
+      args.n8n-provision
+      // {
+        cargoArtifacts = cargoArtifacts.n8n-provision;
         doCheck = true;
       }
     );
@@ -557,6 +593,113 @@ in
         touch $out
       '';
 
+    ntfy-module-eval = let
+      cfg = ntfyEval.config;
+      failed = c: lib.filter (m: lib.hasPrefix "services.ntfy-sh.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
+      ext = m: ntfyEval.extendModules {modules = [m];};
+      pwPath = v: {services.ntfy-sh.provision.users.can.passwordFile = lib.mkForce v;};
+      ntfyStoreEval = ext (pwPath "/nix/store/x-secret");
+      ntfyNameEval = ext {
+        services.ntfy-sh.provision.users."a,b" = {
+          role = "user";
+          passwordFile = "/run/x";
+        };
+      };
+      ntfyEmptyAuthEval = ext {services.ntfy-sh.settings.auth-file = lib.mkForce "";};
+      ntfyOpenEval = ext {services.ntfy-sh.settings.auth-default-access = lib.mkForce "read-write";};
+      ntfyNullEval = builtins.tryEval (builtins.deepSeq (ext (pwPath null)).config.services.ntfy-sh.provision.users.can.passwordFile null);
+      ntfyPathEval = builtins.tryEval (builtins.deepSeq (ext (pwPath ./ntfy-eval-secret)).config.services.ntfy-sh.provision.users.can.passwordFile null);
+      svc = cfg.systemd.services.ntfy-sh-credentials;
+      json = builtins.toJSON;
+      inherit (svc) script;
+    in
+      runCommand "ntfy-module-eval" {} ''
+        # generated env file comes last so its credentials win
+        test ${lib.escapeShellArg (json cfg.systemd.services.ntfy-sh.serviceConfig.EnvironmentFile)} = '["/run/agenix/ntfy-extra","/run/ntfy-sh-provision/env"]'
+        test ${lib.escapeShellArg cfg.services.ntfy-sh.settings.auth-default-access} = deny-all
+        test ${lib.escapeShellArg (json (failed cfg))} = '[]'
+        # store-backed or relative secret files and open anonymous access are rejected
+        test ${lib.escapeShellArg (json (failed ntfyStoreEval.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ntfyNameEval.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ntfyEmptyAuthEval.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ntfyOpenEval.config))} != '[]'
+        # null and Nix path values fail the option type
+        test ${lib.escapeShellArg (json ntfyNullEval.success)} = false
+        test ${lib.escapeShellArg (json ntfyPathEval.success)} = false
+        printf '%s\n' ${lib.escapeShellArg (json cfg.services.ntfy-sh.settings.auth-access)} | grep -q 'syndb-publisher:syndb-alerts:wo'
+        printf '%s\n' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q '/run/agenix/ntfy-can'
+        printf '%s\n' ${lib.escapeShellArg (json svc.before)} | grep -q 'ntfy-sh.service'
+        # plaintext never in the store: the script only references runtime credential paths
+        grep -q '/run/credentials/ntfy-sh-credentials.service/' ${pkgs.writeText "ntfy-script" script}
+        ! grep -q '/run/agenix' ${pkgs.writeText "ntfy-script" script}
+        touch $out
+      '';
+
+    ntfy-env-builder = let
+      hostile = "a$(touch /build/x)`touch /build/x`'\"";
+      hostileScript = pkgs.writeShellScript "ntfy-env-hostile" (self.lib.ntfy.mkEnvScript {
+        ntfy = pkgs.ntfy-sh;
+        out = "/build/env";
+        users = [
+          {
+            name = "can";
+            role = "admin";
+            file = "/build/pw";
+          }
+        ];
+        tokens = [
+          {
+            user = "can";
+            file = "/build/tk";
+            label = hostile;
+          }
+        ];
+      });
+      script = pkgs.writeShellScript "ntfy-env" (self.lib.ntfy.mkEnvScript {
+        ntfy = pkgs.ntfy-sh;
+        out = "/build/env";
+        users = [
+          {
+            name = "can";
+            role = "admin";
+            file = "/build/pw";
+          }
+        ];
+        tokens = [
+          {
+            user = "can";
+            file = "/build/tk";
+            label = "ci";
+          }
+        ];
+      });
+    in
+      runCommand "ntfy-env-builder" {nativeBuildInputs = [pkgs.coreutils pkgs.gnugrep];} ''
+        printf 'dummy-password\n' > /build/pw
+        printf 'tk_abcdefghijklmnopqrstuvwxyz012\n' > /build/tk
+        ${script}
+        grep -Eq '^NTFY_AUTH_USERS=can:\$2[aby]\$[^:]+:admin$' /build/env
+        grep -Fxq 'NTFY_AUTH_TOKENS=can:tk_abcdefghijklmnopqrstuvwxyz012:ci' /build/env
+        grep -Fxq 'NTFY_AUTH_DEFAULT_ACCESS=deny-all' /build/env
+        ! grep -q dummy-password /build/env
+        printf 'tk_short' > /build/tk
+        ! ${script}
+        printf 'tk_abcdefghijklmnopqrstuvwxyz012\n' > /build/tk
+        # empty (or newline-only) password and empty token are rejected
+        printf '\n' > /build/pw
+        ! ${script}
+        printf 'dummy-password\n' > /build/pw
+        : > /build/tk
+        ! ${script}
+        # hostile label is data, never executed
+        printf 'tk_abcdefghijklmnopqrstuvwxyz012\n' > /build/tk
+        cd /build
+        ${hostileScript}
+        test ! -e /build/x
+        grep -Fxq ${lib.escapeShellArg "NTFY_AUTH_TOKENS=can:tk_abcdefghijklmnopqrstuvwxyz012:${hostile}"} /build/env
+        touch $out
+      '';
+
     vikunja-provision-module-eval = let
       svc = vikunjaProvisionEval.config.systemd.services.vikunja-provision;
       serviceConfig = builtins.toJSON svc.serviceConfig;
@@ -696,6 +839,7 @@ in
 
     stalwart016-vmtest = stalwart016VmTest;
     stalwart016-proxy-eval = import ./modules/test/stalwart016-proxy-eval.nix {inherit pkgs self;};
+    stalwart016-peer-eval = import ./modules/test/stalwart016-peer-eval.nix {inherit pkgs self;};
     stalwart016-proxy-vmtest = import ./modules/test/stalwart016-proxy-vmtest.nix {inherit pkgs self;};
 
     wireguard-status-module-eval = let
@@ -738,6 +882,136 @@ in
       '';
 
     tuwunel-private-rooms-vmtest = tuwunelPrivateRoomsVmTest;
+
+    windmill-bootstrap-vmtest = windmillBootstrapVmTest;
+    windmill-bootstrap-atlas-vmtest = windmillBootstrapVmTestAtlas;
+    n8n-bootstrap-vmtest = n8nBootstrapVmTest;
+
+    windmill-module-eval = let
+      server = windmillEval.config.systemd.services.windmill-server;
+      svc = windmillEval.config.systemd.services.windmill-provision;
+      lock = windmillEval.config.systemd.services.windmill-lock-default-admin;
+      rotate = windmillEval.config.systemd.services.windmill-superadmin-rotate;
+      json = builtins.toJSON;
+      failed = c: lib.filter (m: lib.hasPrefix "services.windmill.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
+      ext = m: windmillEval.extendModules {modules = [m];};
+      storeSecret = ext {services.windmill.provision.superadminSecretFile = lib.mkForce "/nix/store/x-secret";};
+      lockout = ext {services.windmill.provision.users.can.admin = lib.mkForce false;};
+      ghostToken = ext {services.windmill.provision.tokens.t.user = "ghost";};
+      stockAdmin = ext {services.windmill.provision.users.can.email = lib.mkForce "Admin@Windmill.dev";};
+      memberless = ext {
+        services.windmill.provision = {
+          workspaces.other.name = "Other";
+          users.ops = {
+            email = "ops@example.test";
+            passwordFile = "/run/agenix/ops";
+            admin = false;
+          };
+          tokens.t = {
+            user = "ops";
+            workspace = "other";
+          };
+        };
+      };
+      upperEmail = ext {services.windmill.provision.users.can.email = lib.mkForce "Can@example.test";};
+      plainHttpUrl = ext {services.windmill.provision.url = "http://windmill.example.test";};
+      threeWorkspaces = ext {
+        services.windmill.provision.workspaces = {
+          a.name = "A";
+          b.name = "B";
+          c.name = "C";
+        };
+      };
+    in
+      runCommand "windmill-module-eval" {} ''
+        test ${lib.escapeShellArg (json (failed windmillEval.config))} = '[]'
+        test ${lib.escapeShellArg (json (failed storeSecret.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed lockout.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed ghostToken.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed stockAdmin.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed threeWorkspaces.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed plainHttpUrl.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed upperEmail.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed memberless.config))} != '[]'
+        # Rotation watch covers the secret and its parent dir (agenix symlink swap).
+        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-superadmin-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
+        test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
+        printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-server.service
+        # Locking the stock admin must not wait on (or load) any secret file.
+        test ${lib.escapeShellArg (json (lock.serviceConfig.LoadCredential or []))} = '[]'
+        printf '%s' ${lib.escapeShellArg (json svc.requires)} | grep -q windmill-lock-default-admin.service
+        printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-lock-default-admin.service
+        # The rotation check reads the secret as a credential, not from its path.
+        printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
+        printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--secret-file %d/superadmin'
+        printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
+        printf '%s' ${lib.escapeShellArg (json server.serviceConfig.ExecStartPre)} | grep -q ' env '
+        printf '%s' ${lib.escapeShellArg (json server.serviceConfig.EnvironmentFile)} | grep -q '/run/windmill-provision/env'
+        # Secret values and plain Environment= never carry the superadmin secret.
+        ! printf '%s' ${lib.escapeShellArg (json server.environment)} | grep -q SUPERADMIN
+        state_file=$(printf '%s' ${lib.escapeShellArg svc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*windmill-provision-state.json')
+        grep -q '"disable_default_admin":true' "$state_file"
+        grep -q '"email":"can@example.test"' "$state_file"
+        grep -q '"mode":"0640"' "$state_file"
+        ! grep -q '/run/agenix' "$state_file"
+        touch $out
+      '';
+
+    n8n-module-eval = let
+      server = n8nEval.config.systemd.services.n8n;
+      owner = n8nEval.config.systemd.services.n8n-owner-env;
+      svc = n8nEval.config.systemd.services.n8n-provision;
+      rotate = n8nEval.config.systemd.services.n8n-provision-rotate;
+      json = builtins.toJSON;
+      failed = c: lib.filter (m: lib.hasPrefix "services.n8n.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
+      storeSecret = n8nEval.extendModules {modules = [{services.n8n.provision.owner.passwordFile = lib.mkForce "/nix/store/x-secret";}];};
+      # (foo-bar, va) and (foo, bar-va) must not share a credential id.
+      overlap = n8nEval.extendModules {
+        modules = [{services.n8n.provision.credentials.studio-webhook.dataFiles.name = "/run/agenix/c";}];
+      };
+      collide = n8nEval.extendModules {
+        modules = [
+          {
+            services.n8n.provision.credentials = {
+              foo-bar = {
+                type = "httpHeaderAuth";
+                dataFiles.va = "/run/agenix/a";
+              };
+              foo = {
+                type = "httpHeaderAuth";
+                dataFiles.bar-va = "/run/agenix/b";
+              };
+            };
+          }
+        ];
+      };
+      collideIds = map (e: lib.head (lib.splitString ":" e)) (lib.filter (e: lib.hasInfix "/run/agenix/a" e || lib.hasInfix "/run/agenix/b" e) collide.config.systemd.services.n8n-provision.serviceConfig.LoadCredential);
+    in
+      runCommand "n8n-module-eval" {} ''
+        test ${lib.escapeShellArg (json (failed n8nEval.config))} = '[]'
+        test ${lib.escapeShellArg (json (failed storeSecret.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed overlap.config))} != '[]'
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.paths.n8n-provision-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
+        test ${lib.escapeShellArg (toString (lib.length collideIds))} = 2
+        test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
+        test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
+        printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n.service
+        # The rotation check reads the password as a credential, not from its path.
+        printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'
+        printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--password-file %d/owner-password'
+        # The owner password must not be a credential of the n8n unit itself.
+        ! printf '%s' ${lib.escapeShellArg (json (server.serviceConfig.LoadCredential or []))} | grep -q 'owner-password'
+        printf '%s' ${lib.escapeShellArg (json owner.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'
+        printf '%s' ${lib.escapeShellArg owner.serviceConfig.ExecStart} | grep -q 'owner-env'
+        printf '%s' ${lib.escapeShellArg (json server.requires)} | grep -q n8n-owner-env.service
+        printf '%s' ${lib.escapeShellArg (json server.serviceConfig.EnvironmentFile)} | grep -q '/run/n8n-provision/owner.env'
+        printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q ':/run/agenix/n8n-webhook'
+        state_file=$(printf '%s' ${lib.escapeShellArg svc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*n8n-provision-state.json')
+        grep -q '"type":"httpHeaderAuth"' "$state_file"
+        grep -q '"name":"X-Studio-Token"' "$state_file"
+        ! grep -q '/run/agenix' "$state_file"
+        touch $out
+      '';
 
     tuwunel-module-eval = let
       svc = tuwunelEval.config.systemd.services.tuwunel;
@@ -798,15 +1072,15 @@ in
       kanidmPersons = builtins.toJSON adapterEval.config.services.kanidm.provision.persons;
     in
       assert !(adapterEval.config.services.kanidm.provision.persons ? dejana);
-      assert import ./modules/test/adapter-credentials.nix {
-        inherit lib;
-        adapter = self.lib.adapter;
-      };
       # can is provider-backed: Rauthy onboards it on first sign-in, so a
       # timer reloads provisioning to apply its declared state afterwards.
       assert adapterEval.config.systemd.timers.rauthy-provision-onboarding.timerConfig.OnUnitActiveSec == "15min";
       assert lib.hasSuffix "systemctl try-reload-or-restart rauthy-provision.service"
       adapterEval.config.systemd.services.rauthy-provision-onboarding.serviceConfig.ExecStart;
+      assert import ./modules/test/adapter-credentials.nix {
+        inherit lib;
+        adapter = self.lib.adapter;
+      };
       assert adapterEval.config.services.kanidm.provision.groups.internal-tool-users.members == ["dejana"];
         runCommand "adapter-module-eval" {} ''
           users=${lib.escapeShellArg rauthyUsers}
@@ -910,4 +1184,30 @@ in
       test -x ${identityCrossPackageSet."identity-cli-aarch64-linux"}/bin/forgejo-oidc-secret
       touch $out
     '';
+
+    # Crossbow applies this overlay to a cross package set, where top-level
+    # clang/mold are target builds and buildPackages ones target the host, so
+    # nativeBuildInputs must come from pkgsBuildBuild (native, build-to-build).
+    cross-provisioning-tools = let
+      crossPkgs = nixpkgs.legacyPackages.${system}.pkgsCross.aarch64-multiplatform.extend self.overlays.default;
+      provisioned = [
+        "vikunja-provision"
+        "rauthy-provision"
+        "stalwart016-provision"
+      ];
+      hasInput = package: input:
+        lib.any (candidate: candidate.drvPath == input.drvPath) package.nativeBuildInputs;
+      missing =
+        lib.filter
+        (name:
+          !(hasInput crossPkgs.${name} crossPkgs.pkgsBuildBuild.llvmPackages_latest.clang)
+          || !(hasInput crossPkgs.${name} crossPkgs.pkgsBuildBuild.mold))
+        provisioned;
+    in
+      assert crossPkgs.stdenv.buildPlatform.system != crossPkgs.stdenv.hostPlatform.system;
+      assert crossPkgs.pkgsBuildBuild.llvmPackages_latest.clang.targetPrefix == "";
+      assert lib.assertMsg (missing == []) "cross provisioning packages must take clang/mold from pkgsBuildBuild: ${lib.concatStringsSep ", " missing}";
+        runCommand "cross-provisioning-tools" {} ''
+          touch $out
+        '';
   }
