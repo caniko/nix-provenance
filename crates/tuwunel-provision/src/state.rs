@@ -62,14 +62,18 @@ pub fn valid_room_id(id: &str) -> bool {
     }
 }
 
-/// Matrix user ID: `@localpart:server_name`, at most 255 bytes, no NUL.
+/// Matrix user ID: `@localpart:server_name`, at most 255 bytes; even historical
+/// localparts are printable ASCII (0x21-0x7E) without `:`.
 pub fn valid_user_id(id: &str) -> bool {
     id.len() <= 255
-        && !id.contains('\0')
         && id
             .strip_prefix('@')
             .and_then(|rest| rest.split_once(':'))
-            .is_some_and(|(localpart, server)| !localpart.is_empty() && valid_server_name(server))
+            .is_some_and(|(localpart, server)| {
+                !localpart.is_empty()
+                    && localpart.bytes().all(|b| (0x21..=0x7e).contains(&b))
+                    && valid_server_name(server)
+            })
 }
 
 fn valid_server_name(server: &str) -> bool {

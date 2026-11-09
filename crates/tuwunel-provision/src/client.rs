@@ -1117,6 +1117,7 @@ mod private_room_tests {
             events[4]["content"]["room_version"] = version.to_string().into();
             events[5]["content"]["redact"] = 0.into();
             assert!(verify(&events).is_err(), "room version {version}");
+            events[5]["content"]["redact"] = 100.into();
             events[5]["content"]["events"]["m.room.redaction"] = 0.into();
             assert!(
                 verify(&events).is_err(),

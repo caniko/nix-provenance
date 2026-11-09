@@ -879,6 +879,8 @@ fn malformed_invites_are_rejected_before_mutation() {
         "can:example.test".to_owned(),
         "@can:example.test:garbage".to_owned(),
         "@can\0:example.test".to_owned(),
+        "@can can:example.test".to_owned(),
+        "@cän:example.test".to_owned(),
         format!("@{}:example.test", "a".repeat(250)),
     ] {
         let (output, requests) = run(Scenario {
