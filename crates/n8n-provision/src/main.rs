@@ -232,6 +232,13 @@ fn reconcile(
         // Digest over type + resolved data: the marker says "n8n holds exactly this".
         let id = format!("n8n-credential:{name}");
         let found = pick_target(&existing, &previous, name)?;
+        // A credential we created, renamed in n8n and in the declaration
+        // alike, stays ours under its new name (and is not pruned below).
+        if let Some(cred_id) = found
+            && previous.values().any(|i| i == cred_id)
+        {
+            owned.insert(name.clone(), cred_id.to_owned());
+        }
         // The target id is part of the fingerprint: a different n8n credential
         // under this name (recreated, or a UI one) must always be written.
         let fingerprint = |target: &str| secret_digest(&format!("{target}\n{}\n{data}", cred.kind));
@@ -257,6 +264,9 @@ fn reconcile(
     // recorded id only: same-named UI or adopted credentials are never touched.
     for (name, id) in removed_credentials(&previous, state) {
         owned.remove(&name);
+        if owned.values().any(|i| *i == id) {
+            continue;
+        }
         // Already gone (deleted by hand): the desired state holds, nothing to do.
         if existing.iter().any(|(i, _)| *i == id) {
             n8n.delete_credential(&id)?;
