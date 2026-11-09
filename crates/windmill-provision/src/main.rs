@@ -270,9 +270,12 @@ fn reconcile(
     db: &db::Psql,
     ready_timeout: u64,
 ) -> Result<()> {
-    let superadmin = read_password_file(credential_dir.join(&state.superadmin_credential))?;
     let wm = Windmill::new(&state.url)?;
     wm.wait_ready(Duration::from_secs(ready_timeout))?;
+    // Revocation first: it needs no secret file, membership or token step, so
+    // a bad password file or a failed upsert cannot keep removed access live.
+    prune(state, marker_dir, db)?;
+    let superadmin = read_password_file(credential_dir.join(&state.superadmin_credential))?;
     let markers = PasswordMarkerStore::new(marker_dir);
 
     // Users first: workspace membership and token minting need the rows.
@@ -291,10 +294,6 @@ fn reconcile(
             eprintln!("user {name}: password applied");
         }
     }
-    // Revocation first: it must not depend on membership or token steps that
-    // can fail (for example while a changed email is being rolled over).
-    prune(state, marker_dir, db)?;
-
     for (id, ws) in &state.workspaces {
         if !wm.workspace_exists(&superadmin, id)? {
             wm.create_workspace(&superadmin, id, &ws.name)?;
