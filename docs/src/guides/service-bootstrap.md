@@ -127,3 +127,8 @@ services.n8n = {
   not hand stored secrets back for comparison. Re-applying happens when the
   declaration, a secret file, or the target credential changes; remove the
   marker (`/var/lib/n8n-provision/markers`) to force a rewrite.
+- Adopted n8n credentials: a declared name that matches one existing n8n
+  credential is adopted and overwritten, but only credentials this tool
+  created are recorded for pruning. Removing an adopted one from the
+  declaration leaves it in n8n with the last declared values; delete it by
+  hand.
