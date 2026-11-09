@@ -638,7 +638,8 @@ fn verify_private_room_state(
     };
     let default_user = level(powers.get("users_default"), 0)?;
     // Matrix v12 creators have infinite power; older rooms without a power
-    // event give the creation sender 100. These are protocol defaults, not
+    // event give the room creator 100 (`content.creator` before v11, the
+    // create sender from v11). These are protocol defaults, not
     // inferred ownership or fabricated state.
     let owner_power = if version >= 12 {
         (i64::MAX, f64::INFINITY)
