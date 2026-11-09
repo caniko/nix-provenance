@@ -341,6 +341,18 @@ fn reconcile(
             // Re-assert ownership/mode so declared drift heals without a re-mint.
             let existing = read_token_file(&token.path).context("re-reading kept token")?;
             install_token(token, existing.trim())?;
+            // Finish a revocation an earlier re-mint left undone: the marker
+            // still matches, so nothing else would retry it.
+            if let Some(keep) = db::token_prefix(existing.trim()) {
+                let column = db.token_prefix_column()?;
+                db.run(&db::revoke_old_tokens_sql(
+                    label,
+                    &owner.email,
+                    keep,
+                    None,
+                    column,
+                ))?;
+            }
             continue;
         }
         let user = &state.users[&token.user];
