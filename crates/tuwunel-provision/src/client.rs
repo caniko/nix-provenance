@@ -1194,20 +1194,6 @@ pub(crate) fn parse_room_alias(alias: &str) -> Result<(&str, &str)> {
     Ok((localpart, server))
 }
 
-/// Matrix user ID: `@localpart:server`, both parts nonempty.
-pub(crate) fn parse_user_id(user_id: &str) -> Result<(&str, &str)> {
-    let Some((localpart, server)) = user_id
-        .strip_prefix('@')
-        .and_then(|rest| rest.split_once(':'))
-    else {
-        bail!("Matrix user ID must look like @localpart:server: {user_id}");
-    };
-    if localpart.is_empty() || server.is_empty() {
-        bail!("Matrix user ID has an empty localpart or server name: {user_id}");
-    }
-    Ok((localpart, server))
-}
-
 fn percent_encode(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {

@@ -872,7 +872,15 @@ fn multiple_aliases_with_the_same_pin_and_policy_remain_valid() {
 
 #[test]
 fn malformed_invites_are_rejected_before_mutation() {
-    for invite in ["can", "@can", "@:example.test", "can:example.test"] {
+    for invite in [
+        "can".to_owned(),
+        "@can".to_owned(),
+        "@:example.test".to_owned(),
+        "can:example.test".to_owned(),
+        "@can:example.test:garbage".to_owned(),
+        "@can\0:example.test".to_owned(),
+        format!("@{}:example.test", "a".repeat(250)),
+    ] {
         let (output, requests) = run(Scenario {
             room_declarations: Some(
                 json!({"iris":{"alias":"#hermes-iris:example.test","creator":"iris","encrypted":true,"invite":[invite]}}),

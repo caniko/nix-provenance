@@ -62,6 +62,16 @@ pub fn valid_room_id(id: &str) -> bool {
     }
 }
 
+/// Matrix user ID: `@localpart:server_name`, at most 255 bytes, no NUL.
+pub fn valid_user_id(id: &str) -> bool {
+    id.len() <= 255
+        && !id.contains('\0')
+        && id
+            .strip_prefix('@')
+            .and_then(|rest| rest.split_once(':'))
+            .is_some_and(|(localpart, server)| !localpart.is_empty() && valid_server_name(server))
+}
+
 fn valid_server_name(server: &str) -> bool {
     let valid_port = |port: &str| {
         !port.is_empty() && port.len() <= 5 && port.bytes().all(|ch| ch.is_ascii_digit())

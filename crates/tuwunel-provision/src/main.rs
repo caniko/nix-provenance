@@ -95,9 +95,12 @@ fn main() -> Result<()> {
                 bail!("Matrix room {name} has conflicting declarations for pinned Matrix room ID");
             }
         }
-        for user_id in &room.invite {
-            client::parse_user_id(user_id)
-                .with_context(|| format!("validating Matrix room {name} invite"))?;
+        if !room
+            .invite
+            .iter()
+            .all(|user_id| state::valid_user_id(user_id))
+        {
+            bail!("Matrix room {name} has an invalid Matrix user ID invite");
         }
         if room.encrypted != room.creator.is_some() {
             bail!(
