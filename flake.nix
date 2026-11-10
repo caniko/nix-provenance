@@ -250,6 +250,7 @@
         kanidmCredentials = import ./nix/modules/kanidm/credentials.nix {inherit self;};
         externalApp = import ./nix/modules/adapter/external-app.nix {inherit self;};
         wireguardStatus = import ./nix/modules/adapter/wireguard-status.nix;
+        identityCli = import ./nix/modules/adapter/identity-cli.nix {inherit self;};
         tuwunel = import ./nix/modules/config-only/tuwunel.nix {inherit self;};
         windmillProvision = import ./nix/modules/service-bootstrap/windmill.nix {inherit self;};
         n8nProvision = import ./nix/modules/service-bootstrap/n8n.nix {inherit self;};
