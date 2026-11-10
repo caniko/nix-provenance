@@ -67,6 +67,7 @@
   n8nEval = evalSystem ./modules/test/n8n-provision-eval.nix;
   n8nBootstrapVmTest = import ./modules/test/n8n-bootstrap-vmtest.nix {inherit pkgs self;};
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
+  identityCliEval = evalSystem ./modules/test/identity-cli-eval.nix;
   stalwartOauthBootstrapPasswordFile = "\${XDG_RUNTIME_DIR}/agenix/stalwart_account_can";
 
   stalwartOauthBootstrapEval = let
@@ -853,6 +854,21 @@ in
         test ${lib.escapeShellArg (builtins.toJSON exporter.interfaces)} = '["wg-home"]'
         printf '%s' ${lib.escapeShellArg artifact} | grep -q '"schemaVersion":1'
         printf '%s' ${lib.escapeShellArg artifact} | grep -q '127.0.0.1:19586/metrics'
+        touch $out
+      '';
+
+    # Only email-provisioned users reach the CLI state, in the snake_case
+    # subset identity-cli reads.
+    identity-cli-module-eval = let
+      env = identityCliEval.config.environment.variables;
+    in
+      runCommand "identity-cli-module-eval" {nativeBuildInputs = [pkgs.jq];} ''
+        test ${lib.escapeShellArg env.RAUTHY_URL} = https://id.example.org
+        jq -e '.users == {"guest@example.org": {
+          send_password_email: true,
+          password_email_redirect_uri: "https://app.example.org/login",
+          given_name: "Guest"
+        }}' ${env.RAUTHY_PROVISION_STATE} > /dev/null
         touch $out
       '';
 
