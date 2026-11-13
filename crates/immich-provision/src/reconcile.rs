@@ -1,9 +1,10 @@
 use anyhow::{Result, bail};
+use provenance_core::generated_secret::{GeneratedSecretStore, SecretFileStatus};
 use provenance_core::password::{PasswordMarkerStore, read_password_file};
 use provenance_core::reconcile::Summary;
 use serde_json::{Map, Value, json};
 
-use crate::client::{ImmichClient, ImmichUser};
+use crate::client::{ImmichApiKey, ImmichClient, ImmichUser};
 use crate::state::{State, UserSpec};
 
 pub fn reconcile(
@@ -74,7 +75,77 @@ pub fn reconcile(
         }
     }
 
+    reconcile_api_keys(client, state, &mut summary)?;
     Ok(summary)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ApiKeyAction {
+    Keep,
+    UpdatePermissions(String),
+    /// Delete these stale keys of the same name, then create a new one.
+    Recreate(Vec<String>),
+}
+
+/// Decide how to converge a declared key. The provisioner owns every key with
+/// the declared name; the stored file is valid only if its secret still
+/// authenticates as one of them.
+fn api_key_action(
+    name: &str,
+    permissions: &[String],
+    stored_id: Option<&str>,
+    existing: &[ImmichApiKey],
+) -> ApiKeyAction {
+    let named = existing.iter().filter(|key| key.name == name);
+    match stored_id.and_then(|id| existing.iter().find(|key| key.id == id && key.name == name)) {
+        Some(key) if sorted(&key.permissions) == sorted(permissions) => ApiKeyAction::Keep,
+        Some(key) => ApiKeyAction::UpdatePermissions(key.id.clone()),
+        None => ApiKeyAction::Recreate(named.map(|key| key.id.clone()).collect()),
+    }
+}
+
+fn sorted(values: &[String]) -> Vec<&str> {
+    let mut values: Vec<&str> = values.iter().map(String::as_str).collect();
+    values.sort_unstable();
+    values.dedup();
+    values
+}
+
+fn reconcile_api_keys(client: &ImmichClient, state: &State, summary: &mut Summary) -> Result<()> {
+    if state.api_keys.is_empty() {
+        return Ok(());
+    }
+    let existing = client.list_api_keys()?;
+    for (name, spec) in &state.api_keys {
+        spec.validate(name)?;
+        let store = GeneratedSecretStore::at(&spec.file)?;
+        let stored_id = match store.status()? {
+            SecretFileStatus::Ready => client.api_key_id_for(store.read()?.expose())?,
+            SecretFileStatus::Missing => None,
+        };
+        match api_key_action(name, &spec.permissions, stored_id.as_deref(), &existing) {
+            ApiKeyAction::Keep => summary.unchanged += 1,
+            ApiKeyAction::UpdatePermissions(id) => {
+                client.update_api_key_permissions(&id, &spec.permissions)?;
+                summary.updated += 1;
+            }
+            ApiKeyAction::Recreate(stale) => {
+                for id in stale {
+                    client.delete_api_key(&id)?;
+                }
+                // A crash between create and write leaves a named key without a
+                // file; the next run deletes it as stale and creates another.
+                let created = client.create_api_key(name, &spec.permissions)?;
+                store.replace_text(&created.secret)?;
+                eprintln!(
+                    "[immich-provision] API key {name} ({}) written to {}",
+                    created.id, spec.file
+                );
+                summary.created += 1;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn normalize_email(email: &str) -> String {
@@ -332,6 +403,38 @@ mod tests {
         assert!(
             ensure_delete_allowed("alice@example.com", &state.users["alice@example.com"], true)
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn api_key_action_keeps_updates_or_recreates() {
+        let key = |id: &str, name: &str, perms: &[&str]| ImmichApiKey {
+            id: id.into(),
+            name: name.into(),
+            permissions: perms.iter().map(|p| p.to_string()).collect(),
+        };
+        let want = vec!["asset.read".to_string(), "user.read".to_string()];
+        let existing = vec![
+            key("k1", "conv", &["user.read", "asset.read"]),
+            key("k2", "conv", &["asset.read"]),
+            key("k3", "other", &["asset.read"]),
+        ];
+
+        assert_eq!(
+            api_key_action("conv", &want, Some("k1"), &existing),
+            ApiKeyAction::Keep
+        );
+        assert_eq!(
+            api_key_action("conv", &want, Some("k2"), &existing),
+            ApiKeyAction::UpdatePermissions("k2".into())
+        );
+        // No file, or a secret that no longer authenticates (or belongs to
+        // another name): replace every key of this name, never other names.
+        let recreate = ApiKeyAction::Recreate(vec!["k1".into(), "k2".into()]);
+        assert_eq!(api_key_action("conv", &want, None, &existing), recreate);
+        assert_eq!(
+            api_key_action("conv", &want, Some("k3"), &existing),
+            recreate
         );
     }
 }

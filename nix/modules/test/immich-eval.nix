@@ -33,6 +33,7 @@
         clearAvatarColor = true;
         passwordFile = "/run/agenix/immich-eric-password";
       };
+      apiKeys.converter.permissions = ["asset.read" "user.read"];
     };
   };
 

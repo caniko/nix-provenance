@@ -138,7 +138,10 @@
     })
   cfg.users;
 
-  stateFile = pkgs.writeText "immich-provision-state.json" (builtins.toJSON {users = userManifest;});
+  stateFile = pkgs.writeText "immich-provision-state.json" (builtins.toJSON {
+    users = userManifest;
+    apiKeys = lib.mapAttrs (_: key: {inherit (key) permissions file;}) cfg.apiKeys;
+  });
 
   cliArgs =
     lib.escapeShellArgs
@@ -228,6 +231,34 @@ in {
       type = types.listOf types.str;
       default = ["immich-server.service"];
       description = "Units that must be active before provisioning runs.";
+    };
+
+    apiKeys = mkOption {
+      type = types.attrsOf (types.submodule ({name, ...}: {
+        options = {
+          permissions = mkOption {
+            type = types.nonEmptyListOf types.str;
+            example = ["asset.read" "user.read"];
+            description = "Immich permissions granted to the key.";
+          };
+          file = mkOption {
+            type = types.str;
+            default = "/var/lib/immich-provision/api-keys/${name}";
+            readOnly = true;
+            description = ''
+              Runtime path of the key's secret (mode 0600, owned by the Immich
+              user). Consumers read it through systemd `LoadCredential=`.
+            '';
+          };
+        };
+      }));
+      default = {};
+      description = ''
+        API keys owned by Immich's admin user, keyed by key name. The
+        provisioner owns every key with a declared name: it creates the key,
+        writes its secret once to `file`, fixes drifted permissions, and
+        replaces the key when the file is missing or no longer authenticates.
+      '';
     };
 
     users = mkOption {
@@ -348,7 +379,13 @@ in {
             message = "services.immich.provision.users.${name} cannot set both avatarColor and clearAvatarColor.";
           }
         ])
-        cfg.users);
+        cfg.users)
+      ++ lib.mapAttrsToList (name: _: {
+        # The name becomes a file below api-keys/; keep it one path component.
+        assertion = builtins.match "[A-Za-z0-9_-][A-Za-z0-9._-]*" name != null;
+        message = "services.immich.provision.apiKeys.${name}: names must be one file-name component ([A-Za-z0-9._-], not starting with a dot).";
+      })
+      cfg.apiKeys;
 
     services.immich.settings.oauth = mkIf cfg.oauth.enable oauthSettings;
 
