@@ -117,6 +117,70 @@ impl ImmichClient {
         Ok(provenance_core::http::json_ok(resp, "deleted Immich user")?)
     }
 
+    pub fn list_api_keys(&self) -> Result<Vec<ImmichApiKey>> {
+        let resp = self
+            .auth(self.client.get(self.url("/api-keys")))
+            .send()
+            .context("requesting Immich API keys")?;
+        Ok(provenance_core::http::json_ok(resp, "Immich API keys")?)
+    }
+
+    /// Create an API key; Immich returns its secret only in this response.
+    pub fn create_api_key(&self, name: &str, permissions: &[String]) -> Result<CreatedApiKey> {
+        let resp = self
+            .auth(
+                self.client
+                    .post(self.url("/api-keys"))
+                    .json(&json!({ "name": name, "permissions": permissions })),
+            )
+            .send()
+            .with_context(|| format!("creating Immich API key {name}"))?;
+        Ok(provenance_core::http::json_ok(
+            resp,
+            "created Immich API key",
+        )?)
+    }
+
+    pub fn update_api_key_permissions(&self, id: &str, permissions: &[String]) -> Result<()> {
+        let resp = self
+            .auth(
+                self.client
+                    .put(self.url(&format!("/api-keys/{id}")))
+                    .json(&json!({ "permissions": permissions })),
+            )
+            .send()
+            .with_context(|| format!("updating Immich API key {id}"))?;
+        let _: Value = provenance_core::http::json_ok(resp, "updated Immich API key")?;
+        Ok(())
+    }
+
+    pub fn delete_api_key(&self, id: &str) -> Result<()> {
+        let resp = self
+            .auth(self.client.delete(self.url(&format!("/api-keys/{id}"))))
+            .send()
+            .with_context(|| format!("deleting Immich API key {id}"))?;
+        if !resp.status().is_success() {
+            bail!("deleting Immich API key {id}: HTTP {}", resp.status());
+        }
+        Ok(())
+    }
+
+    /// The id of the API key `secret` authenticates as, or `None` when Immich
+    /// rejects it (revoked, deleted, or never valid).
+    pub fn api_key_id_for(&self, secret: &str) -> Result<Option<String>> {
+        let resp = self
+            .client
+            .get(self.url("/api-keys/me"))
+            .header("x-api-key", secret)
+            .send()
+            .context("checking a stored Immich API key")?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(None);
+        }
+        let key: ImmichApiKey = provenance_core::http::json_ok(resp, "current Immich API key")?;
+        Ok(Some(key.id))
+    }
+
     fn auth(&self, req: RequestBuilder) -> RequestBuilder {
         req.bearer_auth(&self.token)
     }
@@ -154,4 +218,18 @@ pub struct ImmichUser {
     pub avatar_color: Option<String>,
     #[serde(default)]
     pub should_change_password: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImmichApiKey {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CreatedApiKey {
+    pub id: String,
+    pub secret: String,
 }

@@ -5,7 +5,8 @@ Declarative Immich identity provisioning for NixOS and Kanidm.
 `immich-provision` is a small reconciler plus NixOS module. It renders desired
 Immich users from Nix, obtains a short-lived local provisioning token from a
 patched `immich-admin provision-token`, and reconciles users through Immich's
-admin API. It deliberately does not support long-lived Immich API keys.
+admin API. It never authenticates with a long-lived Immich API key itself; it
+can mint declared API keys for local consumers (see `apiKeys`).
 
 ## Model
 
@@ -18,6 +19,11 @@ admin API. It deliberately does not support long-lived Immich API keys.
   empty.
 - User deletion requires both `--allow-user-delete` and
   `users.<name>.delete.force = true`.
+- `apiKeys.<name>` declares a key owned by the admin user. The secret is
+  written once to `/var/lib/immich-provision/api-keys/<name>` (mode 0600)
+  and read by consumers through systemd `LoadCredential=`. The provisioner owns
+  every key with a declared name: it fixes drifted permissions and replaces
+  the key when the file is missing or no longer authenticates.
 
 ## CLI
 
