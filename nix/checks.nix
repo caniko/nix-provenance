@@ -452,6 +452,8 @@ in
           echo "immich: rendered state must not contain agenix source path" >&2
           exit 1
         fi
+        printf '%s' "$state" | grep -qF '"apiKeys":{"converter":{"file":"/var/lib/immich-provision/api-keys/converter","permissions":["asset.read","user.read"]}}' \
+          || { echo "immich: rendered state must declare the converter API key" >&2; exit 1; }
         touch $out
       '';
 

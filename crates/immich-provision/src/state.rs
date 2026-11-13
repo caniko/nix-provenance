@@ -8,6 +8,29 @@ use serde::Deserialize;
 #[serde(default, deny_unknown_fields)]
 pub struct State {
     pub users: BTreeMap<String, UserSpec>,
+    /// API keys owned by the provisioning (admin) user, keyed by key name.
+    #[serde(rename = "apiKeys")]
+    pub api_keys: BTreeMap<String, ApiKeySpec>,
+}
+
+/// A named API key whose secret is written once to `file` (mode 0600).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeySpec {
+    pub permissions: Vec<String>,
+    pub file: String,
+}
+
+impl ApiKeySpec {
+    pub fn validate(&self, name: &str) -> Result<()> {
+        if self.permissions.is_empty() {
+            bail!("apiKeys.{name}.permissions must not be empty");
+        }
+        if !self.file.starts_with('/') {
+            bail!("apiKeys.{name}.file must be an absolute path");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,6 +164,21 @@ mod tests {
             user.password_file.as_deref(),
             Some("/run/credentials/immich-provision.service/password-alice")
         );
+    }
+
+    #[test]
+    fn api_keys_parse_and_validate() {
+        let state: State = serde_json::from_str(
+            r#"{ "apiKeys": { "converter": { "permissions": ["asset.read"], "file": "/var/lib/k" } } }"#,
+        )
+        .unwrap();
+        let key = &state.api_keys["converter"];
+        assert_eq!(key.permissions, ["asset.read"]);
+        assert!(key.validate("converter").is_ok());
+
+        let relative: ApiKeySpec =
+            serde_json::from_str(r#"{ "permissions": ["asset.read"], "file": "k" }"#).unwrap();
+        assert!(relative.validate("converter").is_err());
     }
 
     #[test]

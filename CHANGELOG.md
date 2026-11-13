@@ -4,6 +4,11 @@
 
 ### Added
 
+- `services.immich.provision.apiKeys` declares admin-owned Immich API keys.
+  `immich-provision` creates each key with its permissions, writes the secret
+  once to a mode-0600 file under its state directory for `LoadCredential=`
+  consumers, fixes drifted permissions, and replaces keys whose file is
+  missing or no longer authenticates.
 - `homeModules.paperclip-archive` (`nix-provenance.paperclip-archive`) exports
   every Paperclip company on a timer into a git-LFS repository and restores
   declared companies from a pinned copy only when no company with that slug
