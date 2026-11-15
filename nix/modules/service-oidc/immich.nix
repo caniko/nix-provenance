@@ -138,18 +138,35 @@
     })
   cfg.users;
 
+  keysOwnedBy = owner:
+    lib.mapAttrs (_: key: {inherit (key) permissions file;})
+    (lib.filterAttrs (_: key: key.owner == owner) cfg.apiKeys);
+  keyOwners = lib.unique (lib.filter (owner: owner != null) (lib.mapAttrsToList (_: key: key.owner) cfg.apiKeys));
+
   stateFile = pkgs.writeText "immich-provision-state.json" (builtins.toJSON {
     users = userManifest;
-    apiKeys = lib.mapAttrs (_: key: {inherit (key) permissions file;}) cfg.apiKeys;
+    apiKeys = keysOwnedBy null;
   });
 
-  cliArgs =
+  # One keys-only run per declared owner, with a session minted for that user,
+  # after the admin run has created the users.
+  ownerRuns =
+    lib.concatMapStrings (owner: ''
+      ${cfg.immichAdminCommand} provision-token --ttl ${toString cfg.tokenTtlSeconds} --email ${lib.escapeShellArg owner} > "$token_file"
+      test -s "$token_file"
+      ${provisionCommand (pkgs.writeText "immich-provision-keys.json" (builtins.toJSON {apiKeys = keysOwnedBy owner;}))}
+    '')
+    keyOwners;
+
+  provisionCommand = state: "${lib.escapeShellArg (lib.getExe' cfg.package "immich-provision")} ${cliArgs state} --token-file \"$token_file\"";
+
+  cliArgs = state:
     lib.escapeShellArgs
     ([
         "--url"
         cfg.endpoint
         "--state"
-        (toString stateFile)
+        (toString state)
         "--ready-timeout"
         (toString cfg.readyTimeoutSeconds)
       ]
@@ -163,8 +180,8 @@
     token_file="$RUNTIME_DIRECTORY/provision-token"
     ${cfg.immichAdminCommand} provision-token --ttl ${toString cfg.tokenTtlSeconds} > "$token_file"
     test -s "$token_file"
-
-    exec ${lib.escapeShellArg (lib.getExe' cfg.package "immich-provision")} ${cliArgs} --token-file "$token_file"
+    ${provisionCommand stateFile}
+    ${ownerRuns}
   '';
 in {
   options.services.immich.provision = {
@@ -241,6 +258,17 @@ in {
             example = ["asset.read" "user.read"];
             description = "Immich permissions granted to the key.";
           };
+          owner = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "alice@example.com";
+            description = ''
+              Email of the Immich user who owns the key, and so whose assets
+              it can reach. `null` mints it for the admin that
+              `immich-admin provision-token` picks, which is arbitrary when
+              several admins exist.
+            '';
+          };
           file = mkOption {
             type = types.str;
             default = "/var/lib/immich-provision/api-keys/${name}";
@@ -254,7 +282,7 @@ in {
       }));
       default = {};
       description = ''
-        API keys owned by Immich's admin user, keyed by key name. The
+        API keys owned by Immich's admin user or a declared `owner`, keyed by key name. The
         provisioner owns every key with a declared name: it creates the key,
         writes its secret once to `file`, fixes drifted permissions, and
         replaces the key when the file is missing or no longer authenticates.

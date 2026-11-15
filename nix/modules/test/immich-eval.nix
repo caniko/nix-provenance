@@ -34,6 +34,10 @@
         passwordFile = "/run/agenix/immich-eric-password";
       };
       apiKeys.converter.permissions = ["asset.read" "user.read"];
+      apiKeys.eric-converter = {
+        owner = "Eric@example.com";
+        permissions = ["asset.read"];
+      };
     };
   };
 

@@ -8,7 +8,7 @@ use serde::Deserialize;
 #[serde(default, deny_unknown_fields)]
 pub struct State {
     pub users: BTreeMap<String, UserSpec>,
-    /// API keys owned by the provisioning (admin) user, keyed by key name.
+    /// API keys owned by the session's user, keyed by key name.
     #[serde(rename = "apiKeys")]
     pub api_keys: BTreeMap<String, ApiKeySpec>,
 }
