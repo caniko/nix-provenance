@@ -150,12 +150,13 @@
 
   # One keys-only run per declared owner, with a session minted for that user,
   # after the admin run has created the users.
-  ownerRuns = lib.concatMapStrings (owner: ''
-    ${cfg.immichAdminCommand} provision-token --ttl ${toString cfg.tokenTtlSeconds} --email ${lib.escapeShellArg owner} > "$token_file"
-    test -s "$token_file"
-    ${provisionCommand (pkgs.writeText "immich-provision-keys.json" (builtins.toJSON {apiKeys = keysOwnedBy owner;}))}
-  '')
-  keyOwners;
+  ownerRuns =
+    lib.concatMapStrings (owner: ''
+      ${cfg.immichAdminCommand} provision-token --ttl ${toString cfg.tokenTtlSeconds} --email ${lib.escapeShellArg owner} > "$token_file"
+      test -s "$token_file"
+      ${provisionCommand (pkgs.writeText "immich-provision-keys.json" (builtins.toJSON {apiKeys = keysOwnedBy owner;}))}
+    '')
+    keyOwners;
 
   provisionCommand = state: "${lib.escapeShellArg (lib.getExe' cfg.package "immich-provision")} ${cliArgs state} --token-file \"$token_file\"";
 
