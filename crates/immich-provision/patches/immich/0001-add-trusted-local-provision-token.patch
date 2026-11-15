@@ -20,20 +20,21 @@ index 0d03e4c..bad91fc 100644
    ChangeMediaLocationCommand,
 diff --git a/server/src/commands/provision-token.command.ts b/server/src/commands/provision-token.command.ts
 new file mode 100644
-index 0000000..dabc77b
+index 0000000..2c2d185
 --- /dev/null
 +++ b/server/src/commands/provision-token.command.ts
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,49 @@
 +import { Command, CommandRunner, Option } from 'nest-commander';
 +import { CliService } from 'src/services/cli.service';
 +
 +type ProvisionTokenOptions = {
 +  ttl?: number;
++  email?: string;
 +};
 +
 +@Command({
 +  name: 'provision-token',
-+  description: 'Mint a short-lived admin session token for local declarative provisioning',
++  description: 'Mint a short-lived session token (the admin, or --email) for local declarative provisioning',
 +})
 +export class ProvisionTokenCommand extends CommandRunner {
 +  constructor(private service: CliService) {
@@ -42,7 +43,7 @@ index 0000000..dabc77b
 +
 +  async run(_passedParams: string[], options?: ProvisionTokenOptions): Promise<void> {
 +    try {
-+      const token = await this.service.createProvisionToken(options?.ttl ?? 300);
++      const token = await this.service.createProvisionToken(options?.ttl ?? 300, options?.email);
 +      process.stdout.write(`${token}\n`);
 +    } catch (error) {
 +      console.error(error);
@@ -62,6 +63,14 @@ index 0000000..dabc77b
 +      throw new Error('--ttl must be an integer between 1 and 3600 seconds');
 +    }
 +    return ttl;
++  }
++
++  @Option({
++    flags: '--email <email>',
++    description: 'Mint the session for this user instead of the admin',
++  })
++  parseEmail(value: string): string {
++    return value;
 +  }
 +}
 diff --git a/server/src/dtos/user.dto.spec.ts b/server/src/dtos/user.dto.spec.ts
@@ -95,10 +104,10 @@ index 528163e..253de79 100644
      avatarColor: UserAvatarColorSchema.nullish(),
      pinCode: z.string().regex(pinCodeRegex).nullable().optional().describe('PIN code').meta({ example: '123456' }),
 diff --git a/server/src/services/cli.service.spec.ts b/server/src/services/cli.service.spec.ts
-index 29c62d2..da8b4fd 100644
+index 29c62d2..42f0939 100644
 --- a/server/src/services/cli.service.spec.ts
 +++ b/server/src/services/cli.service.spec.ts
-@@ -21,6 +21,34 @@ describe(CliService.name, () => {
+@@ -21,6 +21,60 @@ describe(CliService.name, () => {
      });
    });
  
@@ -128,13 +137,39 @@ index 29c62d2..da8b4fd 100644
 +        }),
 +      );
 +    });
++
++    it('should mint the session for the user with --email', async () => {
++      const user = UserFactory.create({ email: 'owner@immich.cloud' });
++      mocks.user.getByEmail.mockResolvedValue(user);
++      mocks.crypto.randomBytesAsText.mockReturnValue('raw-provision-token');
++
++      await expect(sut.createProvisionToken(300, ' Owner@Immich.cloud ')).resolves.toEqual('raw-provision-token');
++
++      expect(mocks.user.getByEmail).toHaveBeenCalledWith('owner@immich.cloud');
++      expect(mocks.user.getAdmin).not.toHaveBeenCalled();
++      expect(mocks.session.create).toHaveBeenCalledWith(expect.objectContaining({ userId: user.id }));
++    });
++
++    it('should refuse an empty --email instead of using the admin', async () => {
++      await expect(sut.createProvisionToken(300, ' ')).rejects.toThrowError('Provision token email must not be empty');
++      expect(mocks.user.getAdmin).not.toHaveBeenCalled();
++      expect(mocks.session.create).not.toHaveBeenCalled();
++    });
++
++    it('should fail when the --email user does not exist', async () => {
++      mocks.user.getByEmail.mockResolvedValue(void 0);
++      await expect(sut.createProvisionToken(300, 'missing@immich.cloud')).rejects.toThrowError(
++        'User missing@immich.cloud does not exist',
++      );
++      expect(mocks.session.create).not.toHaveBeenCalled();
++    });
 +  });
 +
    describe('resetAdminPassword', () => {
      it('should only work when there is an admin account', async () => {
        mocks.user.getAdmin.mockResolvedValue(void 0);
 diff --git a/server/src/services/cli.service.ts b/server/src/services/cli.service.ts
-index f37353d..d1fb170 100644
+index f37353d..341cf7f 100644
 --- a/server/src/services/cli.service.ts
 +++ b/server/src/services/cli.service.ts
 @@ -1,5 +1,6 @@
@@ -144,25 +179,34 @@ index f37353d..d1fb170 100644
  import { isAbsolute, join } from 'node:path';
  import { SALT_ROUNDS } from 'src/constants';
  import { MaintenanceAuthDto } from 'src/dtos/maintenance.dto';
-@@ -58,6 +59,31 @@ export class CliService extends BaseService {
+@@ -58,6 +59,40 @@ export class CliService extends BaseService {
      return users.map((user) => mapUserAdmin(user));
    }
  
-+  async createProvisionToken(ttlSeconds: number): Promise<string> {
++  async createProvisionToken(ttlSeconds: number, email?: string): Promise<string> {
 +    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 3600) {
 +      throw new Error('Provision token TTL must be an integer between 1 and 3600 seconds');
 +    }
 +
-+    const admin = await this.userRepository.getAdmin();
-+    if (!admin) {
-+      throw new Error('Admin account does not exist');
++    // An explicit email mints the session for that user, so declared API keys
++    // can belong to whoever owns the library instead of an arbitrary admin.
++    // Normalize like Immich stores emails; an explicit but empty email must not
++    // fall back to the admin.
++    const owner = email?.trim().toLowerCase();
++    if (owner === '') {
++      throw new Error('Provision token email must not be empty');
++    }
++    const user =
++      owner === undefined ? await this.userRepository.getAdmin() : await this.userRepository.getByEmail(owner);
++    if (!user) {
++      throw new Error(owner === undefined ? 'Admin account does not exist' : `User ${owner} does not exist`);
 +    }
 +
 +    const token = this.cryptoRepository.randomBytesAsText(32);
 +    const hashed = this.cryptoRepository.hashSha256(token);
 +    await this.sessionRepository.create({
 +      token: hashed,
-+      userId: admin.id,
++      userId: user.id,
 +      parentId: null,
 +      deviceOS: 'immich-admin',
 +      deviceType: 'immich-provision',

@@ -13,10 +13,16 @@ pub fn reconcile(
     allow_user_delete: bool,
     password_markers: &PasswordMarkerStore,
 ) -> Result<Summary> {
+    let mut summary = Summary::default();
+    // A keys-only state runs with a session for the keys' owner, who need not
+    // be an admin, so it must not touch the admin endpoints below.
+    if state.users.is_empty() {
+        reconcile_api_keys(client, state, &mut summary)?;
+        return Ok(summary);
+    }
     let config = client.system_config()?;
     let oauth_enabled = config.oauth.enabled;
     let existing = client.list_users()?;
-    let mut summary = Summary::default();
 
     for (key, spec) in &state.users {
         spec.validate(key)?;
