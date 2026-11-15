@@ -245,6 +245,9 @@ in
       assert builtins.elem "agenix.service" service.Unit.Wants;
       assert builtins.elem "agenix.service" service.Unit.After;
       assert path.Path.PathChanged == tokenFile;
+      # A path unit after agenix.service is an ordering cycle via paths.target.
+      assert !(builtins.elem "agenix.service" (path.Unit.After or []));
+      assert !(builtins.elem "agenix.service" (codebergPath.Unit.After or []));
       assert codebergService.Service.Type == "oneshot";
       assert builtins.elem "agenix.service" codebergService.Unit.Wants;
       assert codebergPath.Path.PathChanged == codebergTokenFile;
