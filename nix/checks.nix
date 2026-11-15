@@ -452,6 +452,16 @@ in
         fi
         printf '%s' "$state" | grep -qF '"apiKeys":{"converter":{"file":"/var/lib/immich-provision/api-keys/converter","permissions":["asset.read","user.read"]}}' \
           || { echo "immich: rendered state must declare the converter API key" >&2; exit 1; }
+        # An owned key is minted in its own keys-only run, with that user's session.
+        grep -qF -- "--email Eric@example.com" ${svc.serviceConfig.ExecStart} \
+          || { echo "immich: owned key must mint a session for its owner" >&2; exit 1; }
+        keys_file=$(grep -o '/nix/store/[^ ]*immich-provision-keys.json' ${svc.serviceConfig.ExecStart})
+        grep -qF '{"apiKeys":{"eric-converter":{"file":"/var/lib/immich-provision/api-keys/eric-converter","permissions":["asset.read"]}}}' "$keys_file" \
+          || { echo "immich: owned key must render in a keys-only state" >&2; exit 1; }
+        if printf '%s' "$state" | grep -q 'eric-converter'; then
+          echo "immich: owned key must not render in the admin state" >&2
+          exit 1
+        fi
         touch $out
       '';
 
