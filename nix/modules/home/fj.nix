@@ -86,8 +86,9 @@
     lib.nameValuePair unitName {
       Unit = {
         Description = "Watch the ${tokenCfg.host} fj application token";
-        Wants = ["agenix.service"];
-        After = ["agenix.service"];
+        # No agenix ordering: path units sit before paths.target, and
+        # agenix.service is after basic.target, so After= here is a cycle
+        # that drops this unit. The triggered service keeps the ordering.
       };
       Path.PathChanged = builtins.replaceStrings ["\${XDG_RUNTIME_DIR}"] ["%t"] tokenFile;
       Install.WantedBy = ["default.target"];
