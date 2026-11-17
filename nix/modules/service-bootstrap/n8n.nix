@@ -57,8 +57,15 @@
         lib.mapAttrs (name: c: {
           inherit (c) type data;
           data_files = lib.mapAttrs (field: _: fieldCredential name field) c.dataFiles;
+          data_file_prefixes = c.dataFilePrefixes;
         })
         cfg.credentials;
+      workflows =
+        lib.mapAttrs (name: w: {
+          file = toString w.file;
+          inherit (w) active credentials;
+        })
+        cfg.workflows;
     }));
 in {
   options.services.n8n.provision = {
@@ -136,6 +143,59 @@ in {
             default = {};
             description = "Secret credential fields: field name to runtime file holding its value.";
           };
+          dataFilePrefixes = mkOption {
+            type = types.attrsOf types.str;
+            default = {};
+            description = ''
+              Prefix prepended to a `dataFiles` value at run time, so a raw
+              token file can become the field value n8n expects (a Header Auth
+              `Authorization` of `value = "Bearer <token>"` uses
+              `dataFilePrefixes.value = "Bearer "`). Read at run time with the
+              file; the prefix itself is not secret.
+            '';
+            example = lib.literalExpression ''{value = "Bearer ";}'';
+          };
+        };
+      });
+    };
+
+    workflows = mkOption {
+      default = {};
+      description = ''
+        n8n workflows imported or updated by name from a JSON export. The
+        reconciler rewrites each node's credential references to the ids of the
+        declared `credentials`, then activates or deactivates the workflow to
+        match `active`. An unchanged declaration writes nothing; a workflow
+        edited in the UI is put back to the declared content.
+      '';
+      example = lib.literalExpression ''
+        {
+          fleetix-hub-claim = {
+            file = ../n8n/workflows/fleetix-hub-claim.json;
+            credentials."Fleetix Hub webhook token" = "fleetix-hub-webhook";
+          };
+        }
+      '';
+      type = types.attrsOf (types.submodule {
+        options = {
+          file = mkOption {
+            type = types.oneOf [types.path types.str];
+            description = "n8n workflow JSON export (`nodes`, `connections`, optional `settings` and `meta`).";
+          };
+          active = mkOption {
+            type = types.bool;
+            default = true;
+            description = "Activate (publish) the imported workflow after writing it.";
+          };
+          credentials = mkOption {
+            type = types.attrsOf types.str;
+            default = {};
+            description = ''
+              Credential reference name as written in the JSON export, mapped
+              to a declared `credentials` entry. A reference with no entry here
+              must itself be a declared credential name.
+            '';
+          };
         };
       });
     };
@@ -162,6 +222,18 @@ in {
       {
         assertion = !(lib.any notRuntime secretFiles);
         message = "services.n8n.provision secret files must be absolute runtime paths outside ${builtins.storeDir}.";
+      }
+      {
+        assertion = lib.all (c: lib.all (field: c.dataFiles ? ${field}) (lib.attrNames c.dataFilePrefixes)) (lib.attrValues cfg.credentials);
+        message = "services.n8n.provision.credentials.*.dataFilePrefixes must only prefix fields declared in dataFiles.";
+      }
+      {
+        assertion = lib.all (w: lib.all (c: cfg.credentials ? ${c}) (lib.attrValues w.credentials)) (lib.attrValues cfg.workflows);
+        message = "services.n8n.provision.workflows.*.credentials values must be declared credentials.";
+      }
+      {
+        assertion = lib.all (w: lib.stringLength w != 0 && lib.stringLength w <= 128) (lib.attrNames cfg.workflows);
+        message = "services.n8n.provision.workflows names must be 1-128 characters (n8n's workflow name limit).";
       }
     ];
 
@@ -192,7 +264,7 @@ in {
     };
 
     systemd.services.n8n-provision = {
-      description = "Declaratively provision n8n credentials";
+      description = "Declaratively provision n8n credentials and workflows";
       after = ["n8n.service"];
       requires = ["n8n.service"];
       partOf = ["n8n.service"];

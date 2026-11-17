@@ -13,6 +13,26 @@ pub struct State {
     pub owner: Owner,
     #[serde(default)]
     pub credentials: BTreeMap<String, Credential>,
+    #[serde(default)]
+    pub workflows: BTreeMap<String, Workflow>,
+}
+
+/// A declared workflow: a JSON export imported under `name`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Workflow {
+    /// n8n workflow JSON (`nodes`, `connections`, optional `settings`/`meta`).
+    pub file: std::path::PathBuf,
+    #[serde(default = "default_true")]
+    pub active: bool,
+    /// Credential reference name inside the JSON -> declared credential name.
+    /// A reference with no entry here must match a declared credential name.
+    #[serde(default)]
+    pub credentials: BTreeMap<String, String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +57,10 @@ pub struct Credential {
     /// Secret fields: field name -> systemd credential name holding the value.
     #[serde(default)]
     pub data_files: BTreeMap<String, String>,
+    /// Prefix prepended to a `data_files` value at run time: a raw token file
+    /// plus `"Bearer "` becomes `"Bearer <token>"`. Never secret by itself.
+    #[serde(default)]
+    pub data_file_prefixes: BTreeMap<String, String>,
 }
 
 /// True when `key` or any nested object key names a secret; such values must
@@ -77,6 +101,36 @@ impl State {
                 ensure!(
                     !cred.data.contains_key(field),
                     "credential {name}: field {field} is both data and dataFiles"
+                );
+            }
+            for field in cred.data_file_prefixes.keys() {
+                ensure!(
+                    cred.data_files.contains_key(field),
+                    "credential {name}: prefix for {field}, which dataFiles does not hold"
+                );
+                ensure!(
+                    !cred.data.contains_key(field),
+                    "credential {name}: prefix for {field}, which is a plain data field"
+                );
+            }
+        }
+        for (name, workflow) in &self.workflows {
+            ensure!(
+                !name.is_empty() && name.len() <= 128,
+                "workflow name {name:?} must be 1-128 characters"
+            );
+            ensure!(
+                workflow.file.is_absolute(),
+                "workflow {name}: file must be absolute"
+            );
+            for (reference, credential) in &workflow.credentials {
+                ensure!(
+                    !reference.is_empty() && !credential.is_empty(),
+                    "workflow {name}: credential references must be non-empty"
+                );
+                ensure!(
+                    self.credentials.contains_key(credential),
+                    "workflow {name}: credential reference {reference:?} names undeclared credential {credential:?}"
                 );
             }
         }
@@ -127,6 +181,50 @@ mod tests {
             r#"{"url":"http://127.0.0.1:5678",
             "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
             "credentials":{"hook":{"type":"httpHeaderAuth","data":{"name":"X"},"data_files":{"name":"c"}}}}"#,
+        )
+        .unwrap();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_a_workflow_whose_credentials_are_declared_or_mapped() {
+        let s: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "credentials":{"hub-webhook":{"type":"httpHeaderAuth"}},
+            "workflows":{"fleetix-hub-claim":{
+              "file":"/nix/store/x-claim.json",
+              "credentials":{"Fleetix Hub webhook token":"hub-webhook"}}}}"#,
+        )
+        .unwrap();
+        s.validate().unwrap();
+        assert!(s.workflows["fleetix-hub-claim"].active);
+    }
+
+    #[test]
+    fn rejects_workflows_referencing_undeclared_credentials_or_relative_files() {
+        let bad_credential: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "workflows":{"w":{"file":"/nix/store/x.json","credentials":{"hook":"ghost"}}}}"#,
+        )
+        .unwrap();
+        assert!(bad_credential.validate().is_err());
+        let relative: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "workflows":{"w":{"file":"claim.json"}}}"#,
+        )
+        .unwrap();
+        assert!(relative.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_a_prefix_without_its_data_file() {
+        let s: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "credentials":{"hook":{"type":"httpHeaderAuth","data_files":{"value":"v"},"data_file_prefixes":{"name":"Bearer "}}}}"#,
         )
         .unwrap();
         assert!(s.validate().is_err());

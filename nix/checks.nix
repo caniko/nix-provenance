@@ -958,6 +958,22 @@ in
       };
       upperEmail = ext {services.windmill.provision.users.can.email = lib.mkForce "Can@example.test";};
       plainHttpUrl = ext {services.windmill.provision.url = "http://windmill.example.test";};
+      storeVariable = ext {
+        services.windmill.provision.workspaces.studio.variables."f/fleetix_hub/hub_token".valueFile = lib.mkForce "/nix/store/x-token";
+      };
+      badScriptPath = ext {
+        services.windmill.provision.workspaces.studio.scripts = lib.mkForce {
+          "f/fleetix hub/gen" = {
+            language = "bun";
+            contentFile = "/nix/store/x.ts";
+          };
+        };
+      };
+      badVariablePath = ext {
+        services.windmill.provision.workspaces.studio.variables = lib.mkForce {
+          "not-a-windmill-path" = {valueFile = "/run/agenix/x";};
+        };
+      };
       threeWorkspaces = ext {
         services.windmill.provision.workspaces = {
           a.name = "A";
@@ -976,6 +992,9 @@ in
         test ${lib.escapeShellArg (json (failed plainHttpUrl.config))} != '[]'
         test ${lib.escapeShellArg (json (failed upperEmail.config))} != '[]'
         test ${lib.escapeShellArg (json (failed memberless.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed storeVariable.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed badScriptPath.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed badVariablePath.config))} != '[]'
         # Rotation watch covers the secret and its parent dir (agenix symlink swap).
         printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-superadmin-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
@@ -996,7 +1015,14 @@ in
         grep -q '"disable_default_admin":true' "$state_file"
         grep -q '"email":"can@example.test"' "$state_file"
         grep -q '"mode":"0640"' "$state_file"
+        # Scripts ship their code path, not their content; the variable ships a
+        # credential id and never its runtime file or value.
+        grep -q '"f/fleetix_hub/comfy_generate":{"content_file":"/nix/store/fixture-comfy_generate.ts","language":"bun","summary":"Submit ComfyUI prompts"}' "$state_file"
+        grep -q '"f/fleetix_hub/hub_token":{"credential_name":"password-windmill-variable-[^"]*","description":"Fleetix Hub receipt bearer","is_secret":true}' "$state_file"
         ! grep -q '/run/agenix' "$state_file"
+        # The value file is a systemd credential, watched for in-place rotation.
+        printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q ':/run/agenix/windmill-hub-token'
+        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-variables-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix/windmill-hub-token"'
         touch $out
       '';
 
@@ -1029,11 +1055,27 @@ in
         ];
       };
       collideIds = map (e: lib.head (lib.splitString ":" e)) (lib.filter (e: lib.hasInfix "/run/agenix/a" e || lib.hasInfix "/run/agenix/b" e) collide.config.systemd.services.n8n-provision.serviceConfig.LoadCredential);
+      undeclaredWorkflowCredential = n8nEval.extendModules {
+        modules = [
+          {
+            services.n8n.provision.workflows.fleetix-hub-claim.credentials."Fleetix Hub webhook token" = lib.mkForce "ghost";
+          }
+        ];
+      };
+      misplacedPrefix = n8nEval.extendModules {
+        modules = [
+          {
+            services.n8n.provision.credentials.studio-webhook.dataFilePrefixes.name = lib.mkForce "Bearer ";
+          }
+        ];
+      };
     in
       runCommand "n8n-module-eval" {} ''
         test ${lib.escapeShellArg (json (failed n8nEval.config))} = '[]'
         test ${lib.escapeShellArg (json (failed storeSecret.config))} != '[]'
         test ${lib.escapeShellArg (json (failed overlap.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed undeclaredWorkflowCredential.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed misplacedPrefix.config))} != '[]'
         printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.paths.n8n-provision-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg (toString (lib.length collideIds))} = 2
         test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
@@ -1052,6 +1094,9 @@ in
         state_file=$(printf '%s' ${lib.escapeShellArg svc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*n8n-provision-state.json')
         grep -q '"type":"httpHeaderAuth"' "$state_file"
         grep -q '"name":"X-Studio-Token"' "$state_file"
+        # The workflow ships its JSON path and the reference->credential map; the
+        # credential itself stays a provisioned id resolved at run time.
+        grep -q '"fleetix-hub-claim":{"active":true,"credentials":{"Fleetix Hub webhook token":"studio-webhook"},"file":"/nix/store/fixture-fleetix-hub-claim.json"}' "$state_file"
         ! grep -q '/run/agenix' "$state_file"
         touch $out
       '';

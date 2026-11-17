@@ -18,7 +18,7 @@ use state::State;
 #[derive(Parser, Debug)]
 #[command(
     name = "n8n-provision",
-    about = "Declarative n8n owner and credential bootstrap",
+    about = "Declarative n8n owner, credential and workflow bootstrap",
     version
 )]
 struct Cli {
@@ -202,9 +202,17 @@ fn read_secret_value(path: &Path) -> Result<String> {
 fn resolve_data(cred: &state::Credential, credential_dir: &Path) -> Result<Value> {
     let mut data: BTreeMap<String, Value> = cred.data.clone();
     for (field, file) in &cred.data_files {
+        let prefix = cred
+            .data_file_prefixes
+            .get(field)
+            .map(String::as_str)
+            .unwrap_or("");
         data.insert(
             field.clone(),
-            json!(read_secret_value(&credential_dir.join(file))?),
+            json!(format!(
+                "{prefix}{}",
+                read_secret_value(&credential_dir.join(file))?
+            )),
         );
     }
     Ok(serde_json::to_value(data)?)
@@ -226,6 +234,8 @@ fn reconcile(
     let previous: BTreeMap<String, String> = read_registry(&registry)?;
     // name -> id of credentials this tool created (never adopted ones).
     let mut owned = previous.clone();
+    // name -> what n8n holds after this run, for the workflow credential ids.
+    let mut provisioned: BTreeMap<String, ProvisionedCredential> = BTreeMap::new();
 
     for (name, cred) in &state.credentials {
         let data = resolve_data(cred, credential_dir)?;
@@ -242,12 +252,15 @@ fn reconcile(
         // The target id is part of the fingerprint: a different n8n credential
         // under this name (recreated, or a UI one) must always be written.
         let fingerprint = |target: &str| secret_digest(&format!("{target}\n{}\n{data}", cred.kind));
-        match found {
-            Some(cred_id) if !markers.needs_update(&id, &fingerprint(cred_id))? => {}
+        let target = match found {
+            Some(cred_id) if !markers.needs_update(&id, &fingerprint(cred_id))? => {
+                cred_id.to_owned()
+            }
             Some(cred_id) => {
                 n8n.update_credential(cred_id, name, &cred.kind, &data)?;
                 markers.commit(&id, &fingerprint(cred_id))?;
                 eprintln!("credential {name}: updated");
+                cred_id.to_owned()
             }
             None => {
                 let new_id = n8n.create_credential(name, &cred.kind, &data)?;
@@ -256,8 +269,16 @@ fn reconcile(
                 save_registry(&registry, &owned, marker_dir)?;
                 markers.commit(&id, &fingerprint(&new_id))?;
                 eprintln!("credential {name}: created");
+                new_id
             }
-        }
+        };
+        provisioned.insert(
+            name.clone(),
+            ProvisionedCredential {
+                id: target,
+                kind: cred.kind.clone(),
+            },
+        );
     }
 
     // Delete credentials this tool created that are no longer declared, by
@@ -275,6 +296,7 @@ fn reconcile(
     }
     fs::create_dir_all(marker_dir)?;
     save_registry(&registry, &owned, marker_dir)?;
+    reconcile_workflows(&n8n, state, &provisioned)?;
     Ok(())
 }
 
@@ -288,6 +310,164 @@ fn save_registry(
     Ok(())
 }
 
+/// A declared credential as n8n holds it after this run.
+struct ProvisionedCredential {
+    id: String,
+    kind: String,
+}
+
+/// Import or update every declared workflow by name, bind its credential
+/// references to the provisioned credential ids, and converge its activation.
+///
+/// Workflows are compared against the live copy (n8n's read-back), not a
+/// marker: a UI edit is reverted and an unchanged declaration writes nothing.
+fn reconcile_workflows(
+    n8n: &N8n,
+    state: &State,
+    provisioned: &BTreeMap<String, ProvisionedCredential>,
+) -> Result<()> {
+    if state.workflows.is_empty() {
+        return Ok(());
+    }
+    let existing = n8n.list_workflows()?;
+    for (name, workflow) in &state.workflows {
+        let raw = fs::read_to_string(&workflow.file)
+            .with_context(|| format!("reading {}", workflow.file.display()))?;
+        let file: Value = serde_json::from_str(&raw)
+            .with_context(|| format!("parsing workflow file {}", workflow.file.display()))?;
+        let mut payload = workflow_payload(name, &file)?;
+        bind_credentials(&mut payload["nodes"], &workflow.credentials, provisioned)
+            .with_context(|| format!("workflow {name}"))?;
+
+        let mut created = false;
+        let (id, version, was_active, active_version) =
+            match existing.iter().find(|(_, known)| known == name) {
+                None => {
+                    let state = n8n.create_workflow(&payload)?;
+                    created = true;
+                    eprintln!("workflow {name}: created");
+                    (state.id, state.version, false, None)
+                }
+                Some((id, _)) => {
+                    let live = n8n.workflow(id)?;
+                    let version = live["versionId"].as_str().map(str::to_owned);
+                    let was_active = live["active"].as_bool().unwrap_or(false);
+                    let active_version = live["activeVersionId"].as_str().map(str::to_owned);
+                    if covers(&payload, &live) {
+                        (id.clone(), version, was_active, active_version)
+                    } else {
+                        let state = n8n.update_workflow(id, &payload)?;
+                        eprintln!("workflow {name}: updated");
+                        (state.id, state.version, was_active, active_version)
+                    }
+                }
+            };
+
+        // Published means: active on exactly the version this run wrote. An
+        // update to an active workflow bumps versionId, so it is republished.
+        let published = was_active && version.is_some() && active_version == version;
+        if workflow.active && !published {
+            let version = version.with_context(|| {
+                format!("workflow {name}: n8n returned no versionId to activate")
+            })?;
+            n8n.activate_workflow(&id, &version)?;
+            eprintln!(
+                "workflow {name}: {}",
+                if created { "activated" } else { "republished" }
+            );
+        } else if !workflow.active && was_active {
+            n8n.deactivate_workflow(&id)?;
+            eprintln!("workflow {name}: deactivated");
+        }
+    }
+    Ok(())
+}
+
+/// The import payload: the managed fields of a workflow export, renamed to the
+/// declared name. `active`, `id` and `pinData` are never taken from the file.
+fn workflow_payload(name: &str, file: &Value) -> Result<Value> {
+    let nodes = file
+        .get("nodes")
+        .filter(|nodes| nodes.is_array())
+        .context("workflow file has no nodes array")?;
+    let connections = file
+        .get("connections")
+        .filter(|connections| connections.is_object())
+        .context("workflow file has no connections object")?;
+    let mut payload = json!({"name": name, "nodes": nodes, "connections": connections});
+    for key in ["settings", "meta"] {
+        if let Some(value) = file.get(key)
+            && !value.is_null()
+        {
+            payload[key] = value.clone();
+        }
+    }
+    Ok(payload)
+}
+
+/// Rewrite every node credential reference to `{id, name}` of the declared
+/// credential it maps to, failing when the reference is not provisioned with
+/// the type the node expects.
+fn bind_credentials(
+    nodes: &mut Value,
+    mapping: &BTreeMap<String, String>,
+    provisioned: &BTreeMap<String, ProvisionedCredential>,
+) -> Result<()> {
+    let nodes = nodes.as_array_mut().context("nodes must be an array")?;
+    for node in nodes {
+        let node_name = node
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>")
+            .to_owned();
+        let Some(credentials) = node.get_mut("credentials") else {
+            continue;
+        };
+        let credentials = credentials
+            .as_object_mut()
+            .context("node credentials must be an object")?;
+        for (kind, reference) in credentials.iter_mut() {
+            let current = reference["name"]
+                .as_str()
+                .or_else(|| reference.as_str())
+                .with_context(|| format!("node {node_name}: credential {kind} has no name"))?;
+            let declared = mapping.get(current).map(String::as_str).unwrap_or(current);
+            let credential = provisioned.get(declared).with_context(|| {
+                format!(
+                    "node {node_name}: credential {kind} references {declared:?}, which services.n8n.provision.credentials does not declare"
+                )
+            })?;
+            anyhow::ensure!(
+                credential.kind == *kind,
+                "node {node_name}: {declared:?} is a {} credential but the node needs {kind}",
+                credential.kind
+            );
+            *reference = json!({"id": credential.id, "name": declared});
+        }
+    }
+    Ok(())
+}
+
+/// True when every field the tenant manages in `desired` is present unchanged
+/// in `live`. Extra fields are ignored (n8n adds node ids and `webhookId`s),
+/// while a changed managed field forces a write.
+fn covers(desired: &Value, live: &Value) -> bool {
+    match desired {
+        Value::Object(desired) => live.as_object().is_some_and(|live| {
+            desired
+                .iter()
+                .all(|(key, value)| live.get(key).is_some_and(|other| covers(value, other)))
+        }),
+        Value::Array(desired) => live.as_array().is_some_and(|live| {
+            desired.len() == live.len()
+                && desired
+                    .iter()
+                    .zip(live)
+                    .all(|(value, other)| covers(value, other))
+        }),
+        _ => desired == live,
+    }
+}
 /// The n8n credential to update: the recorded one when it still exists, else a
 /// single same-named one (adopted); several candidates are ambiguous, so refuse.
 fn pick_target<'a>(
@@ -338,6 +518,151 @@ fn removed_credentials(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_payload_takes_the_managed_fields_and_the_declared_name() {
+        let file = json!({
+            "name": "exported-name",
+            "nodes": [{"name": "Webhook", "type": "n8n-nodes-base.webhook"}],
+            "connections": {"Webhook": {}},
+            "settings": {"executionOrder": "v1"},
+            "meta": {"contract": "fleetix-hub/v1"},
+            "active": true,
+            "id": "not-ours",
+        });
+        let payload = workflow_payload("fleetix-hub-claim", &file).unwrap();
+        assert_eq!(payload["name"], "fleetix-hub-claim");
+        assert_eq!(payload["nodes"], file["nodes"]);
+        assert_eq!(payload["connections"], file["connections"]);
+        assert_eq!(payload["settings"], file["settings"]);
+        assert_eq!(payload["meta"], file["meta"]);
+        // The file's activation state and id never decide n8n's.
+        assert!(payload.get("active").is_none());
+        assert!(payload.get("id").is_none());
+        assert!(workflow_payload("x", &json!({"connections": {}})).is_err());
+        assert!(workflow_payload("x", &json!({"nodes": []})).is_err());
+    }
+
+    fn provisioned() -> BTreeMap<String, ProvisionedCredential> {
+        BTreeMap::from([
+            (
+                "hub-webhook".to_owned(),
+                ProvisionedCredential {
+                    id: "c1".into(),
+                    kind: "httpHeaderAuth".into(),
+                },
+            ),
+            (
+                "hub-db".to_owned(),
+                ProvisionedCredential {
+                    id: "c2".into(),
+                    kind: "postgres".into(),
+                },
+            ),
+        ])
+    }
+
+    #[test]
+    fn node_credentials_are_rewritten_to_the_provisioned_ids() {
+        let mut nodes = json!([
+            {"name": "Webhook", "credentials": {"httpHeaderAuth": {"name": "Fleetix Hub webhook token"}}},
+            {"name": "Record", "credentials": {"postgres": {"id": "stale", "name": "Fleetix Hub publications"}}},
+            {"name": "Plain", "parameters": {}},
+        ]);
+        let mapping = BTreeMap::from([
+            (
+                "Fleetix Hub webhook token".to_owned(),
+                "hub-webhook".to_owned(),
+            ),
+            ("Fleetix Hub publications".to_owned(), "hub-db".to_owned()),
+        ]);
+        bind_credentials(&mut nodes, &mapping, &provisioned()).unwrap();
+        assert_eq!(
+            nodes[0]["credentials"]["httpHeaderAuth"],
+            json!({"id": "c1", "name": "hub-webhook"})
+        );
+        assert_eq!(
+            nodes[1]["credentials"]["postgres"],
+            json!({"id": "c2", "name": "hub-db"})
+        );
+        assert!(nodes[2].get("credentials").is_none());
+    }
+
+    #[test]
+    fn an_unmapped_reference_must_be_a_declared_credential_name() {
+        // Identity mapping: the reference name is the declared credential name.
+        let mut nodes = json!([
+            {"name": "Webhook", "credentials": {"httpHeaderAuth": {"name": "hub-webhook"}}},
+        ]);
+        bind_credentials(&mut nodes, &BTreeMap::new(), &provisioned()).unwrap();
+        assert_eq!(
+            nodes[0]["credentials"]["httpHeaderAuth"],
+            json!({"id": "c1", "name": "hub-webhook"})
+        );
+        // An undeclared reference and a type mismatch both fail closed.
+        let mut ghost = json!([
+            {"name": "Webhook", "credentials": {"httpHeaderAuth": {"name": "ghost"}}},
+        ]);
+        let err = bind_credentials(&mut ghost, &BTreeMap::new(), &provisioned()).unwrap_err();
+        assert!(err.to_string().contains("ghost"), "{err}");
+        let mut wrong_type = json!([
+            {"name": "Record", "credentials": {"httpHeaderAuth": {"name": "hub-db"}}},
+        ]);
+        assert!(bind_credentials(&mut wrong_type, &BTreeMap::new(), &provisioned()).is_err());
+    }
+
+    #[test]
+    fn covers_ignores_fields_n8n_adds_but_sees_managed_changes() {
+        let desired = json!({
+            "name": "w",
+            "nodes": [{"name": "Webhook", "type": "webhook", "position": [0, 0]}],
+            "settings": {"executionOrder": "v1"},
+        });
+        // n8n adds node ids, webhookId, active, versionId, checksum...
+        let live = json!({
+            "name": "w",
+            "active": false,
+            "versionId": "v1",
+            "checksum": "abc",
+            "nodes": [{
+                "id": "n1", "name": "Webhook", "type": "webhook",
+                "position": [0, 0], "webhookId": "hook-1",
+            }],
+            "settings": {"executionOrder": "v1", "timezone": "UTC"},
+        });
+        assert!(covers(&desired, &live));
+        // A managed change (position, node count, settings) is not covered.
+        let moved = json!({
+            "nodes": [{"name": "Webhook", "type": "webhook", "position": [10, 0]}],
+            "settings": {"executionOrder": "v1"},
+        });
+        assert!(!covers(&moved, &live));
+        let extra_node = json!({
+            "nodes": [
+                {"name": "Webhook", "type": "webhook", "position": [0, 0]},
+                {"name": "Extra", "type": "noop", "position": [0, 0]},
+            ],
+        });
+        assert!(!covers(&extra_node, &live));
+        let other_order = json!({"settings": {"executionOrder": "v0"}});
+        assert!(!covers(&other_order, &live));
+    }
+
+    #[test]
+    fn credential_prefix_is_applied_while_the_file_stays_the_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("token"), "abc123\n").unwrap();
+        let cred: state::Credential = serde_json::from_str(
+            r#"{"type":"httpHeaderAuth",
+                "data":{"name":"Authorization"},
+                "data_files":{"value":"token"},
+                "data_file_prefixes":{"value":"Bearer "}}"#,
+        )
+        .unwrap();
+        let data = resolve_data(&cred, dir.path()).unwrap();
+        assert_eq!(data["name"], "Authorization");
+        assert_eq!(data["value"], "Bearer abc123");
+    }
 
     #[test]
     fn target_prefers_recorded_id_and_refuses_ambiguity() {

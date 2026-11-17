@@ -19,6 +19,10 @@
         data.name = "X-Studio-Token";
         dataFiles.value = "/run/agenix/n8n-webhook";
       };
+      workflows.fleetix-hub-claim = {
+        file = "/nix/store/fixture-fleetix-hub-claim.json";
+        credentials."Fleetix Hub webhook token" = "studio-webhook";
+      };
     };
   };
 

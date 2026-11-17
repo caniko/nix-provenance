@@ -127,6 +127,109 @@ impl N8n {
         provenance_core::http::ensure_success(resp).context("credential update")?;
         Ok(())
     }
+
+    pub fn list_workflows(&self) -> Result<Vec<(String, String)>> {
+        let resp = self
+            .http
+            .get(format!("{}/rest/workflows", self.base))
+            .send()?;
+        let body: Value = provenance_core::http::json_ok(resp, "workflow list")?;
+        Ok(workflow_index(body))
+    }
+
+    /// One workflow with its nodes, connections, settings, `active` flag and
+    /// `versionId`.
+    pub fn workflow(&self, id: &str) -> Result<Value> {
+        let resp = self
+            .http
+            .get(format!("{}/rest/workflows/{id}", self.base))
+            .send()?;
+        let body: Value = provenance_core::http::json_ok(resp, "workflow get")?;
+        Ok(unwrap_data(body))
+    }
+
+    /// Import a workflow into the owner's personal project. n8n always creates
+    /// it inactive; the caller activates it.
+    pub fn create_workflow(&self, payload: &Value) -> Result<WorkflowState> {
+        let resp = self
+            .http
+            .post(format!("{}/rest/workflows", self.base))
+            .json(payload)
+            .send()?;
+        json_state(resp, "workflow create")
+    }
+
+    pub fn update_workflow(&self, id: &str, payload: &Value) -> Result<WorkflowState> {
+        let resp = self
+            .http
+            .patch(format!("{}/rest/workflows/{id}", self.base))
+            .json(payload)
+            .send()?;
+        json_state(resp, "workflow update")
+    }
+
+    /// Publish `version` (the workflow's current `versionId`) so the workflow
+    /// serves its triggers. n8n 2.x requires the version id here.
+    pub fn activate_workflow(&self, id: &str, version: &str) -> Result<()> {
+        let resp = self
+            .http
+            .post(format!("{}/rest/workflows/{id}/activate", self.base))
+            .json(&json!({ "versionId": version }))
+            .send()?;
+        provenance_core::http::ensure_success(resp).context("workflow activate")?;
+        Ok(())
+    }
+
+    pub fn deactivate_workflow(&self, id: &str) -> Result<()> {
+        let resp = self
+            .http
+            .post(format!("{}/rest/workflows/{id}/deactivate", self.base))
+            .json(&json!({}))
+            .send()?;
+        provenance_core::http::ensure_success(resp).context("workflow deactivate")?;
+        Ok(())
+    }
+}
+
+/// Identity and current version of a workflow n8n just wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowState {
+    pub id: String,
+    /// Null only when n8n did not version the write; activation then fails.
+    pub version: Option<String>,
+}
+
+fn json_state(resp: reqwest::blocking::Response, context: &str) -> Result<WorkflowState> {
+    let status = resp.status();
+    let body = resp.text()?;
+    if !status.is_success() {
+        // The body is n8n's validation message (node names, structure): the
+        // workflow carries credentials by id, never by value.
+        bail!("{context}: HTTP {status}: {body}");
+    }
+    let value: Value = serde_json::from_str(&body).context("decoding workflow response")?;
+    workflow_state(&unwrap_data(value))
+}
+
+fn workflow_state(v: &Value) -> Result<WorkflowState> {
+    Ok(WorkflowState {
+        id: v["id"]
+            .as_str()
+            .context("workflow response has no id")?
+            .to_owned(),
+        version: v["versionId"].as_str().map(str::to_owned),
+    })
+}
+
+/// Extract `(id, name)` pairs from a workflow list (`[..]`, `{data:[..]}` or
+/// `{count, data:[..]}`), which is the same envelope as the credential list.
+pub fn workflow_index(v: Value) -> Vec<(String, String)> {
+    let v = unwrap_data(v);
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|w| Some((w["id"].as_str()?.to_owned(), w["name"].as_str()?.to_owned())))
+        .collect()
 }
 
 #[cfg(test)]
@@ -153,5 +256,34 @@ mod tests {
                 vec![("1".to_owned(), "hook".to_owned())]
             );
         }
+    }
+
+    #[test]
+    fn workflow_lists_and_states_are_understood() {
+        let item = json!({"id": "w1", "name": "fleetix-hub-claim", "active": false});
+        for shape in [
+            json!([item]),
+            json!({"data": [item]}),
+            json!({"count": 1, "data": [item]}),
+        ] {
+            assert_eq!(
+                workflow_index(shape),
+                vec![("w1".to_owned(), "fleetix-hub-claim".to_owned())]
+            );
+        }
+        let state = workflow_state(&json!({
+            "id": "w1", "versionId": "v2", "activeVersionId": null, "nodes": [],
+        }))
+        .unwrap();
+        assert_eq!(state.id, "w1");
+        assert_eq!(state.version.as_deref(), Some("v2"));
+        // A workflow carries its own `data`-looking keys: `unwrap_data` must not
+        // mistake the object for an envelope, and unknown keys are ignored.
+        assert_eq!(
+            unwrap_data(json!({"id": "x", "data": {"id": "y"}}))["id"],
+            "x"
+        );
+        assert!(workflow_state(&json!({"name": "no id"})).is_err());
+        assert_eq!(workflow_state(&json!({"id": "x"})).unwrap().version, None);
     }
 }
