@@ -28,12 +28,38 @@
   notRuntime = f: !(lib.hasPrefix "/" f) || lib.hasPrefix builtins.storeDir f;
   secretFiles = [cfg.superadminSecretFile] ++ map (u: toString u.passwordFile) (lib.attrValues cfg.users);
 
+  # Length-prefixed so (studio, f/a/b) and (studio-f, a/b) never share an id.
+  variableCredential = ws: path:
+    pw.credentialName "windmill-variable:${toString (lib.stringLength ws)}:${ws}:${toString (lib.stringLength path)}:${path}";
+  declaredVariables = lib.concatLists (lib.mapAttrsToList (ws: w:
+    lib.mapAttrsToList (path: v: {inherit ws path v;}) w.variables)
+  cfg.workspaces);
+  variableFiles = map (d: toString d.v.valueFile) declaredVariables;
+  variableCredentials = map (d: "${variableCredential d.ws d.path}:${d.v.valueFile}") declaredVariables;
+
   stateFile = pkgs.writeText "windmill-provision-state.json" (builtins.toJSON {
     inherit (cfg) url;
     database = wm.database.name;
     superadmin_credential = superadminCredential;
     disable_default_admin = cfg.disableDefaultAdmin;
-    workspaces = lib.mapAttrs (_: w: {inherit (w) name;}) cfg.workspaces;
+    workspaces =
+      lib.mapAttrs (id: w: {
+        inherit (w) name;
+        scripts =
+          lib.mapAttrs (_: s: {
+            inherit (s) language summary;
+            content_file = toString s.contentFile;
+          })
+          w.scripts;
+        variables =
+          lib.mapAttrs (path: v: {
+            credential_name = variableCredential id path;
+            is_secret = v.isSecret;
+            inherit (v) description;
+          })
+          w.variables;
+      })
+      cfg.workspaces;
     users =
       lib.mapAttrs (name: u: {
         inherit (u) email workspaces admin;
@@ -79,9 +105,88 @@ in {
       default = {};
       description = "Workspaces to ensure, keyed by workspace id (`[a-z0-9_-]+`). The open-source server allows two besides `admins`.";
       type = types.attrsOf (types.submodule {
-        options.name = mkOption {
-          type = types.str;
-          description = "Workspace display name.";
+        options = {
+          name = mkOption {
+            type = types.str;
+            description = "Workspace display name.";
+          };
+
+          scripts = mkOption {
+            default = {};
+            description = ''
+              Scripts deployed into this workspace, keyed by full Windmill path.
+              The reconciler deploys a new version only when the content or
+              language differs from the latest deployed one; the version
+              history is Windmill's.
+            '';
+            example = lib.literalExpression ''
+              {
+                "f/fleetix_hub/comfy_generate" = {
+                  language = "bun";
+                  contentFile = ../registry/windmill/comfy_generate.ts;
+                  summary = "Submit ComfyUI prompts";
+                };
+              }
+            '';
+            type = types.attrsOf (types.submodule {
+              options = {
+                language = mkOption {
+                  type = types.strMatching "[a-z][a-z0-9_]*";
+                  description = "Windmill script language (`bun`, `python3`, `deno`, `nativets`, ...).";
+                };
+                contentFile = mkOption {
+                  type = types.oneOf [types.path types.str];
+                  description = ''
+                    File holding the script content. Scripts are code, not
+                    secrets, so a store path (a path literal such as
+                    `./procedure.ts`, or `toString`/`"''${pkgs.writeText ...}"`)
+                    is the normal choice; any readable absolute path works.
+                  '';
+                };
+                summary = mkOption {
+                  type = types.str;
+                  default = "";
+                  description = "Script summary shown in the Windmill UI.";
+                };
+              };
+            });
+          };
+
+          variables = mkOption {
+            default = {};
+            description = ''
+              Variables upserted in this workspace, keyed by full Windmill path.
+              The value is read from `valueFile` at run time and never enters
+              the Nix store, so `valueFile` must be a runtime path such as
+              `config.age.secrets.<name>.path`.
+            '';
+            example = lib.literalExpression ''
+              {
+                "f/fleetix_hub/hub_token" = {
+                  valueFile = config.age.secrets.fleetix-hub-windmill-token.path;
+                  description = "Fleetix Hub receipt bearer";
+                };
+              }
+            '';
+            type = types.attrsOf (types.submodule {
+              options = {
+                valueFile = mkOption {
+                  type = types.str;
+                  description = "Runtime file (not a store path) holding the variable value.";
+                };
+                isSecret = mkOption {
+                  type = types.bool;
+                  default = true;
+                  description = "Store the variable encrypted (Windmill secret).";
+                };
+                description = mkOption {
+                  type = types.str;
+                  default = "";
+                  description = "Variable description shown in the Windmill UI.";
+                };
+              };
+            });
+          };
         };
       });
     };
@@ -228,6 +333,14 @@ in {
         assertion = lib.all (u: lib.all (w: cfg.workspaces ? ${w}) u.workspaces) (lib.attrValues cfg.users);
         message = "services.windmill.provision.users.*.workspaces must be declared workspaces.";
       }
+      {
+        assertion = lib.all (w: lib.all (p: lib.stringLength p <= 255 && builtins.match "[ufg](/[A-Za-z0-9_-]+){2,}" p != null) (lib.attrNames w.scripts ++ lib.attrNames w.variables)) (lib.attrValues cfg.workspaces);
+        message = "services.windmill.provision.workspaces.*.{scripts,variables} must be keyed by a full Windmill path (`f/<folder>/<name>`, `u/<user>/<name>` or `g/<group>/<name>`; alphanumerics, `_` and `-`; at most 255 characters).";
+      }
+      {
+        assertion = !(lib.any notRuntime variableFiles);
+        message = "services.windmill.provision.workspaces.*.variables.*.valueFile must be an absolute runtime path outside ${builtins.storeDir}: the value is a secret.";
+      }
     ];
 
     # Service-root-secret exception: Windmill takes SUPERADMIN_SECRET from its
@@ -261,7 +374,7 @@ in {
     };
 
     systemd.services.windmill-provision = {
-      description = "Declaratively provision Windmill users, workspaces and tokens";
+      description = "Declaratively provision Windmill users, workspaces, scripts, variables and tokens";
       after = ["windmill-server.service" "postgresql.target"] ++ lockOrder;
       requires = ["windmill-server.service"] ++ lockOrder;
       partOf = ["windmill-server.service"];
@@ -275,7 +388,8 @@ in {
         UMask = "0077";
         LoadCredential =
           ["${superadminCredential}:${cfg.superadminSecretFile}"]
-          ++ pw.userPasswordCredentials "windmill-provision" cfg.users;
+          ++ pw.userPasswordCredentials "windmill-provision" cfg.users
+          ++ variableCredentials;
         ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir ${stateDir}/markers --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql";
       };
     };
@@ -296,6 +410,20 @@ in {
         ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-provision.service";
       };
     };
+    # Variable values are runtime secrets: an in-place rotation re-runs the
+    # oneshot so Windmill picks up the new value without a full restart.
+    systemd.paths.windmill-variables-rotate = mkIf (variableFiles != []) {
+      wantedBy = ["multi-user.target"];
+      pathConfig.PathChanged = watchPaths variableFiles;
+    };
+    systemd.services.windmill-variables-rotate = mkIf (variableFiles != []) {
+      description = "Re-run Windmill provisioning after a variable value file rotates";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-provision.service";
+      };
+    };
+
     systemd.paths.windmill-superadmin-rotate = {
       wantedBy = ["multi-user.target"];
       pathConfig.PathChanged = watchPaths [cfg.superadminSecretFile];

@@ -19,7 +19,7 @@ use state::State;
 #[derive(Parser, Debug)]
 #[command(
     name = "windmill-provision",
-    about = "Declarative Windmill bootstrap: superadmin env file, operator logins, workspaces, tokens",
+    about = "Declarative Windmill bootstrap: superadmin env file, operator logins, workspaces, scripts, variables, tokens",
     version
 )]
 struct Cli {
@@ -317,6 +317,61 @@ fn reconcile(
         }
     }
 
+    // Code and configuration next: a script is redeployed only when its
+    // content or language differs from the latest deployed version, and a
+    // variable only when its value, secrecy or description differs. The
+    // variable value comes from its runtime credential file, never the state.
+    for (ws, spec) in &state.workspaces {
+        for (path, script) in &spec.scripts {
+            let content = fs::read_to_string(&script.content_file)
+                .with_context(|| format!("reading {}", script.content_file.display()))?;
+            let deployed = wm.script(&superadmin, ws, path)?;
+            if script_unchanged(deployed.as_ref(), &script.language, &content) {
+                continue;
+            }
+            wm.create_script(
+                &superadmin,
+                ws,
+                &client::ScriptDeploy {
+                    path,
+                    language: &script.language,
+                    summary: &script.summary,
+                    content: &content,
+                    parent: deployed.as_ref().map(|d| d.hash.as_str()),
+                },
+            )?;
+            eprintln!("script {ws}/{path}: deployed");
+        }
+        for (path, variable) in &spec.variables {
+            let value = read_password_file(credential_dir.join(&variable.credential_name))?;
+            let deployed = wm.variable(&superadmin, ws, path)?;
+            if variable_unchanged(deployed.as_ref(), variable, &value) {
+                continue;
+            }
+            if deployed.is_some() {
+                wm.update_variable(
+                    &superadmin,
+                    ws,
+                    path,
+                    &value,
+                    variable.is_secret,
+                    &variable.description,
+                )?;
+                eprintln!("variable {ws}/{path}: updated");
+            } else {
+                wm.create_variable(
+                    &superadmin,
+                    ws,
+                    path,
+                    &value,
+                    variable.is_secret,
+                    &variable.description,
+                )?;
+                eprintln!("variable {ws}/{path}: created");
+            }
+        }
+    }
+
     for (label, token) in &state.tokens {
         // A kept token must still match the declared user/workspace/scopes.
         let spec_id = format!("windmill-token:{label}");
@@ -381,8 +436,32 @@ fn reconcile(
     Ok(())
 }
 
-const TOKEN_REGISTRY: &str = "tokens.json";
+/// True when the latest deployed version already holds exactly this code:
+/// Windmill keeps a version per deploy, so a no-op must not call create.
+fn script_unchanged(
+    deployed: Option<&client::DeployedScript>,
+    language: &str,
+    content: &str,
+) -> bool {
+    deployed.is_some_and(|d| d.language == language && d.content == content)
+}
 
+/// True when the deployed variable already holds exactly this declaration
+/// (value, secrecy and description). A secret Windmill refuses to decrypt
+/// (`value: null`) never matches, so it is written again.
+fn variable_unchanged(
+    deployed: Option<&client::DeployedVariable>,
+    declared: &state::Variable,
+    value: &str,
+) -> bool {
+    deployed.is_some_and(|d| {
+        d.is_secret == declared.is_secret
+            && d.description.as_deref().unwrap_or("") == declared.description
+            && d.value.as_deref() == Some(value)
+    })
+}
+
+const TOKEN_REGISTRY: &str = "tokens.json";
 /// Previous-run registry: only a missing file is an empty first run; an
 /// unreadable or corrupt one aborts so removals are never silently forgotten.
 fn read_registry<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T> {
@@ -626,6 +705,74 @@ mod tests {
             fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
             0o700
         );
+    }
+
+    #[test]
+    fn a_deploy_is_skipped_only_for_identical_code() {
+        let deployed = client::DeployedScript {
+            content: "export function main() {}".into(),
+            language: "bun".into(),
+            hash: "4376b64b1b94b9b9".into(),
+        };
+        assert!(script_unchanged(
+            Some(&deployed),
+            "bun",
+            "export function main() {}"
+        ));
+        assert!(!script_unchanged(
+            Some(&deployed),
+            "bun",
+            "export function main() { 1 }"
+        ));
+        assert!(!script_unchanged(
+            Some(&deployed),
+            "deno",
+            &deployed.content
+        ));
+        assert!(!script_unchanged(None, "bun", &deployed.content));
+    }
+
+    #[test]
+    fn a_variable_is_written_unless_value_secrecy_and_description_match() {
+        let declared = state::Variable {
+            credential_name: "password-hub".into(),
+            is_secret: true,
+            description: String::new(),
+        };
+        let live = |value: Option<&str>, is_secret: bool, description: Option<&str>| {
+            client::DeployedVariable {
+                value: value.map(str::to_owned),
+                is_secret,
+                description: description.map(str::to_owned),
+            }
+        };
+        assert!(variable_unchanged(
+            Some(&live(Some("tok"), true, None)),
+            &declared,
+            "tok"
+        ));
+        assert!(variable_unchanged(
+            Some(&live(Some("tok"), true, Some(""))),
+            &declared,
+            "tok"
+        ));
+        assert!(!variable_unchanged(
+            Some(&live(Some("tok"), true, None)),
+            &declared,
+            "rotated"
+        ));
+        // A secret Windmill did not decrypt cannot be compared: rewrite it.
+        assert!(!variable_unchanged(
+            Some(&live(None, true, None)),
+            &declared,
+            "tok"
+        ));
+        assert!(!variable_unchanged(
+            Some(&live(Some("tok"), false, None)),
+            &declared,
+            "tok"
+        ));
+        assert!(!variable_unchanged(None, &declared, "tok"));
     }
 
     #[test]

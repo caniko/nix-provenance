@@ -62,6 +62,8 @@
     import ./modules/test/windmill-bootstrap-vmtest.nix {
       inherit pkgs self;
       windmillPackage = atlasPkgs.windmill;
+      # 1.839.0 can deploy the Bun language the consumer uses.
+      scriptLanguage = "bun";
       nameSuffix = "-atlas";
     };
   n8nEval = evalSystem ./modules/test/n8n-provision-eval.nix;

@@ -8,6 +8,52 @@ use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use serde_json::json;
 
+/// The deployed fields the reconciler compares before deploying a new version.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct DeployedScript {
+    pub content: String,
+    pub language: String,
+    /// Hex version hash, the parent a new version must supersede.
+    pub hash: String,
+}
+
+/// The deployed fields of a variable. Windmill returns `value` as null for a
+/// secret it will not decrypt, and `description` may be absent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct DeployedVariable {
+    #[serde(default)]
+    pub value: Option<String>,
+    pub is_secret: bool,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Request body of `POST /scripts/create` (`NewScript`). Only the fields the
+/// tenant manages are set; Windmill keeps the previous version's settings for
+/// the rest (its serde defaults are applied field by field). Windmill refuses a
+/// deploy at a path that already holds a version unless `parent` names it.
+fn script_body(deploy: &ScriptDeploy<'_>) -> serde_json::Value {
+    json!({
+        "path": deploy.path,
+        "content": deploy.content,
+        "language": deploy.language,
+        "summary": deploy.summary,
+        "description": "",
+        "kind": "script",
+        "parent_hash": deploy.parent,
+    })
+}
+
+/// One script version to deploy.
+pub struct ScriptDeploy<'a> {
+    pub path: &'a str,
+    pub language: &'a str,
+    pub summary: &'a str,
+    pub content: &'a str,
+    /// Hash of the version this supersedes; `None` only for a new path.
+    pub parent: Option<&'a str>,
+}
+
 pub struct Windmill {
     base: String,
     http: Client,
@@ -128,6 +174,115 @@ impl Windmill {
         Ok(())
     }
 
+    /// The latest deployed version of the script at `path`, or `None` when the
+    /// path holds none.
+    pub fn script(&self, bearer: &str, ws: &str, path: &str) -> Result<Option<DeployedScript>> {
+        let resp = self
+            .http
+            .get(format!("{}/api/w/{ws}/scripts/get/p/{path}", self.base))
+            .bearer_auth(bearer)
+            .send()?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let body: serde_json::Value = provenance_core::http::json_ok(resp, "script")
+            .with_context(|| format!("reading {path}"))?;
+        serde_json::from_value(body)
+            .map(Some)
+            .with_context(|| format!("decoding script {path}"))
+    }
+
+    /// Deploy one version at its path, superseding `deploy.parent` (the hash
+    /// Windmill reported for the current version). Windmill keeps the version
+    /// history; the caller decides whether the content changed.
+    pub fn create_script(&self, bearer: &str, ws: &str, deploy: &ScriptDeploy<'_>) -> Result<()> {
+        let resp = self
+            .http
+            .post(format!("{}/api/w/{ws}/scripts/create", self.base))
+            .bearer_auth(bearer)
+            .json(&script_body(deploy))
+            .send()?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        // Windmill's body here is a deploy error (bad language, path conflict),
+        // never a credential: the script content is caller-supplied code.
+        let body = resp.text().unwrap_or_default();
+        bail!("deploying script {}: HTTP {status}: {body}", deploy.path);
+    }
+
+    /// The variable at `path` with its value decrypted (Windmill's `get` does
+    /// that for secret variables unless asked not to), or `None` when absent.
+    pub fn variable(&self, bearer: &str, ws: &str, path: &str) -> Result<Option<DeployedVariable>> {
+        let resp = self
+            .http
+            .get(format!("{}/api/w/{ws}/variables/get/{path}", self.base))
+            .bearer_auth(bearer)
+            .send()?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let body: serde_json::Value = provenance_core::http::json_ok(resp, "variable")
+            .with_context(|| format!("reading {path}"))?;
+        serde_json::from_value(body)
+            .map(Some)
+            .with_context(|| format!("decoding variable {path}"))
+    }
+
+    pub fn create_variable(
+        &self,
+        bearer: &str,
+        ws: &str,
+        path: &str,
+        value: &str,
+        is_secret: bool,
+        description: &str,
+    ) -> Result<()> {
+        let body = json!({
+            "path": path,
+            "value": value,
+            "is_secret": is_secret,
+            "description": description,
+        });
+        let resp = self
+            .http
+            .post(format!("{}/api/w/{ws}/variables/create", self.base))
+            .bearer_auth(bearer)
+            .json(&body)
+            .send()?;
+        // No body in the error: it carries the variable's plaintext value on
+        // some Windmill errors, and the value is the whole point of the file.
+        provenance_core::http::ensure_success(resp)
+            .with_context(|| format!("creating variable {path}"))?;
+        Ok(())
+    }
+
+    pub fn update_variable(
+        &self,
+        bearer: &str,
+        ws: &str,
+        path: &str,
+        value: &str,
+        is_secret: bool,
+        description: &str,
+    ) -> Result<()> {
+        let body = json!({
+            "value": value,
+            "is_secret": is_secret,
+            "description": description,
+        });
+        let resp = self
+            .http
+            .post(format!("{}/api/w/{ws}/variables/update/{path}", self.base))
+            .bearer_auth(bearer)
+            .json(&body)
+            .send()?;
+        provenance_core::http::ensure_success(resp)
+            .with_context(|| format!("updating variable {path}"))?;
+        Ok(())
+    }
+
     pub fn login(&self, email: &str, password: &str) -> Result<String> {
         let resp = self
             .http
@@ -231,5 +386,45 @@ mod tests {
         assert!(token_status_valid(StatusCode::OK).unwrap());
         assert!(token_status_valid(StatusCode::FORBIDDEN).unwrap());
         assert!(token_status_valid(StatusCode::BAD_GATEWAY).is_err());
+    }
+
+    #[test]
+    fn script_create_body_supersedes_the_deployed_version() {
+        let creating = script_body(&ScriptDeploy {
+            path: "f/a/b",
+            language: "bun",
+            summary: "sum",
+            content: "code",
+            parent: None,
+        });
+        assert_eq!(creating["path"], "f/a/b");
+        assert_eq!(creating["language"], "bun");
+        assert_eq!(creating["summary"], "sum");
+        assert_eq!(creating["content"], "code");
+        assert_eq!(creating["kind"], "script");
+        assert!(creating["parent_hash"].is_null());
+        // Redeploying over an existing path must name the version it supersedes,
+        // or Windmill answers "Path conflict for <path> with non-archived hash".
+        let redeploying = script_body(&ScriptDeploy {
+            path: "f/a/b",
+            language: "bun",
+            summary: "sum",
+            content: "code2",
+            parent: Some("4376b64b1b94b9b9"),
+        });
+        assert_eq!(redeploying["parent_hash"], "4376b64b1b94b9b9");
+    }
+
+    #[test]
+    fn deployed_scripts_carry_their_version_hash() {
+        // 1.601 nests the script, 1.839 flattens it: both expose the fields.
+        for body in [
+            json!({"hash": "4376b64b1b94b9b9", "content": "c", "language": "bun", "starred": null}),
+            json!({"hash": "4376b64b1b94b9b9", "content": "c", "language": "bun", "is_draft": false}),
+        ] {
+            let script: DeployedScript = serde_json::from_value(body).unwrap();
+            assert_eq!(script.hash, "4376b64b1b94b9b9");
+            assert_eq!(script.language, "bun");
+        }
     }
 }
