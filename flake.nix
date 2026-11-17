@@ -232,6 +232,7 @@
       # `rauthyServer` (the server service) and `rauthy` (the provisioner)
       # until nixpkgs ships `services.rauthy` on the supported branch.
       nixosModules = {
+        t3codeCredentials = import ./nix/modules/adapter/t3code-credentials.nix {inherit self;};
         oauth = import ./nix/modules/oauth.nix {inherit self;};
         immich = import ./nix/modules/service-oidc/immich.nix {inherit self;};
         rauthyServer = import ./nix/modules/idp/rauthy-server.nix;
@@ -253,6 +254,7 @@
       };
 
       homeModules = {
+        claude-code = import ./nix/modules/home/claude-code.nix {inherit self;};
         rbw = import ./nix/modules/home/rbw.nix {inherit self;};
         proton-vpn = import ./nix/modules/home/proton-vpn.nix {inherit self;};
         oauth = import ./nix/modules/home/oauth.nix {inherit self;};
