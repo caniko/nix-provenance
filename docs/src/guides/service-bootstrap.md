@@ -13,7 +13,18 @@ services.windmill = {
   provision = {
     enable = true;
     superadminSecretFile = config.age.secrets.windmill-superadmin.path;
-    workspaces.studio.name = "Studio";
+    workspaces.studio = {
+      name = "Studio";
+      scripts."f/fleetix_hub/comfy_generate" = {
+        language = "bun";
+        contentFile = ./registry/windmill/comfy_generate.ts;
+        summary = "Submit ComfyUI prompts";
+      };
+      variables."f/fleetix_hub/hub_token" = {
+        valueFile = config.age.secrets.fleetix-hub-windmill-token.path;
+        description = "Fleetix Hub receipt bearer";
+      };
+    };
     users.can = {
       email = "can@example.com";
       passwordFile = config.age.secrets.windmill-can.path;
@@ -41,10 +52,26 @@ services.windmill = {
   (default, requires an `admin = true` user). Workspaces and membership use the
   superadmin bearer token. Open-source Windmill allows two workspaces besides
   `admins`.
+- Scripts are keyed by full Windmill path (`f/<folder>/<name>`,
+  `u/<user>/<name>` or `g/<group>/<name>`; alphanumerics, `_` and `-`).
+  `contentFile` is code, so a store path (a path literal, or
+  `toString`/`"''${pkgs.writeText ...}"`) is normal. The reconciler reads the
+  latest deployed version and calls `scripts/create` only when the content or
+  language differs, so Windmill's version history stays one entry per real
+  change. The script's `tag`, `schema`, `lock`, dependencies and permissions
+  are Windmill's: declaring `summary` and `language` is all the tenant owns.
+- Variables are upserted by full path. `valueFile` is a runtime secret
+  (`config.age.secrets.<name>.path`), loaded as a systemd credential; the value
+  is read at run time, sent to Windmill, and never enters the store, the state
+  file, argv or logs. A path unit re-runs provisioning when the file rotates.
+  The reconciler compares the value, `isSecret` and `description` with
+  Windmill's read-back (which decrypts secrets for a superadmin) and writes only
+  on a difference.
 - Tokens are minted by logging in as `user`, stored at `path`
   (default `/var/lib/windmill-provision/tokens/<label>`) with the declared
   `owner`/`group`/`mode`, kept while Windmill accepts them and re-minted
-  otherwise.
+  otherwise. `owner`/`group` are Unix names or ids, so a consumer running as
+  its own system user (for example `fleetix-hub`) reads its token directly.
 
 The VM test runs against both the default nixpkgs windmill (1.601.1) and the
 one Canix/Atlas runs (1.839.0, test-only input `nixpkgs-windmill`), because the
@@ -90,8 +117,14 @@ services.n8n = {
     };
     credentials.studio-webhook = {
       type = "httpHeaderAuth";
-      data.name = "X-Studio-Token";
+      data.name = "Authorization";
       dataFiles.value = config.age.secrets.n8n-webhook.path;
+      # The Header Auth value: "Bearer <raw token file content>".
+      dataFilePrefixes.value = "Bearer ";
+    };
+    workflows.fleetix-hub-claim = {
+      file = ./n8n/workflows/fleetix-hub-claim.json;
+      credentials."Fleetix Hub webhook token" = "studio-webhook";
     };
   };
 };
@@ -105,7 +138,25 @@ services.n8n = {
 - `n8n-provision.service` logs in as the owner and upserts credentials by name
   through the internal REST API (n8n's public API has no credential list).
   A digest marker per credential keeps reruns from rewriting unchanged
-  credentials. `httpHeaderAuth` takes the fields `name` and `value`.
+  credentials. `httpHeaderAuth` takes the fields `name` and `value`;
+  `dataFilePrefixes.<field>` prepends a constant to the file's value at run
+  time, so the raw token file can stay exactly that (no `Bearer ` inside the
+  secret) and the prefix stays visible in the declaration.
+- Workflows are imported by the declared name (the file's own `name`, `id` and
+  `active` are ignored) from an export's `nodes`, `connections`, `settings` and
+  `meta`. Before writing, every node credential reference is rewritten from its
+  JSON name to the provisioned credential's id: `credentials."<name in the
+  JSON>" = "<declared credential>"`, and a reference with no entry must itself
+  be a declared credential name. The node's credential type must match the
+  declared credential's `type`, so a postgres node cannot be handed a Header
+  Auth credential.
+- Idempotency comes from the live copy, not a marker: the reconciler reads the
+  workflow back and writes only when a managed field differs, so an edit made in
+  the n8n UI is put back on the next run without a redeclaration. The
+  activation converges separately: `active = true` (default) publishes the
+  version just written, `active = false` deactivates a running workflow.
+  Deactivation is the only removal: a workflow dropped from the declaration is
+  left in n8n.
 
 ## Known limits
 
@@ -132,3 +183,18 @@ services.n8n = {
   created are recorded for pruning. Removing an adopted one from the
   declaration leaves it in n8n with the last declared values; delete it by
   hand.
+- Windmill script drift is only detected through `content` and `language`: a
+  `summary` edit in the declaration does not redeploy a version, and a script
+  edited in the Windmill UI is put back on the next run. Version history and
+  old versions are Windmill's to prune.
+- A Windmill script keeps whatever `tag`, `schema`, `lock`, permissions and
+  triggers it already has; the tenant only writes path, content, language and
+  summary. A script that must run on a tagged worker pool needs that tag set in
+  Windmill (or a `scripts` option for it, which this does not have yet).
+- n8n workflows are matched by their globally unique name. Renaming a workflow
+  in n8n while it stays declared imports a second one under the declared name;
+  the renamed copy is left in place. A workflow dropped from the declaration is
+  left in n8n untouched — not deactivated and never deleted.
+- n8n credentials referenced by a declared workflow must be provisioned in the
+  same declaration; a workflow whose reference resolves to nothing fails the
+  run instead of importing a workflow that cannot execute.

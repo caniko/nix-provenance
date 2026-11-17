@@ -4,6 +4,20 @@
 
 ### Added
 
+- `services.n8n.provision.dataFilePrefixes` builds a credential field from
+  a raw token file and a runtime prefix (`Bearer ` plus an age-decrypted
+  token), so a Header Auth credential can hold `Bearer <token>` without the
+  prefix or the token entering the store.
+- `services.windmill.provision.workspaces.*.scripts` deploys Windmill scripts
+  from a content file and pushes a new version only when the content or
+  language differs from the latest deployed one.
+  `workspaces.*.variables` creates or updates workspace variables whose value
+  is read from a runtime file (systemd credential), never the store, and
+  rotates with it.
+- `services.n8n.provision.workflows` imports or updates n8n workflows by name
+  from a JSON export, rewrites each node's credential references to the
+  provisioned credential ids, and activates or deactivates them to match
+  `active`. An unchanged declaration writes nothing; a UI edit is reverted.
 - `services.immich.provision.apiKeys` declares admin-owned Immich API keys.
   `immich-provision` creates each key with its permissions, writes the secret
   once to a mode-0600 file under its state directory for `LoadCredential=`
