@@ -904,6 +904,10 @@ in
         grep -q 'set-initial-primary-password can --primary-from' "$script"
         grep -q 'ssh-public-key ensure can hm-identity' "$script"
         grep -q 'set-posix-password noreply' "$script"
+        # gidNumber posix-enables the person before its password is set.
+        grep -q 'posix-extend noreply --gid-number 1010 --login-shell /bin/sh' "$script"
+        test "$(grep -n 'posix-extend noreply' "$script" | cut -d: -f1)" -lt "$(grep -n 'set-posix-password noreply' "$script" | cut -d: -f1)"
+        ! grep -q 'posix-extend can' "$script"
         printf '%s' ${lib.escapeShellArg serviceConfig} | grep -q '/run/agenix/primary-can' \
           || { echo "kanidm-credentials: initial primary password LoadCredential missing" >&2; exit 1; }
         grep -q 'service-account create stalwart-ldap' "$script"

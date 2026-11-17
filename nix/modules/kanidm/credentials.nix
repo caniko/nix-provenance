@@ -131,6 +131,12 @@
               fi
             fi
           ''}
+          ${lib.optionalString (cfg.posixAccounts.${name}.gidNumber != null) ''
+            if ! idm posix-extend ${lib.escapeShellArg name} --gid-number ${toString cfg.posixAccounts.${name}.gidNumber}${lib.optionalString (cfg.posixAccounts.${name}.loginShell != null) " --login-shell ${lib.escapeShellArg cfg.posixAccounts.${name}.loginShell}"} >/dev/null; then
+              echo "kanidm-credentials: failed to posix-enable ${name}" >&2
+              rc=1
+            fi
+          ''}
           if ! idm set-posix-password ${lib.escapeShellArg name} --posix-from "$cred/posix-${name}" >/dev/null; then
             echo "kanidm-credentials: failed to set POSIX password for ${name}" >&2
             rc=1
@@ -230,14 +236,25 @@ in {
     posixAccounts = mkOption {
       default = {};
       description = ''
-        Persons to set a POSIX/LDAP password on. Each must already be
-        posix-enabled by kanidm-provision (`enableUnix`); the password is
-        re-asserted idempotently on every reconcile.
+        Persons to set a POSIX/LDAP password on. The password is re-asserted
+        idempotently on every reconcile. kanidm-provision does not apply
+        `enableUnix`, so set `gidNumber` to have this service posix-enable the
+        person first; without it the person must already be posix-enabled.
       '';
       type = types.attrsOf (types.submodule {
         options.passwordFile = mkOption {
           type = types.path;
           description = "File whose contents become the account's POSIX password.";
+        };
+        options.gidNumber = mkOption {
+          type = types.nullOr types.ints.positive;
+          default = null;
+          description = "POSIX gidNumber to assert (`posix-extend`) before setting the password.";
+        };
+        options.loginShell = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "POSIX login shell to assert together with `gidNumber`.";
         };
         options.initialPasswordFile = mkOption {
           type = types.nullOr types.path;
