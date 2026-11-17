@@ -4,6 +4,12 @@
 
 ### Added
 
+- `homeModules.antigravity` (`nix-provenance.antigravity.googleAuth`) registers
+  one Antigravity Google sign-in in every listed agy profile. A user oneshot
+  copies agy's `acp_token.json` from a runtime agenix file into each
+  `GEMINI_HOME` as a private 0600 file, refuses a file without a refresh
+  grant, and leaves an unchanged copy alone, since agy rewrites it on every
+  launch. A path unit re-registers it when the source changes.
 - `services.immich.provision.apiKeys` declares admin-owned Immich API keys.
   `immich-provision` creates each key with its permissions, writes the secret
   once to a mode-0600 file under its state directory for `LoadCredential=`

@@ -294,6 +294,73 @@ in
           touch $out
         '';
 
+    # The Antigravity token reaches each profile as a private copy, never through argv.
+    antigravity-google-auth-eval = let
+      tokenFile = "/tmp/nix-provenance-antigravity-google-token";
+      evaluated = lib.evalModules {
+        modules = [
+          ({lib, ...}: {
+            options.systemd.user.services = lib.mkOption {
+              type = lib.types.attrsOf lib.types.anything;
+              default = {};
+            };
+            options.systemd.user.paths = lib.mkOption {
+              type = lib.types.attrsOf lib.types.anything;
+              default = {};
+            };
+            options.assertions = lib.mkOption {
+              type = lib.types.listOf lib.types.anything;
+              default = [];
+            };
+          })
+          (import ./modules/home/antigravity.nix {inherit self;})
+          {
+            nix-provenance.antigravity.googleAuth = {
+              enable = true;
+              inherit tokenFile;
+              profileDirectories = ["/tmp/nix-provenance-antigravity-a" "/tmp/nix-provenance-antigravity-b"];
+            };
+          }
+        ];
+        specialArgs = {inherit pkgs;};
+      };
+      service = evaluated.config.systemd.user.services.nix-provenance-antigravity-google-auth;
+      path = evaluated.config.systemd.user.paths.nix-provenance-antigravity-google-auth;
+    in
+      assert lib.all (entry: entry.assertion) evaluated.config.assertions;
+      assert service.Service.Type == "oneshot";
+      assert builtins.elem "agenix.service" service.Unit.After;
+      assert path.Path.PathChanged == tokenFile;
+      assert !(builtins.elem "agenix.service" (path.Unit.After or []));
+        runCommand "antigravity-google-auth-eval" {} ''
+          exec_start=${service.Service.ExecStart}
+          if grep -Fq 'test-refresh-token' "$exec_start"; then
+            echo "antigravity: token leaked into the generated command" >&2
+            exit 1
+          fi
+          a=/tmp/nix-provenance-antigravity-a/antigravity-acp/acp_token.json
+          b=/tmp/nix-provenance-antigravity-b/antigravity-acp/acp_token.json
+          for invalid in '{"client_id":"id","client_secret":"secret"}' '{"client_id":"id","client_secret":"secret","refresh_token":7}'; do
+            printf '%s' "$invalid" > ${lib.escapeShellArg tokenFile}
+            if "$exec_start" 2>/dev/null; then
+              echo "antigravity: accepted a token without a refresh grant: $invalid" >&2
+              exit 1
+            fi
+          done
+          test ! -e "$a"
+          printf '{"client_id":"id","client_secret":"secret","refresh_token":"test-refresh-token"}' > ${lib.escapeShellArg tokenFile}
+          "$exec_start"
+          cmp -s ${lib.escapeShellArg tokenFile} "$a"
+          cmp -s ${lib.escapeShellArg tokenFile} "$b"
+          test "$(stat -c %a "$a")" = 600
+          test "$(stat -c %a "$(dirname "$a")")" = 700
+          # An unchanged token keeps agy's own copy in place.
+          inode=$(stat -c %i "$a")
+          "$exec_start"
+          test "$(stat -c %i "$a")" = "$inode"
+          touch $out
+        '';
+
     # Lint each crate against its isolated deps.
     identity-clippy = mkClippy "identity-cli";
     oauth-clippy = mkClippy "provenance-oauth";
