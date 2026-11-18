@@ -47,6 +47,37 @@
 
 ### Fixed
 
+- n8n provisioning retries a transient failure on its own: a failed
+  `Requires=` dependency makes systemd cancel the reconciling job before the
+  unit runs, so `Restart=` on either oneshot never sees it and the pair stayed
+  down until someone started it by hand. `n8n-provision-retry.timer` re-runs the
+  pair while provisioning is not active — a start job pulls the failed pre-pass
+  in with it — and goes idle once it is. `Requires=`/`After=` still make the
+  pre-pass fail-closed.
+- `n8n-deactivate` reads its own state file, which holds only the URL, the
+  owner and the names declared inactive. A declaration the reconciler rejects
+  (a credential name over n8n's 128-character limit, a missing field credential)
+  used to make the pre-pass exit before contacting n8n, leaving the webhook it
+  should unpublish serving.
+- An n8n workflow export that declares `executionTimeout` equal to the instance
+  default (`EXECUTIONS_TIMEOUT`, `-1` when unset) no longer PATCHes on every
+  run: n8n 2.39.6 deletes that value on every save (`removeDefaultValues`), so
+  the declaration is normalised against the instance default before it is
+  compared or sent.
+- The Windmill `// tag` badge check no longer treats prose as a badge:
+  Windmill 1.839.0 ignores a value with whitespace or over 50 bytes
+  (`// tag this for review`) and keeps scanning for the first valid one, and the
+  check mirrors it.
+- An n8n export's literal-credential check now also runs at evaluation for a
+  `file` path literal, so a literal `Authorization`/`apiKey`/`password` fails the
+  build with the workflow name and field instead of reaching the Nix store
+  first. Only path literals are checked that early; the runtime check still
+  covers derivation outputs and plain strings, which cannot be read without
+  IFD.
+- The `executeWorkflow` dependency predicate reads only `parameters.source`:
+  n8n never consults the locator's `mode`, so a `mode: "url"` locator with a
+  `database` source is a local id it validates, and is now treated as one
+  instead of being skipped.
 - n8n deactivates a workflow declared `active = false` in
   `n8n-deactivate.service`, a oneshot that loads only the owner password and
   runs before the unit that loads the field credentials. systemd resolves a

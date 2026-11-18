@@ -11,10 +11,39 @@ use serde::Deserialize;
 pub struct State {
     pub url: String,
     pub owner: Owner,
+    /// The instance default n8n drops from a saved workflow's `executionTimeout`
+    /// (`EXECUTIONS_TIMEOUT`, `-1` when unset). Absent from an older state: the
+    /// value is then compared as written.
+    #[serde(default)]
+    pub execution_timeout: Option<i64>,
     #[serde(default)]
     pub credentials: BTreeMap<String, Credential>,
     #[serde(default)]
     pub workflows: BTreeMap<String, Workflow>,
+}
+
+/// The owner-only pre-pass state: the URL, the owner and the names declared
+/// inactive, and nothing the reconciler validates.
+///
+/// A credential declaration the reconciler must reject (an over-long name, a
+/// missing field credential) must not keep the pre-pass from unpublishing a
+/// workflow the declaration switched off.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeactivateState {
+    pub url: String,
+    pub owner: DeactivateOwner,
+    /// Workflow names declared `active = false`.
+    #[serde(default)]
+    pub inactive_workflows: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeactivateOwner {
+    pub email: String,
+    /// systemd credential holding the owner's password.
+    pub credential_name: String,
 }
 
 /// A declared workflow: a JSON export imported under `name`.

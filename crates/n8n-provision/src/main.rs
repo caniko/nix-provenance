@@ -66,7 +66,9 @@ enum Command {
     /// Deactivate every workflow declared `active = false`. Runs in its own
     /// oneshot that loads only the owner password, because systemd resolves a
     /// unit's whole `LoadCredential=` before ExecStart: a missing credential
-    /// file would otherwise keep a live webhook in place.
+    /// file would otherwise keep a live webhook in place. Its state file holds
+    /// only the URL, the owner and the inactive names, so a declaration the
+    /// reconciler rejects cannot stop it.
     Deactivate {
         #[arg(long)]
         state: PathBuf,
@@ -83,6 +85,14 @@ fn load_state(path: &Path) -> Result<State> {
     let state: State = serde_json::from_str(&raw).context("parsing state")?;
     state.validate()?;
     Ok(state)
+}
+
+/// The pre-pass state: parsed as declared, never validated as a declaration
+/// (that is the reconciler's job, and its failures must not forestall an
+/// unpublish).
+fn load_deactivate_state(path: &Path) -> Result<state::DeactivateState> {
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&raw).context("parsing deactivate state")
 }
 
 fn main() -> Result<()> {
@@ -124,7 +134,11 @@ fn main() -> Result<()> {
             state,
             credential_dir,
             ready_timeout,
-        } => deactivate(&load_state(&state)?, &credential_dir, ready_timeout),
+        } => deactivate(
+            &load_deactivate_state(&state)?,
+            &credential_dir,
+            ready_timeout,
+        ),
     }
 }
 
@@ -252,9 +266,10 @@ fn reconcile(
     // webhook serving. The `n8n-deactivate` unit does this before this one even
     // starts (it loads only the owner password); repeating it here puts back a
     // workflow reactivated out of band.
-    if state.workflows.values().any(|workflow| !workflow.active) {
+    let inactive = inactive_names(state);
+    if !inactive.is_empty() {
         let live = WorkflowIndex::new(&n8n.list_workflows()?);
-        deactivate_declared(&n8n, state, &live)?;
+        deactivate_declared(&n8n, &inactive, &live)?;
     }
 
     let existing = n8n.list_credentials()?;
@@ -338,10 +353,15 @@ fn reconcile(
 /// before the unit that loads the field credentials can even start.
 ///
 /// It reads no credential value beyond the owner password and never touches the
-/// credential registry, so neither a corrupt registry nor a missing field
-/// credential file keeps a webhook the declaration turned off serving.
-fn deactivate(state: &State, credential_dir: &Path, ready_timeout: u64) -> Result<()> {
-    if !state.workflows.values().any(|workflow| !workflow.active) {
+/// credential registry or the credential declarations, so neither a corrupt
+/// registry nor a missing field credential file keeps a webhook the declaration
+/// turned off serving.
+fn deactivate(
+    state: &state::DeactivateState,
+    credential_dir: &Path,
+    ready_timeout: u64,
+) -> Result<()> {
+    if state.inactive_workflows.is_empty() {
         return Ok(());
     }
     let n8n = N8n::new(&state.url)?;
@@ -349,7 +369,7 @@ fn deactivate(state: &State, credential_dir: &Path, ready_timeout: u64) -> Resul
     let password = read_password_file(credential_dir.join(&state.owner.credential_name))?;
     n8n.login(&state.owner.email, &password)?;
     let live = WorkflowIndex::new(&n8n.list_workflows()?);
-    deactivate_declared(&n8n, state, &live)
+    deactivate_declared(&n8n, &state.inactive_workflows, &live)
 }
 
 fn save_registry(
@@ -368,18 +388,15 @@ struct ProvisionedCredential {
     kind: String,
 }
 
-/// Deactivate every existing workflow declared `active = false`, before any
-/// other step: publishing state is the only thing a later failure must not
+/// Deactivate every existing workflow carrying a name declared inactive, before
+/// any other step: publishing state is the only thing a later failure must not
 /// strand, because a live webhook outlives a failed provision run.
 ///
-/// Every live workflow carrying a deactivated declaration's name is
-/// deactivated: n8n allows two workflows with one name, so picking one of them
-/// would leave the other serving.
-fn deactivate_declared(n8n: &N8n, state: &State, live: &WorkflowIndex) -> Result<()> {
-    for (name, workflow) in &state.workflows {
-        if workflow.active {
-            continue;
-        }
+/// Every live workflow carrying the name is deactivated: n8n allows two
+/// workflows with one name, so picking one of them would leave the other
+/// serving.
+fn deactivate_declared(n8n: &N8n, names: &[String], live: &WorkflowIndex) -> Result<()> {
+    for name in names {
         for id in live.ids(name) {
             if !n8n.workflow(id)?["active"].as_bool().unwrap_or(false) {
                 continue;
@@ -389,6 +406,16 @@ fn deactivate_declared(n8n: &N8n, state: &State, live: &WorkflowIndex) -> Result
         }
     }
     Ok(())
+}
+
+/// The names declared `active = false`.
+fn inactive_names(state: &State) -> Vec<String> {
+    state
+        .workflows
+        .iter()
+        .filter(|(_, workflow)| !workflow.active)
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 /// Import or update every declared workflow by name, bind its credential
@@ -506,7 +533,7 @@ fn read_declared(state: &State) -> Result<Vec<DeclaredWorkflow>> {
                 .with_context(|| format!("parsing workflow file {}", workflow.file.display()))?;
             Ok(DeclaredWorkflow {
                 name: name.clone(),
-                payload: workflow_payload(name, &file)
+                payload: workflow_payload(name, &file, state.execution_timeout)
                     .with_context(|| format!("workflow file {}", workflow.file.display()))?,
             })
         })
@@ -644,7 +671,9 @@ fn executed_references(payload: &Value) -> Vec<String> {
 ///
 /// The predicate is n8n's own (`WorkflowValidationService`): a disabled node is
 /// skipped, only the `database` source (the default) names a workflow on this
-/// instance, and an `=` value is evaluated at run time.
+/// instance, and an `=` value is evaluated at run time. n8n reads only
+/// `workflowId.value` (or the string), never the locator's `mode`, so a "by
+/// URL" locator without a remote `source` is still a local id it validates.
 fn executed_reference(node: &Value) -> Option<&str> {
     if node.get("type").and_then(Value::as_str) != Some(EXECUTE_WORKFLOW) {
         return None;
@@ -660,13 +689,7 @@ fn executed_reference(node: &Value) -> Option<&str> {
         return None;
     }
     let value = match parameters.get("workflowId")? {
-        // "By URL" names another instance's workflow, never one here.
-        Value::Object(object) => {
-            if object.get("mode").and_then(Value::as_str) == Some("url") {
-                return None;
-            }
-            object.get("value")?.as_str()?
-        }
+        Value::Object(object) => object.get("value")?.as_str()?,
         Value::String(value) => value.as_str(),
         _ => return None,
     };
@@ -720,7 +743,7 @@ fn bind_executed_workflows(payload: &mut Value, caller: &str, index: &WorkflowIn
 
 /// The import payload: the managed fields of a workflow export, renamed to the
 /// declared name. `active`, `id` and `pinData` are never taken from the file.
-fn workflow_payload(name: &str, file: &Value) -> Result<Value> {
+fn workflow_payload(name: &str, file: &Value, default_timeout: Option<i64>) -> Result<Value> {
     // The export is copied into the Nix store: a literal credential in it would
     // be world-readable and kept forever, so refuse it before importing.
     if let Some(key) = literal_secret(file) {
@@ -740,7 +763,7 @@ fn workflow_payload(name: &str, file: &Value) -> Result<Value> {
     if let Some(settings) = file.get("settings")
         && !settings.is_null()
     {
-        payload["settings"] = settings_payload(settings)?;
+        payload["settings"] = settings_payload(settings, default_timeout)?;
     }
     if let Some(meta) = file.get("meta")
         && !meta.is_null()
@@ -769,12 +792,22 @@ const RESETTABLE_SETTINGS: [&str; 6] = [
 /// The declared settings of a workflow export, checked to be an object. A key
 /// declared as n8n's own reset token means "default", exactly as the n8n UI
 /// records it, so it is dropped: n8n never stores that value.
-fn settings_payload(declared: &Value) -> Result<Value> {
+///
+/// `executionTimeout` is dropped when it names the instance default: n8n's
+/// `removeDefaultValues` deletes it on every save, so the live copy never holds
+/// it and a comparison against the declaration would PATCH on every run.
+fn settings_payload(declared: &Value, default_timeout: Option<i64>) -> Result<Value> {
     let declared = declared.as_object().context("settings must be an object")?;
     Ok(Value::Object(
         declared
             .iter()
-            .filter(|(_, value)| value.as_str() != Some(SETTINGS_RESET))
+            .filter(|(key, value)| {
+                if value.as_str() == Some(SETTINGS_RESET) {
+                    return false;
+                }
+                !(key.as_str() == "executionTimeout"
+                    && default_timeout.is_some_and(|default| value.as_i64() == Some(default)))
+            })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
     ))
@@ -1067,7 +1100,7 @@ mod tests {
             "active": true,
             "id": "not-ours",
         });
-        let payload = workflow_payload("fleetix-hub-claim", &file).unwrap();
+        let payload = workflow_payload("fleetix-hub-claim", &file, None).unwrap();
         assert_eq!(payload["name"], "fleetix-hub-claim");
         assert_eq!(payload["nodes"], file["nodes"]);
         assert_eq!(payload["connections"], file["connections"]);
@@ -1078,8 +1111,8 @@ mod tests {
         // The file's activation state and id never decide n8n's.
         assert!(payload.get("active").is_none());
         assert!(payload.get("id").is_none());
-        assert!(workflow_payload("x", &json!({"connections": {}})).is_err());
-        assert!(workflow_payload("x", &json!({"nodes": []})).is_err());
+        assert!(workflow_payload("x", &json!({"connections": {}}), None).is_err());
+        assert!(workflow_payload("x", &json!({"nodes": []}), None).is_err());
     }
 
     #[test]
@@ -1092,13 +1125,14 @@ mod tests {
                 {"name": "Authorization", "value": "Bearer abc123"},
             ]}}}]),
         );
-        let err = workflow_payload("w", &literal).unwrap_err();
+        let err = workflow_payload("w", &literal, None).unwrap_err();
         assert!(err.to_string().contains("authorization"), "{err}");
         // A direct key is caught too.
         assert!(
             workflow_payload(
                 "w",
-                &payload(json!([{"parameters": {"password": "hunter2"}}]))
+                &payload(json!([{"parameters": {"password": "hunter2"}}])),
+                None
             )
             .is_err()
         );
@@ -1114,8 +1148,75 @@ mod tests {
                 {"name": "offset", "value": "0"},
             ]}}}])),
         ] {
-            workflow_payload("w", &ok).unwrap();
+            workflow_payload("w", &ok, None).unwrap();
         }
+    }
+
+    #[test]
+    fn the_pre_pass_state_carries_no_credential_declaration() {
+        // Only what deactivating needs: a declaration the reconciler rejects (an
+        // over-long credential name, a broken export) cannot stop the unpublish.
+        let state: state::DeactivateState = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","credential_name":"owner-password"},
+            "inactive_workflows":["fixture-workflow"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            state.inactive_workflows,
+            vec!["fixture-workflow".to_owned()]
+        );
+        assert_eq!(state.owner.credential_name, "owner-password");
+        // A credential or workflow declaration in it is a rendering bug, not
+        // something to silently ignore.
+        assert!(
+            serde_json::from_str::<state::DeactivateState>(
+                r#"{"url":"http://127.0.0.1:5678",
+                "owner":{"email":"a@b.c","credential_name":"owner-password"},
+                "credentials":{"hook":{"type":"httpHeaderAuth"}}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_declared_default_execution_timeout_is_not_drift() {
+        // n8n 2.39.6 deletes an executionTimeout equal to the instance default
+        // (`removeDefaultValues`), so the live copy never holds it: comparing the
+        // declaration as written would PATCH on every run.
+        let declared = json!({"executionOrder": "v1", "executionTimeout": -1});
+        let normalized = settings_payload(&declared, Some(-1)).unwrap();
+        assert_eq!(normalized, json!({"executionOrder": "v1"}));
+        // Read back: the stored settings without the default are the declaration,
+        // and no update reintroduces the key.
+        assert!(settings_match(
+            &normalized,
+            &json!({"executionOrder": "v1"})
+        ));
+        assert!(
+            settings_with_resets(&normalized)
+                .get("executionTimeout")
+                .is_none()
+        );
+        // A value that is not the default is a declaration n8n stores.
+        assert_eq!(
+            settings_payload(&declared, Some(30)).unwrap(),
+            declared,
+            "a non-default timeout must survive normalisation"
+        );
+        // Unknown default (a state rendered before this key existed): compare as
+        // written rather than guessing.
+        assert_eq!(settings_payload(&declared, None).unwrap(), declared);
+        // The create payload drops it too, so the first write already matches the
+        // updates and a create followed by an update writes nothing.
+        let payload = workflow_payload(
+            "w",
+            &json!({"nodes": [], "connections": {},
+                   "settings": {"executionOrder": "v1", "executionTimeout": -1}}),
+            Some(-1),
+        )
+        .unwrap();
+        assert_eq!(payload["settings"], json!({"executionOrder": "v1"}));
     }
 
     #[test]
@@ -1159,12 +1260,16 @@ mod tests {
         assert!(settings_match(&declared, &json!({"executionTimeout": 30})));
         assert!(!settings_match(&declared, &json!({"executionTimeout": 60})));
         // Settings that are not an object are a declaration error.
-        assert!(settings_payload(&json!("nope")).is_err());
+        assert!(settings_payload(&json!("nope"), None).is_err());
         // An export that recorded n8n's own "default" choice (the value its UI
         // writes) means "no key": it is dropped, not compared against a value
         // n8n never stores.
         assert_eq!(
-            settings_payload(&json!({"executionOrder": "v1", "timezone": SETTINGS_RESET})).unwrap(),
+            settings_payload(
+                &json!({"executionOrder": "v1", "timezone": SETTINGS_RESET}),
+                None
+            )
+            .unwrap(),
             json!({"executionOrder": "v1"})
         );
         // An empty declaration still resets every resettable key.
@@ -1323,8 +1428,14 @@ mod tests {
             {"name": "Local file", "type": EXECUTE_WORKFLOW, "parameters": {
                 "source": "localFile", "workflowId": {"value": "w"},
             }},
-            {"name": "Url", "type": EXECUTE_WORKFLOW, "parameters": {
-                "workflowId": {"__rl": true, "value": "https://x/y", "mode": "url"},
+            {"name": "Remote url", "type": EXECUTE_WORKFLOW, "parameters": {
+                "source": "url", "workflowId": {"__rl": true, "value": "https://x/y", "mode": "url"},
+            }},
+            // n8n reads only `workflowId.value`: the locator's `mode` does not
+            // decide whether the reference is local, so this one is an id.
+            {"name": "Url locator", "type": EXECUTE_WORKFLOW, "parameters": {
+                "source": "database",
+                "workflowId": {"__rl": true, "value": "local-id", "mode": "url"},
             }},
             // n8n skips a disabled node, so its reference is no dependency.
             {"name": "Disabled", "type": EXECUTE_WORKFLOW, "disabled": true, "parameters": {
@@ -1338,7 +1449,8 @@ mod tests {
             vec![
                 "fleetix-hub-claim".to_owned(),
                 "by-id".to_owned(),
-                "from-database".to_owned()
+                "from-database".to_owned(),
+                "local-id".to_owned()
             ]
         );
     }

@@ -36,7 +36,13 @@ in
           }
         ];
         connections = {};
-        settings.executionOrder = "v1";
+        # n8n deletes an executionTimeout equal to the instance default
+        # (`EXECUTIONS_TIMEOUT`, -1 here) from every saved workflow, so a
+        # declaration that names the default must not drift forever.
+        settings = {
+          executionOrder = "v1";
+          executionTimeout = -1;
+        };
         active = false;
       });
       # A sub-workflow its callers reach by name: n8n assigns the id, so the
@@ -323,7 +329,9 @@ in
               "| jq -r '(.data // .).settings.timezone // \"\"'"
           ).strip()
           assert stored == "", stored
-          # Converged: the next run writes nothing at all.
+          # Converged: the next run writes nothing at all. The declared
+          # `executionTimeout` is the instance default, which n8n dropped from the
+          # stored settings, so it must not count as drift either.
           machine.succeed("systemctl restart n8n-provision.service")
           inv = machine.succeed("systemctl show -p InvocationID --value n8n-provision.service").strip()
           journal = machine.succeed(f"journalctl -o cat _SYSTEMD_INVOCATION_ID={inv}")
@@ -402,11 +410,47 @@ in
           journal = machine.succeed(f"journalctl -o cat _SYSTEMD_INVOCATION_ID={inv}")
           assert "workflow fixture-workflow: deactivated" in journal, journal
           assert hook("Bearer rotated-webhook-token") == "404", hook("Bearer rotated-webhook-token")
-          assert machine.succeed("systemctl is-failed n8n-provision.service").strip() == "failed"
-          # Leave the declared state in place. The unit is failed, so restart it
-          # explicitly instead of relying on the switch to start it.
+          # A tick of the retry timer may have it mid-attempt; the state it settles
+          # in is failed, because nothing can resolve the missing credential file.
+          machine.wait_until_succeeds("systemctl is-failed n8n-provision.service")
+          # Leave the declared state in place.
           machine.succeed(f"{system}/bin/switch-to-configuration test")
-          machine.succeed("systemctl restart n8n-provision.service")
           machine.wait_for_unit("n8n-provision.service")
+
+      with subtest("a transient pre-pass failure is retried without a manual start"):
+          # The reported failure mode: n8n hiccups, the owner-only pre-pass fails
+          # once, and its `Requires=` cancels the provisioning job before that unit
+          # can run, which no `Restart=` sees. Nothing may need a manual start once
+          # n8n answers again.
+          machine.succeed("systemctl stop n8n-provision.service")
+          # /etc is read-only in the test VM; a runtime drop-in is picked up by
+          # daemon-reload and makes the pre-pass exit non-zero.
+          machine.succeed("mkdir -p /run/systemd/system/n8n-deactivate.service.d")
+          machine.succeed(
+              f"printf '[Service]\\nExecStartPre={system}/sw/bin/false\\n' "
+              "> /run/systemd/system/n8n-deactivate.service.d/fail-transiently.conf"
+          )
+          machine.succeed("systemctl daemon-reload")
+          # n8n is down and comes back as the pre-pass's own dependency; the
+          # pre-pass still fails this time.
+          machine.succeed("systemctl stop n8n.service n8n-deactivate.service")
+          machine.execute("systemctl start n8n-provision.service")
+          machine.wait_until_succeeds("systemctl is-failed n8n-deactivate.service")
+          assert (
+              machine.succeed("systemctl show -p ActiveState --value n8n-provision.service").strip()
+              != "active"
+          ), "provisioning must not have run while its pre-pass was failing"
+          # The outage ends. The pair must converge by itself: the retry timer
+          # starts provisioning again, which pulls the pre-pass in with it.
+          # (wait_for_unit refuses an inactive unit with no queued job, and the
+          # tick is a minute away, so poll the state.)
+          machine.succeed("rm -rf /run/systemd/system/n8n-deactivate.service.d")
+          machine.succeed("systemctl daemon-reload")
+          machine.wait_until_succeeds(
+              "test \"$(systemctl show -p ActiveState --value n8n-provision.service)\" = active",
+              timeout=300,
+          )
+          assert hook("Bearer rotated-webhook-token") == "200", hook("Bearer rotated-webhook-token")
+          machine.wait_for_unit("n8n-deactivate.service")
     '';
   }

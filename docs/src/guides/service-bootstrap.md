@@ -163,10 +163,14 @@ services.n8n = {
   `active` are ignored) from an export's `nodes`, `connections`, `settings` and
   `meta`. The export is copied into the Nix store, so it must be sanitized: a
   credential reference or an n8n expression (`=...`) carries a secret, never a
-  literal. The reconciler refuses an export whose `Authorization`,
-  `apiKey`/`api-key` or `password` value is a literal. Before writing, every
-  node credential reference is rewritten from its JSON name to the provisioned
-  credential's id: `credentials."<name in the JSON>" = "<declared credential>"`,
+  literal. A path literal is also read at evaluation, so an export holding a
+  literal `Authorization`, `apiKey`/`api-key` or `password` value fails the
+  build with the workflow name and field: the file never reaches the store.
+  Only path literals are checked that early — a derivation output or a plain
+  string cannot be read at evaluation without IFD, and for those the reconciler
+  refuses the export at run time, when it is already in the store. Before
+  writing, every node credential reference is rewritten from its JSON name to
+  the provisioned credential's id: `credentials."<name in the JSON>" = "<declared credential>"`,
   and a reference with no entry must itself be a declared credential name. The
   node's credential type must match the declared credential's `type`, so a
   postgres node cannot be handed a Header Auth credential.
@@ -174,12 +178,15 @@ services.n8n = {
   in `parameters.workflowId.value`, as the studio-pipeline exports do. The
   dependency edges use n8n's own predicate: a disabled node is skipped, only the
   `database` source (the default) counts, and a `=` value is evaluated at run
-  time. n8n generates workflow ids and validates that reference by id when the
-  caller is published, so declared workflows are imported in dependency order
-  and the reference is rewritten to the live id. A cycle between declared
-  workflows is an error, and so is a reference to a workflow that is neither
-  declared nor already present in n8n (for example a leftover id from another
-  instance). A reference may name a workflow by its id instead of its name.
+  time. n8n reads only `workflowId.value` or the string and never the locator's
+  `mode`, so a "by URL" locator without a remote `source` is still a local id
+  there and is treated as one here. n8n generates workflow ids and validates
+  that reference by id when the caller is published, so declared workflows are
+  imported in dependency order and the reference is rewritten to the live id. A
+  cycle between declared workflows is an error, and so is a reference to a
+  workflow that is neither declared nor already present in n8n (for example a
+  leftover id from another instance). A reference may name a workflow by its id
+  instead of its name.
 - n8n allows two workflows with one name. One lookup resolves names for
   reconciliation, deactivation and reference binding alike: a name that matches
   several live workflows (or several live credentials, for credentials) fails
@@ -196,17 +203,30 @@ services.n8n = {
   because n8n merges a PATCH into the stored object: the declaration's keys must
   hold their values, and a key set in n8n that the declaration does not name is
   reset through n8n's own `"DEFAULT"` token (its `removeDefaultValues` drops the
-  key). A settings key n8n cannot reset that way (for example
-  `executionTimeout`) is reported once and excluded, so it cannot cause a
-  rewrite on every run. The activation converges separately:
+  key). An `executionTimeout` that names the instance default is dropped from
+  the comparison, because n8n deletes that value on every save; a declared
+  timeout that differs from the default is written and compared normally. Any
+  other settings key n8n cannot reset (and does not delete) is reported once and
+  excluded, so it cannot cause a rewrite on every run. The activation converges
+  separately:
   `active = true` (default) publishes the version just written, `active = false`
   deactivates a running workflow. A declared `active = false` is applied by
   `n8n-deactivate.service` — a oneshot that loads only the owner password and
   runs before the unit that loads the field credentials — so a missing
   credential file, which makes systemd refuse to start that unit, or a corrupt
-  credential registry cannot leave the old webhook serving. The main unit
-  repeats the deactivation for a workflow reactivated out of band. Deactivation
-  is the only removal: a workflow dropped from the declaration is left in n8n.
+  credential registry cannot leave the old webhook serving. That unit reads its
+  own state file, which holds only the URL, the owner and the inactive names, so
+  a declaration the reconciler would reject cannot stop the unpublish. The main
+  unit repeats the deactivation for a workflow reactivated out of band.
+  Deactivation is the only removal: a workflow dropped from the declaration is
+  left in n8n.
+- A transient failure does not need a manual start. `Requires=` keeps the
+  pre-pass fail-closed, but systemd cancels the provisioning job before it runs
+  when that dependency fails, which no `Restart=` on either unit can observe.
+  `n8n-provision-retry.timer` therefore re-runs the pair once a minute while
+  provisioning is not active (a start job pulls the failed pre-pass in with it),
+  and goes idle as soon as it is. A declaration that is genuinely broken stays
+  failed between ticks and keeps re-reporting why.
 
 ## Known limits
 

@@ -39,6 +39,46 @@
   fieldFiles = lib.concatLists (lib.mapAttrsToList (name: c: lib.mapAttrsToList (field: file: {inherit name field file;}) c.dataFiles) cfg.credentials);
   secretFiles = [cfg.owner.passwordFile] ++ map (f: toString f.file) fieldFiles;
 
+  # Credential-carrying fields an export must never hold as data: the export is
+  # copied into the store, which every process can read and every generation
+  # keeps. Mirrors the reconciler's runtime lint.
+  literalSecretNames = ["authorization" "api-key" "api_key" "apikey" "password" "x-api-key"];
+  isLiteral = v: builtins.isString v && v != "" && !(lib.hasPrefix "=" v) && !(lib.hasInfix "{{" v);
+
+  # The first literal credential in an export, as the field that carries it: a
+  # header parameter pair (`{"name": "Authorization", "value": "Bearer ..."}`)
+  # or a direct `authorization`/`apiKey`/`password` key.
+  literalSecret = value:
+    if builtins.isAttrs value
+    then
+      (
+        if value ? name && isLiteral (value.value or null) && lib.elem (lib.toLower value.name) literalSecretNames
+        then lib.toLower value.name
+        else
+          lib.findFirst (found: found != null) null (lib.mapAttrsToList (key: v:
+            if lib.elem (lib.toLower key) literalSecretNames && isLiteral v
+            then lib.toLower key
+            else literalSecret v)
+          value)
+      )
+    else if builtins.isList value
+    then lib.findFirst (found: found != null) null (map literalSecret value)
+    else null;
+
+  # A path literal is read at evaluation: the file is already a source input, so
+  # this is not IFD and the check runs before the path can enter the store. A
+  # derivation output or a plain string cannot be read that way without IFD; the
+  # reconciler's runtime check is what covers those.
+  exportLiteral = w:
+    if builtins.isPath w.file
+    then literalSecret (builtins.fromJSON (builtins.readFile w.file))
+    else null;
+  leakedExports = lib.concatLists (lib.mapAttrsToList (name: w: let
+    field = exportLiteral w;
+  in
+    lib.optional (field != null) {inherit name field;})
+  cfg.workflows);
+
   ownerState = {
     inherit (cfg) url;
     owner = {
@@ -51,8 +91,25 @@
   # the n8n-owner-env oneshot sees only the owner, so credential edits neither
   # restart n8n nor can a credential mistake stop it from starting.
   ownerStateFile = pkgs.writeText "n8n-provision-owner.json" (builtins.toJSON ownerState);
+
+  # n8n drops an `executionTimeout` equal to the instance default from every
+  # saved workflow, so the reconciler normalises a declared default away.
+  executionTimeout = lib.toInt (toString (n8n.environment.EXECUTIONS_TIMEOUT or "-1"));
+  # The pre-pass sees only what deactivating needs: a workflow name or a
+  # credential the reconciler would reject must not keep it from unpublishing.
+  inactiveWorkflows = lib.attrNames (lib.filterAttrs (_: w: !w.active) cfg.workflows);
+  deactivateStateFile = pkgs.writeText "n8n-deactivate-state.json" (builtins.toJSON {
+    inherit (cfg) url;
+    owner = {
+      inherit (cfg.owner) email;
+      credential_name = ownerCredential;
+    };
+    inactive_workflows = inactiveWorkflows;
+  });
+
   stateFile = pkgs.writeText "n8n-provision-state.json" (builtins.toJSON (ownerState
     // {
+      execution_timeout = executionTimeout;
       credentials = lib.mapAttrs (name: c:
         {
           inherit (c) type data;
@@ -196,9 +253,13 @@ in {
               process and kept in every generation: it must be sanitized. A
               credential belongs in a declared `credentials` entry and is
               referenced from a node, and a value that must be computed uses an
-              n8n expression (`=...`). The reconciler refuses an export whose
-              `Authorization`, `apiKey`/`api-key` or `password` value is a
-              literal.
+              n8n expression (`=...`). A path literal is also read at evaluation,
+              so an export holding a literal `Authorization`, `apiKey`/`api-key`
+              or `password` value fails the build instead of reaching the store.
+              That evaluation check covers path literals only: a derivation
+              output or a plain string cannot be read without IFD, and for those
+              the reconciler refuses the export at run time, once it is already
+              in the store. Prefer a path literal for that reason.
             '';
           };
           active = mkOption {
@@ -259,6 +320,14 @@ in {
         assertion = lib.all (w: lib.stringLength w != 0 && lib.stringLength w <= 128) (lib.attrNames cfg.workflows);
         message = "services.n8n.provision.workflows names must be 1-128 characters (n8n's workflow name limit).";
       }
+      {
+        assertion = leakedExports == [];
+        message = lib.concatMapStrings (leak:
+          ''
+            services.n8n.provision.workflows.${leak.name}: the export holds a literal ${leak.field} value. The export is copied into the Nix store, so a header or password must be an n8n expression (`=...`) or a credential reference; move the value to a declared `credentials` entry with `dataFiles`.''
+          + "\n")
+        leakedExports;
+      }
     ];
 
     # Env-managed owner: n8n reads N8N_INSTANCE_OWNER_* from its environment
@@ -298,13 +367,13 @@ in {
       requires = ["n8n.service"];
       partOf = ["n8n.service"];
       wantedBy = ["multi-user.target"];
-      restartTriggers = [stateFile];
+      restartTriggers = [deactivateStateFile];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
         UMask = "0077";
         LoadCredential = ["${ownerCredential}:${cfg.owner.passwordFile}"];
-        ExecStart = "${exe} deactivate --state ${stateFile} --credential-dir %d --ready-timeout 600";
+        ExecStart = "${exe} deactivate --state ${deactivateStateFile} --credential-dir %d --ready-timeout 600";
         TimeoutStartSec = "15min";
       };
     };
@@ -329,6 +398,24 @@ in {
           ++ map (f: "${fieldCredential f.name f.field}:${f.file}") fieldFiles;
         ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir /var/lib/n8n-provision/markers --ready-timeout 600";
         TimeoutStartSec = "15min";
+      };
+    };
+
+    # A transient failure must not need a manual start. `Restart=` cannot do it
+    # alone: a failed `Requires=` dependency cancels the provisioning job before
+    # the unit runs, so no Restart= ever sees it. The timer keeps re-running the
+    # pair instead (a start job pulls the failed pre-pass in again) and goes idle
+    # once provisioning is active. A declaration that is genuinely broken still
+    # surfaces: it stays failed between ticks, and every tick re-reports why.
+    systemd.timers.n8n-provision-retry = {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        Unit = "n8n-provision.service";
+        # OnActiveSec arms the first tick (a unit that was never active has no
+        # inactive timestamp to count from); OnUnitInactiveSec re-arms while the
+        # unit is not active, failed included.
+        OnActiveSec = "1min";
+        OnUnitInactiveSec = "1min";
       };
     };
 

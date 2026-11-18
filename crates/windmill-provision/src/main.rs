@@ -494,6 +494,10 @@ fn reconcile(
 /// applies the `tag` badge over the tag sent with the deploy (its
 /// `parse_pipeline_annotations` sets `ns.tag`). `//`, `#` and `--` open a
 /// comment depending on the language; the badge is `tag` followed by its value.
+///
+/// A value with whitespace or over 50 bytes is a regular comment, not a badge
+/// (`// tag this for review`), and the first valid badge wins: the parser keeps
+/// scanning the rest of the block instead of stopping at the prose.
 fn source_tag(content: &str) -> Option<&str> {
     for line in content.lines() {
         let line = line.trim();
@@ -516,7 +520,9 @@ fn source_tag(content: &str) -> Option<&str> {
             continue;
         }
         let tag = rest.trim();
-        if !tag.is_empty() {
+        // Worker tags are single-word identifiers: anything else is a comment
+        // that merely starts with the word.
+        if !tag.is_empty() && !tag.contains(char::is_whitespace) && tag.len() <= 50 {
             return Some(tag);
         }
     }
@@ -812,6 +818,26 @@ mod tests {
         assert_eq!(source_tag("// tags are useful"), None);
         assert_eq!(source_tag("// tag"), None);
         assert_eq!(source_tag("let x = 1;"), None);
+        // Prose is not a badge: Windmill ignores a value with whitespace, and
+        // keeps scanning instead of treating the line as the winning badge.
+        assert_eq!(source_tag("// tag this for review\ncode"), None);
+        assert_eq!(
+            source_tag("// tag this for review\n// tag hub\ncode"),
+            Some("hub")
+        );
+        // Nor is one longer than the `script.tag` column.
+        let long = "x".repeat(51);
+        assert_eq!(source_tag(&format!("// tag {long}\ncode")), None);
+        let fits = "y".repeat(50);
+        assert_eq!(
+            source_tag(&format!("// tag {fits}\ncode")),
+            Some(fits.as_str())
+        );
+        // The first valid badge wins over a later one.
+        assert_eq!(
+            source_tag("// tag first\n// tag second\ncode"),
+            Some("first")
+        );
     }
 
     #[test]

@@ -78,9 +78,9 @@ service's own consumption:
   run time) go over the same loopback API, and n8n workflows are imported the
   same way with their credential references bound to provisioned credentials;
   none of these produce a file on disk. A workflow declared `active = false` is
-  unpublished by an `n8n-deactivate` oneshot that loads only the owner password,
-  so a missing credential file or a corrupt registry cannot keep a webhook the
-  declaration turned off serving.
+  unpublished by an `n8n-deactivate` oneshot that loads only the owner password
+  and the names to unpublish, so a missing credential file or a corrupt
+  registry cannot keep a webhook the declaration turned off serving.
 
 The `adapter/` kind is the inverse of the others: instead of giving a system a
 tenant, it lets an **out-of-scope app reuse existing tenants** (rauthy and/or
