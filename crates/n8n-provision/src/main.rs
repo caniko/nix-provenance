@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 use provenance_core::generated_secret::atomic_write_secret;
 use provenance_core::password::{PasswordMarkerStore, read_password_file, secret_digest};
@@ -18,7 +18,7 @@ use state::State;
 #[derive(Parser, Debug)]
 #[command(
     name = "n8n-provision",
-    about = "Declarative n8n owner and credential bootstrap",
+    about = "Declarative n8n owner, credential and workflow bootstrap",
     version
 )]
 struct Cli {
@@ -63,6 +63,21 @@ enum Command {
         #[arg(long, default_value_t = 120)]
         ready_timeout: u64,
     },
+    /// Deactivate every workflow declared `active = false`. Runs in its own
+    /// oneshot that loads only the owner password, because systemd resolves a
+    /// unit's whole `LoadCredential=` before ExecStart: a missing credential
+    /// file would otherwise keep a live webhook in place. Its state file holds
+    /// only the URL, the owner and the inactive names, so a declaration the
+    /// reconciler rejects cannot stop it.
+    Deactivate {
+        #[arg(long)]
+        state: PathBuf,
+        /// systemd credentials directory (%d), holding the owner password.
+        #[arg(long)]
+        credential_dir: PathBuf,
+        #[arg(long, default_value_t = 600)]
+        ready_timeout: u64,
+    },
 }
 
 fn load_state(path: &Path) -> Result<State> {
@@ -70,6 +85,14 @@ fn load_state(path: &Path) -> Result<State> {
     let state: State = serde_json::from_str(&raw).context("parsing state")?;
     state.validate()?;
     Ok(state)
+}
+
+/// The pre-pass state: parsed as declared, never validated as a declaration
+/// (that is the reconciler's job, and its failures must not forestall an
+/// unpublish).
+fn load_deactivate_state(path: &Path) -> Result<state::DeactivateState> {
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&raw).context("parsing deactivate state")
 }
 
 fn main() -> Result<()> {
@@ -105,6 +128,15 @@ fn main() -> Result<()> {
             &load_state(&state)?,
             &credential_dir,
             &marker_dir,
+            ready_timeout,
+        ),
+        Command::Deactivate {
+            state,
+            credential_dir,
+            ready_timeout,
+        } => deactivate(
+            &load_deactivate_state(&state)?,
+            &credential_dir,
             ready_timeout,
         ),
     }
@@ -202,9 +234,17 @@ fn read_secret_value(path: &Path) -> Result<String> {
 fn resolve_data(cred: &state::Credential, credential_dir: &Path) -> Result<Value> {
     let mut data: BTreeMap<String, Value> = cred.data.clone();
     for (field, file) in &cred.data_files {
+        let prefix = cred
+            .data_file_prefixes
+            .get(field)
+            .map(String::as_str)
+            .unwrap_or("");
         data.insert(
             field.clone(),
-            json!(read_secret_value(&credential_dir.join(file))?),
+            json!(format!(
+                "{prefix}{}",
+                read_secret_value(&credential_dir.join(file))?
+            )),
         );
     }
     Ok(serde_json::to_value(data)?)
@@ -220,18 +260,37 @@ fn reconcile(
     n8n.wait_ready(Duration::from_secs(ready_timeout))?;
     let password = read_password_file(credential_dir.join(&state.owner.credential_name))?;
     n8n.login(&state.owner.email, &password)?;
+
+    // Deactivation comes before every step that can fail: a bad replacement
+    // export, a corrupt registry or a credential write must not leave the old
+    // webhook serving. The `n8n-deactivate` unit does this before this one even
+    // starts (it loads only the owner password); repeating it here puts back a
+    // workflow reactivated out of band.
+    let inactive = inactive_names(state);
+    if !inactive.is_empty() {
+        let live = WorkflowIndex::new(&n8n.list_workflows()?);
+        deactivate_declared(&n8n, &inactive, &live)?;
+    }
+
     let existing = n8n.list_credentials()?;
     let markers = PasswordMarkerStore::new(marker_dir);
     let registry = marker_dir.join(CREDENTIAL_REGISTRY);
     let previous: BTreeMap<String, String> = read_registry(&registry)?;
     // name -> id of credentials this tool created (never adopted ones).
     let mut owned = previous.clone();
+    // name -> what n8n holds after this run, for the workflow credential ids.
+    let mut provisioned: BTreeMap<String, ProvisionedCredential> = BTreeMap::new();
+
+    // Resolve every target before writing anything: two declarations can
+    // resolve to one n8n credential (a rename recorded under its old name plus
+    // its live name), and the second write would overwrite the first's secret.
+    let targets = resolve_targets(&existing, &previous, state)?;
 
     for (name, cred) in &state.credentials {
         let data = resolve_data(cred, credential_dir)?;
         // Digest over type + resolved data: the marker says "n8n holds exactly this".
         let id = format!("n8n-credential:{name}");
-        let found = pick_target(&existing, &previous, name)?;
+        let found = targets.get(name.as_str()).copied();
         // A credential we created, renamed in n8n and in the declaration
         // alike, stays ours under its new name (and is not pruned below).
         if let Some(cred_id) = found
@@ -242,12 +301,15 @@ fn reconcile(
         // The target id is part of the fingerprint: a different n8n credential
         // under this name (recreated, or a UI one) must always be written.
         let fingerprint = |target: &str| secret_digest(&format!("{target}\n{}\n{data}", cred.kind));
-        match found {
-            Some(cred_id) if !markers.needs_update(&id, &fingerprint(cred_id))? => {}
+        let target = match found {
+            Some(cred_id) if !markers.needs_update(&id, &fingerprint(cred_id))? => {
+                cred_id.to_owned()
+            }
             Some(cred_id) => {
                 n8n.update_credential(cred_id, name, &cred.kind, &data)?;
                 markers.commit(&id, &fingerprint(cred_id))?;
                 eprintln!("credential {name}: updated");
+                cred_id.to_owned()
             }
             None => {
                 let new_id = n8n.create_credential(name, &cred.kind, &data)?;
@@ -256,8 +318,16 @@ fn reconcile(
                 save_registry(&registry, &owned, marker_dir)?;
                 markers.commit(&id, &fingerprint(&new_id))?;
                 eprintln!("credential {name}: created");
+                new_id
             }
-        }
+        };
+        provisioned.insert(
+            name.clone(),
+            ProvisionedCredential {
+                id: target,
+                kind: cred.kind.clone(),
+            },
+        );
     }
 
     // Delete credentials this tool created that are no longer declared, by
@@ -275,7 +345,31 @@ fn reconcile(
     }
     fs::create_dir_all(marker_dir)?;
     save_registry(&registry, &owned, marker_dir)?;
+    reconcile_workflows(&n8n, state, &provisioned)?;
     Ok(())
+}
+
+/// The owner-only pre-pass: deactivate every workflow declared `active = false`
+/// before the unit that loads the field credentials can even start.
+///
+/// It reads no credential value beyond the owner password and never touches the
+/// credential registry or the credential declarations, so neither a corrupt
+/// registry nor a missing field credential file keeps a webhook the declaration
+/// turned off serving.
+fn deactivate(
+    state: &state::DeactivateState,
+    credential_dir: &Path,
+    ready_timeout: u64,
+) -> Result<()> {
+    if state.inactive_workflows.is_empty() {
+        return Ok(());
+    }
+    let n8n = N8n::new(&state.url)?;
+    n8n.wait_ready(Duration::from_secs(ready_timeout))?;
+    let password = read_password_file(credential_dir.join(&state.owner.credential_name))?;
+    n8n.login(&state.owner.email, &password)?;
+    let live = WorkflowIndex::new(&n8n.list_workflows()?);
+    deactivate_declared(&n8n, &state.inactive_workflows, &live)
 }
 
 fn save_registry(
@@ -288,6 +382,664 @@ fn save_registry(
     Ok(())
 }
 
+/// A declared credential as n8n holds it after this run.
+struct ProvisionedCredential {
+    id: String,
+    kind: String,
+}
+
+/// Deactivate every existing workflow carrying a name declared inactive, before
+/// any other step: publishing state is the only thing a later failure must not
+/// strand, because a live webhook outlives a failed provision run.
+///
+/// Every live workflow carrying the name is deactivated: n8n allows two
+/// workflows with one name, so picking one of them would leave the other
+/// serving.
+fn deactivate_declared(n8n: &N8n, names: &[String], live: &WorkflowIndex) -> Result<()> {
+    for name in names {
+        for id in live.ids(name) {
+            if !n8n.workflow(id)?["active"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            n8n.deactivate_workflow(id)?;
+            eprintln!("workflow {name}: deactivated");
+        }
+    }
+    Ok(())
+}
+
+/// The names declared `active = false`.
+fn inactive_names(state: &State) -> Vec<String> {
+    state
+        .workflows
+        .iter()
+        .filter(|(_, workflow)| !workflow.active)
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Import or update every declared workflow by name, bind its credential
+/// references to the provisioned credential ids, and converge its activation.
+///
+/// Workflows are compared against the live copy (n8n's read-back), not a
+/// marker: a UI edit is reverted and an unchanged declaration writes nothing.
+///
+/// A workflow that executes another one is imported after it: n8n generates
+/// the ids and validates an `executeWorkflow` reference by id when the caller
+/// is published, so the reference is rewritten to the live id first.
+fn reconcile_workflows(
+    n8n: &N8n,
+    state: &State,
+    provisioned: &BTreeMap<String, ProvisionedCredential>,
+) -> Result<()> {
+    if state.workflows.is_empty() {
+        return Ok(());
+    }
+    let mut index = WorkflowIndex::new(&n8n.list_workflows()?);
+    let mut declared = read_declared(state)?;
+    // n8n's effective `executionTimeout`, but only when a declaration names one:
+    // it is what tells a declared default apart from a live override.
+    let default_timeout = if declared.iter().any(|workflow| {
+        workflow.payload["settings"]
+            .get("executionTimeout")
+            .is_some()
+    }) {
+        n8n.execution_timeout_default()?
+    } else {
+        -1
+    };
+    for position in import_order(&declared)? {
+        let declared = &mut declared[position];
+        let name = declared.name.clone();
+        let workflow = &state.workflows[&name];
+        let mut payload = declared.payload.clone();
+        bind_executed_workflows(&mut payload, &name, &index)?;
+        bind_credentials(&mut payload["nodes"], &workflow.credentials, provisioned)
+            .with_context(|| format!("workflow {name}"))?;
+        let id = converge_workflow(
+            n8n,
+            &name,
+            workflow.active,
+            &payload,
+            &index,
+            default_timeout,
+        )?;
+        index.insert(&id, &name);
+    }
+    Ok(())
+}
+
+/// Import (or update) one workflow and converge its activation. Returns its id.
+fn converge_workflow(
+    n8n: &N8n,
+    name: &str,
+    active: bool,
+    payload: &Value,
+    live: &WorkflowIndex,
+    default_timeout: i64,
+) -> Result<String> {
+    let mut created = false;
+    let (id, version, was_active, active_version) = match live.unique_id(name)? {
+        None => {
+            let state = n8n.create_workflow(payload)?;
+            created = true;
+            eprintln!("workflow {name}: created");
+            (state.id, state.version, false, None)
+        }
+        Some(id) => {
+            let stored = n8n.workflow(id)?;
+            let version = stored["versionId"].as_str().map(str::to_owned);
+            let was_active = stored["active"].as_bool().unwrap_or(false);
+            let active_version = stored["activeVersionId"].as_str().map(str::to_owned);
+            // Settings n8n merges into every PATCH and this declaration cannot
+            // reset are reported once instead of being retried forever.
+            if payload.get("settings").is_some() {
+                for key in unmanaged_settings(&payload["settings"], &stored["settings"]) {
+                    eprintln!(
+                        "workflow {name}: setting {key} is set in n8n and cannot be reset by the declaration; leaving it"
+                    );
+                }
+            }
+            if matches_declaration(payload, &stored, default_timeout) {
+                (id.to_owned(), version, was_active, active_version)
+            } else {
+                // A PATCH merges `settings`: send n8n's reset token for every
+                // resettable key the declaration does not name, or an operator's
+                // edit would survive every run.
+                let mut update = payload.clone();
+                if let Some(settings) = payload.get("settings") {
+                    update["settings"] = settings_with_resets(settings);
+                }
+                let state = n8n.update_workflow(id, &update)?;
+                eprintln!("workflow {name}: updated");
+                (state.id, state.version, was_active, active_version)
+            }
+        }
+    };
+
+    // Published means: active on exactly the version this run wrote. An
+    // update to an active workflow bumps versionId, so it is republished.
+    let published = was_active && version.is_some() && active_version == version;
+    if active && !published {
+        let version = version
+            .with_context(|| format!("workflow {name}: n8n returned no versionId to activate"))?;
+        n8n.activate_workflow(&id, &version)?;
+        eprintln!(
+            "workflow {name}: {}",
+            if created { "activated" } else { "republished" }
+        );
+    } else if !active && was_active {
+        n8n.deactivate_workflow(&id)?;
+        eprintln!("workflow {name}: deactivated");
+    }
+    Ok(id)
+}
+
+/// A declared workflow read from its export, before references are resolved.
+struct DeclaredWorkflow {
+    name: String,
+    payload: Value,
+}
+
+fn read_declared(state: &State) -> Result<Vec<DeclaredWorkflow>> {
+    state
+        .workflows
+        .iter()
+        .map(|(name, workflow)| {
+            let raw = fs::read_to_string(&workflow.file)
+                .with_context(|| format!("reading {}", workflow.file.display()))?;
+            let file: Value = serde_json::from_str(&raw)
+                .with_context(|| format!("parsing workflow file {}", workflow.file.display()))?;
+            Ok(DeclaredWorkflow {
+                name: name.clone(),
+                payload: workflow_payload(name, &file)
+                    .with_context(|| format!("workflow file {}", workflow.file.display()))?,
+            })
+        })
+        .collect()
+}
+
+/// Declared positions ordered so every workflow follows the declared ones it
+/// executes. A cycle cannot be imported, because no member can be published
+/// before another.
+fn import_order(declared: &[DeclaredWorkflow]) -> Result<Vec<usize>> {
+    let position: BTreeMap<&str, usize> = declared
+        .iter()
+        .enumerate()
+        .map(|(i, workflow)| (workflow.name.as_str(), i))
+        .collect();
+    let dependencies: Vec<Vec<usize>> = declared
+        .iter()
+        .map(|workflow| {
+            executed_references(&workflow.payload)
+                .iter()
+                .filter_map(|reference| position.get(reference.as_str()).copied())
+                .collect()
+        })
+        .collect();
+    let mut imported = vec![false; declared.len()];
+    let mut order = Vec::with_capacity(declared.len());
+    while order.len() < declared.len() {
+        let ready: Vec<usize> = (0..declared.len())
+            .filter(|i| !imported[*i] && dependencies[*i].iter().all(|d| imported[*d]))
+            .collect();
+        if ready.is_empty() {
+            let cyclic: Vec<&str> = (0..declared.len())
+                .filter(|i| !imported[*i])
+                .map(|i| declared[i].name.as_str())
+                .collect();
+            bail!(
+                "declared workflows execute each other in a cycle: {}",
+                cyclic.join(", ")
+            );
+        }
+        for i in ready {
+            imported[i] = true;
+            order.push(i);
+        }
+    }
+    Ok(order)
+}
+
+/// Workflow identity by name and by id, kept current as this run imports.
+///
+/// n8n allows two workflows with one name, so a name maps to every live id and
+/// a lookup that needs exactly one refuses an ambiguous name instead of picking
+/// (the first for a converge, the last for a reference).
+struct WorkflowIndex {
+    ids_by_name: BTreeMap<String, Vec<String>>,
+    name_by_id: BTreeMap<String, String>,
+}
+
+impl WorkflowIndex {
+    fn new(existing: &[(String, String)]) -> Self {
+        let mut index = Self {
+            ids_by_name: BTreeMap::new(),
+            name_by_id: BTreeMap::new(),
+        };
+        for (id, name) in existing {
+            index.add(id, name);
+        }
+        index
+    }
+
+    fn add(&mut self, id: &str, name: &str) {
+        self.ids_by_name
+            .entry(name.to_owned())
+            .or_default()
+            .push(id.to_owned());
+        self.name_by_id.insert(id.to_owned(), name.to_owned());
+    }
+
+    /// Record that `id` is now the workflow imported under `name`: it is the id
+    /// that name resolves to for the rest of this run.
+    fn insert(&mut self, id: &str, name: &str) {
+        self.ids_by_name
+            .insert(name.to_owned(), vec![id.to_owned()]);
+        self.name_by_id.insert(id.to_owned(), name.to_owned());
+    }
+
+    /// Every live workflow carrying this name.
+    fn ids(&self, name: &str) -> &[String] {
+        self.ids_by_name
+            .get(name)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// The single live workflow carrying this name: none, or an error naming the
+    /// ids when n8n holds several (one declaration is one workflow).
+    fn unique_id(&self, name: &str) -> Result<Option<&str>> {
+        match self.ids(name) {
+            [] => Ok(None),
+            [id] => Ok(Some(id)),
+            ids => bail!(
+                "workflow {name}: n8n holds {} workflows with this name (ids {}): rename or delete one",
+                ids.len(),
+                ids.join(", ")
+            ),
+        }
+    }
+
+    /// The live `(id, name)` a reference names: an id already, a declared name,
+    /// or the name of a workflow that existed in n8n before this run.
+    fn resolve(&self, reference: &str) -> Result<Option<(String, String)>> {
+        if let Some(name) = self.name_by_id.get(reference) {
+            return Ok(Some((reference.to_owned(), name.clone())));
+        }
+        Ok(self
+            .unique_id(reference)?
+            .map(|id| (id.to_owned(), reference.to_owned())))
+    }
+}
+
+/// The workflows a declared payload executes, as written in its
+/// `executeWorkflow` nodes.
+fn executed_references(payload: &Value) -> Vec<String> {
+    payload["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(executed_reference)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The workflow reference an `executeWorkflow` node carries, when it resolves
+/// one from a name or id rather than at run time.
+///
+/// The predicate is n8n's own (`WorkflowValidationService`): a disabled node is
+/// skipped, only the `database` source (the default) names a workflow on this
+/// instance, and an `=` value is evaluated at run time. n8n reads only
+/// `workflowId.value` (or the string), never the locator's `mode`, so a "by
+/// URL" locator without a remote `source` is still a local id it validates.
+fn executed_reference(node: &Value) -> Option<&str> {
+    if node.get("type").and_then(Value::as_str) != Some(EXECUTE_WORKFLOW) {
+        return None;
+    }
+    if node.get("disabled").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let parameters = node.get("parameters")?;
+    // `source` is `database` unless the node reads a file, a URL or a parameter.
+    if let Some(source) = parameters.get("source").and_then(Value::as_str)
+        && source != "database"
+    {
+        return None;
+    }
+    let value = match parameters.get("workflowId")? {
+        Value::Object(object) => object.get("value")?.as_str()?,
+        Value::String(value) => value.as_str(),
+        _ => return None,
+    };
+    (!value.is_empty() && !value.starts_with('=')).then_some(value)
+}
+
+/// Rewrite every `executeWorkflow` reference of `payload` to the live id of the
+/// workflow it names. n8n generates the ids and validates the reference by id
+/// when the caller is published, so a name (or a stale id) never survives.
+fn bind_executed_workflows(payload: &mut Value, caller: &str, index: &WorkflowIndex) -> Result<()> {
+    let nodes = payload["nodes"]
+        .as_array_mut()
+        .context("nodes must be an array")?;
+    for node in nodes {
+        let Some(reference) = executed_reference(node).map(str::to_owned) else {
+            continue;
+        };
+        let node_name = node
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>")
+            .to_owned();
+        let resolved = index
+            .resolve(&reference)
+            .with_context(|| format!("workflow {caller}, node {node_name}"))?;
+        let Some((id, name)) = resolved else {
+            bail!(
+                "workflow {caller}, node {node_name}: executes {reference:?}, which is neither declared nor present in n8n"
+            )
+        };
+        if id == reference {
+            continue;
+        }
+        let Some(locator) = node
+            .get_mut("parameters")
+            .and_then(|parameters| parameters.get_mut("workflowId"))
+        else {
+            continue;
+        };
+        match locator {
+            Value::String(value) => *value = id,
+            Value::Object(object) => {
+                object.insert("value".into(), json!(id));
+                object.insert("cachedResultName".into(), json!(name));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The import payload: the managed fields of a workflow export, renamed to the
+/// declared name. `active`, `id` and `pinData` are never taken from the file.
+fn workflow_payload(name: &str, file: &Value) -> Result<Value> {
+    // The export is copied into the Nix store: a literal credential in it would
+    // be world-readable and kept forever, so refuse it before importing.
+    if let Some(key) = literal_secret(file) {
+        bail!(
+            "workflow export holds a literal {key} value: exports live in the Nix store, so a header or password must be an n8n expression (`=...`) or a credential reference"
+        );
+    }
+    let nodes = file
+        .get("nodes")
+        .filter(|nodes| nodes.is_array())
+        .context("workflow file has no nodes array")?;
+    let connections = file
+        .get("connections")
+        .filter(|connections| connections.is_object())
+        .context("workflow file has no connections object")?;
+    let mut payload = json!({"name": name, "nodes": nodes, "connections": connections});
+    if let Some(settings) = file.get("settings")
+        && !settings.is_null()
+    {
+        payload["settings"] = settings_payload(settings)?;
+    }
+    if let Some(meta) = file.get("meta")
+        && !meta.is_null()
+    {
+        payload["meta"] = meta.clone();
+    }
+    Ok(payload)
+}
+
+/// The value n8n itself uses to reset a managed workflow setting: its workflow
+/// service deletes a key sent as `"DEFAULT"` before saving (n8n's
+/// `removeDefaultValues`). A PATCH merges `settings` into the stored object, so
+/// a reset is the only way to drop a key the declaration does not name.
+const SETTINGS_RESET: &str = "DEFAULT";
+
+/// The settings keys n8n resets on `"DEFAULT"`.
+const RESETTABLE_SETTINGS: [&str; 6] = [
+    "errorWorkflow",
+    "timezone",
+    "saveDataErrorExecution",
+    "saveDataSuccessExecution",
+    "saveManualExecutions",
+    "saveExecutionProgress",
+];
+
+/// The declared settings of a workflow export, checked to be an object. A key
+/// declared as n8n's own reset token means "default", exactly as the n8n UI
+/// records it, so it is dropped: n8n never stores that value.
+///
+/// A declared `executionTimeout` is sent as written, even when it names the
+/// instance default: n8n deletes such a value on every update
+/// (`removeDefaultValues`), so sending it is what resets a live override back to
+/// the default.
+fn settings_payload(declared: &Value) -> Result<Value> {
+    let declared = declared.as_object().context("settings must be an object")?;
+    Ok(Value::Object(
+        declared
+            .iter()
+            .filter(|(_, value)| value.as_str() != Some(SETTINGS_RESET))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    ))
+}
+
+/// The settings a PATCH sends: the declared keys, plus n8n's reset token for
+/// every resettable key the declaration leaves out. Without the token an
+/// operator's edit to such a key survives every merge and the comparison never
+/// converges. Only the update path sends them: creating a workflow stores them
+/// literally.
+fn settings_with_resets(declared: &Value) -> Value {
+    let Some(declared) = declared.as_object() else {
+        return declared.clone();
+    };
+    let mut payload = declared.clone();
+    for key in RESETTABLE_SETTINGS {
+        payload
+            .entry(key.to_owned())
+            .or_insert_with(|| json!(SETTINGS_RESET));
+    }
+    Value::Object(payload)
+}
+
+/// The object form of a settings value with nulls dropped (n8n stores `null` for
+/// an absent settings column).
+fn settings_object(value: &Value) -> BTreeMap<&str, &Value> {
+    value
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, value)| !value.is_null())
+        .map(|(key, value)| (key.as_str(), value))
+        .collect()
+}
+
+fn is_resettable(key: &str) -> bool {
+    RESETTABLE_SETTINGS.contains(&key)
+}
+
+/// True when the live settings are the declaration: every declared key holds its
+/// value, and the only live keys outside the declaration are ones n8n cannot
+/// reset at all (`executionTimeout` and friends), which are reported instead. A
+/// live key the declaration omits that *can* be reset is drift: the next PATCH
+/// resets it.
+///
+/// `default_timeout` is n8n's effective `executionTimeout` (its `/rest/settings`
+/// value): n8n deletes a saved timeout equal to it, so an absent live key *is* a
+/// declared value that names the default. Any other stored timeout is drift, and
+/// the PATCH resets it by sending the declared default back.
+fn settings_match(desired: &Value, live: &Value, default_timeout: i64) -> bool {
+    let Some(desired) = desired.as_object() else {
+        return false;
+    };
+    let live = settings_object(live);
+    desired
+        .iter()
+        .filter(|(_, value)| !value.is_null())
+        .all(|(key, value)| match live.get(key.as_str()) {
+            Some(live) => *live == value,
+            None => is_default_timeout(key, value, default_timeout),
+        })
+        && live
+            .keys()
+            .all(|key| desired.contains_key(*key) || !is_resettable(key))
+}
+
+/// True when a declared key is the instance's default `executionTimeout`: the
+/// value n8n deletes on update, so an absent live key is not drift.
+fn is_default_timeout(key: &str, value: &Value, default_timeout: i64) -> bool {
+    key == "executionTimeout" && value.as_i64() == Some(default_timeout)
+}
+
+/// Live settings keys the declaration neither names nor can reset: a PATCH
+/// merges them, so they are reported once and excluded instead of retried.
+fn unmanaged_settings(desired: &Value, live: &Value) -> Vec<String> {
+    let declared = desired.as_object();
+    settings_object(live)
+        .into_iter()
+        .filter(|(key, _)| {
+            !declared.is_some_and(|declared| declared.contains_key(*key)) && !is_resettable(key)
+        })
+        .map(|(key, _)| key.to_owned())
+        .collect()
+}
+
+/// Names an export must never carry a literal value for: they travel as a header
+/// or a password, and the export is copied into the Nix store.
+const LITERAL_SECRET_NAMES: [&str; 6] = [
+    "authorization",
+    "api-key",
+    "api_key",
+    "apikey",
+    "password",
+    "x-api-key",
+];
+
+/// True for a value that is data, not an n8n expression.
+fn is_literal_string(value: &Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|text| !text.is_empty() && !text.starts_with('=') && !text.contains("{{"))
+}
+
+/// The first obvious literal credential in an export: a header parameter pair
+/// (`{"name": "Authorization", "value": "Bearer ..."}`) or a direct
+/// `authorization`/`apiKey`/`password` key holding a literal.
+fn literal_secret(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(object) => {
+            let named = object
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_ascii_lowercase)
+                .filter(|name| LITERAL_SECRET_NAMES.contains(&name.as_str()))
+                .filter(|_| object.get("value").is_some_and(is_literal_string));
+            if let Some(name) = named {
+                return Some(name);
+            }
+            for (key, value) in object {
+                let key = key.to_ascii_lowercase();
+                if LITERAL_SECRET_NAMES.contains(&key.as_str()) && is_literal_string(value) {
+                    return Some(key);
+                }
+                if let Some(found) = literal_secret(value) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(items) => items.iter().find_map(literal_secret),
+        _ => None,
+    }
+}
+
+/// Rewrite every node credential reference to `{id, name}` of the declared
+/// credential it maps to, failing when the reference is not provisioned with
+/// the type the node expects.
+fn bind_credentials(
+    nodes: &mut Value,
+    mapping: &BTreeMap<String, String>,
+    provisioned: &BTreeMap<String, ProvisionedCredential>,
+) -> Result<()> {
+    let nodes = nodes.as_array_mut().context("nodes must be an array")?;
+    for node in nodes {
+        let node_name = node
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>")
+            .to_owned();
+        let Some(credentials) = node.get_mut("credentials") else {
+            continue;
+        };
+        let credentials = credentials
+            .as_object_mut()
+            .context("node credentials must be an object")?;
+        for (kind, reference) in credentials.iter_mut() {
+            let current = reference["name"]
+                .as_str()
+                .or_else(|| reference.as_str())
+                .with_context(|| format!("node {node_name}: credential {kind} has no name"))?;
+            let declared = mapping.get(current).map(String::as_str).unwrap_or(current);
+            let credential = provisioned.get(declared).with_context(|| {
+                format!(
+                    "node {node_name}: credential {kind} references {declared:?}, which services.n8n.provision.credentials does not declare"
+                )
+            })?;
+            anyhow::ensure!(
+                credential.kind == *kind,
+                "node {node_name}: {declared:?} is a {} credential but the node needs {kind}",
+                credential.kind
+            );
+            *reference = json!({"id": credential.id, "name": declared});
+        }
+    }
+    Ok(())
+}
+
+/// True when the live copy is exactly the declaration: the same name, the same
+/// nodes (field for field, after dropping the ids n8n generates and mints), the
+/// same connections, settings and metadata. Anything extra in the live copy is
+/// drift too — a `disabled` a UI edit added to a node, an edited connection —
+/// while a workflow n8n left alone matches.
+fn matches_declaration(desired: &Value, live: &Value, default_timeout: i64) -> bool {
+    let (Some(desired), Some(live)) = (desired.as_object(), live.as_object()) else {
+        return false;
+    };
+    desired.iter().all(|(key, value)| {
+        let live = live.get(key);
+        match key.as_str() {
+            "nodes" => live.is_some_and(|live| nodes(value) == nodes(live)),
+            // Settings are merged on write and reset per key, so they are
+            // compared against n8n's own reset semantics.
+            "settings" => live.is_some_and(|live| settings_match(value, live, default_timeout)),
+            _ => live == Some(value),
+        }
+    })
+}
+
+/// Node fields n8n owns: the id it assigns and the `webhookId` it mints for
+/// trigger nodes. The tenant declares neither, so they never count as drift.
+const NODE_GENERATED: [&str; 2] = ["id", "webhookId"];
+
+/// The nodes with their n8n-generated fields removed, for an exact comparison.
+fn nodes(value: &Value) -> Vec<BTreeMap<&str, &Value>> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|node| match node.as_object() {
+            Some(node) => node
+                .iter()
+                .filter(|(key, _)| !NODE_GENERATED.contains(&key.as_str()))
+                .map(|(key, value)| (key.as_str(), value))
+                .collect(),
+            None => BTreeMap::from([("", node)]),
+        })
+        .collect()
+}
 /// The n8n credential to update: the recorded one when it still exists, else a
 /// single same-named one (adopted); several candidates are ambiguous, so refuse.
 fn pick_target<'a>(
@@ -310,6 +1062,8 @@ fn pick_target<'a>(
 }
 
 const CREDENTIAL_REGISTRY: &str = "credentials.json";
+/// The n8n node type that calls another workflow, by name or id.
+const EXECUTE_WORKFLOW: &str = "n8n-nodes-base.executeWorkflow";
 
 /// Previous-run registry: only a missing file is an empty first run; an
 /// unreadable or corrupt one aborts so removals are never silently forgotten.
@@ -335,9 +1089,597 @@ fn removed_credentials(
         .collect()
 }
 
+/// Resolve every declared credential's n8n target before any write. Two
+/// declarations that resolve to one credential (a recorded id plus a live name
+/// match after a rename) would overwrite each other's secret, so refuse.
+fn resolve_targets<'a>(
+    existing: &'a [(String, String)],
+    previous: &BTreeMap<String, String>,
+    state: &'a State,
+) -> Result<BTreeMap<&'a str, &'a str>> {
+    let mut targets = BTreeMap::new();
+    let mut claimed: BTreeMap<&str, &str> = BTreeMap::new();
+    for name in state.credentials.keys() {
+        let Some(cred_id) = pick_target(existing, previous, name)? else {
+            continue;
+        };
+        if let Some(other) = claimed.insert(cred_id, name) {
+            bail!(
+                "credentials {other} and {name} both resolve to n8n credential {cred_id}: rename or delete one in n8n"
+            );
+        }
+        targets.insert(name.as_str(), cred_id);
+    }
+    Ok(targets)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_payload_takes_the_managed_fields_and_the_declared_name() {
+        let file = json!({
+            "name": "exported-name",
+            "nodes": [{"name": "Webhook", "type": "n8n-nodes-base.webhook"}],
+            "connections": {"Webhook": {}},
+            "settings": {"executionOrder": "v1"},
+            "meta": {"contract": "fleetix-hub/v1"},
+            "active": true,
+            "id": "not-ours",
+        });
+        let payload = workflow_payload("fleetix-hub-claim", &file).unwrap();
+        assert_eq!(payload["name"], "fleetix-hub-claim");
+        assert_eq!(payload["nodes"], file["nodes"]);
+        assert_eq!(payload["connections"], file["connections"]);
+        // The declared settings travel as written: a create stores them, so the
+        // reset tokens belong to the update path only.
+        assert_eq!(payload["settings"], json!({"executionOrder": "v1"}));
+        assert_eq!(payload["meta"], file["meta"]);
+        // The file's activation state and id never decide n8n's.
+        assert!(payload.get("active").is_none());
+        assert!(payload.get("id").is_none());
+        assert!(workflow_payload("x", &json!({"connections": {}})).is_err());
+        assert!(workflow_payload("x", &json!({"nodes": []})).is_err());
+    }
+
+    #[test]
+    fn an_export_with_a_literal_credential_is_refused() {
+        let payload = |nodes: Value| json!({"nodes": nodes, "connections": {}});
+        // A header pair whose value is data would be stored in the Nix store.
+        let literal = payload(
+            json!([{"name": "Send", "type": "n8n-nodes-base.httpRequest",
+            "parameters": {"headerParameters": {"parameters": [
+                {"name": "Authorization", "value": "Bearer abc123"},
+            ]}}}]),
+        );
+        let err = workflow_payload("w", &literal).unwrap_err();
+        assert!(err.to_string().contains("authorization"), "{err}");
+        // A direct key is caught too.
+        assert!(
+            workflow_payload(
+                "w",
+                &payload(json!([{"parameters": {"password": "hunter2"}}])),
+            )
+            .is_err()
+        );
+        // N8n expressions, credential references and ordinary headers are fine.
+        for ok in [
+            payload(json!([{"parameters": {"headerParameters": {"parameters": [
+                {"name": "Authorization", "value": "=Bearer {{ $json.token }}"},
+            ]}}}])),
+            payload(json!([{"parameters": {"headerParameters": {"parameters": [
+                {"name": "Authorization", "value": {"__rl": true, "value": "c1", "mode": "list"}},
+            ]}}}])),
+            payload(json!([{"parameters": {"headerParameters": {"parameters": [
+                {"name": "offset", "value": "0"},
+            ]}}}])),
+        ] {
+            workflow_payload("w", &ok).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_non_string_header_name_is_not_a_credential_pair() {
+        // A header parameter whose `name` is not a string is not a name this
+        // check recognises, so it is skipped like any other key instead of
+        // failing the run (or, in Nix, the evaluation).
+        let payload = json!({"nodes": [{"parameters": {"headerParameters": {"parameters": [
+            {"name": {"__rl": true, "value": "c1"}, "value": "Bearer abc123"},
+            {"name": ["Authorization"], "value": "Bearer abc123"},
+        ]}}}], "connections": {}});
+        assert_eq!(literal_secret(&payload), None);
+        workflow_payload("w", &payload).unwrap();
+        // The string form right beside them is still caught.
+        let literal = json!({"nodes": [{"parameters": {"headerParameters": {"parameters": [
+            {"name": "Authorization", "value": "Bearer abc123"},
+        ]}}}], "connections": {}});
+        assert_eq!(literal_secret(&literal).as_deref(), Some("authorization"));
+    }
+
+    #[test]
+    fn the_pre_pass_state_carries_no_credential_declaration() {
+        // Only what deactivating needs: a declaration the reconciler rejects (an
+        // over-long credential name, a broken export) cannot stop the unpublish.
+        let state: state::DeactivateState = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","credential_name":"owner-password"},
+            "inactive_workflows":["fixture-workflow"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            state.inactive_workflows,
+            vec!["fixture-workflow".to_owned()]
+        );
+        assert_eq!(state.owner.credential_name, "owner-password");
+        // A credential or workflow declaration in it is a rendering bug, not
+        // something to silently ignore.
+        assert!(
+            serde_json::from_str::<state::DeactivateState>(
+                r#"{"url":"http://127.0.0.1:5678",
+                "owner":{"email":"a@b.c","credential_name":"owner-password"},
+                "credentials":{"hook":{"type":"httpHeaderAuth"}}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_declared_default_execution_timeout_is_not_drift() {
+        // n8n 2.39.6 deletes an executionTimeout equal to the instance default
+        // (`removeDefaultValues`), so the live copy does not hold it: an absent
+        // key IS the declared default, and comparing it as written would PATCH
+        // on every run.
+        let declared = json!({"executionOrder": "v1", "executionTimeout": -1});
+        let payload = settings_payload(&declared).unwrap();
+        // The key travels as declared: that is what resets a live override.
+        assert_eq!(payload, declared);
+        assert!(settings_match(
+            &payload,
+            &json!({"executionOrder": "v1"}),
+            -1
+        ));
+        // A value that is not the default is compared as written.
+        assert!(!settings_match(
+            &declared,
+            &json!({"executionOrder": "v1"}),
+            60
+        ));
+        // A live key that is not the declaration is drift, and the PATCH that
+        // follows sends the declared default so n8n deletes the override.
+        assert!(!settings_match(
+            &declared,
+            &json!({"executionOrder": "v1", "executionTimeout": 120}),
+            -1
+        ));
+        assert_eq!(
+            settings_with_resets(&declared)["executionTimeout"],
+            json!(-1)
+        );
+        // The create payload keeps it too: n8n stores a declared timeout on
+        // create, so the live copy is the declaration as written.
+        let payload = workflow_payload(
+            "w",
+            &json!({"nodes": [], "connections": {},
+                   "settings": {"executionOrder": "v1", "executionTimeout": -1}}),
+        )
+        .unwrap();
+        assert_eq!(payload["settings"], declared);
+    }
+
+    #[test]
+    fn a_declared_default_resets_a_stored_timeout_override() {
+        // The reported failure: a workflow stored `executionTimeout: 120` (set in
+        // n8n) against a declaration that names the instance default (60). The
+        // stored override is drift, and the PATCH sends 60, which n8n deletes on
+        // save, so the next read is an absent key that matches the declaration.
+        let declared = json!({"executionTimeout": 60});
+        let stored = json!({"executionTimeout": 120});
+        assert!(!settings_match(&declared, &stored, 60));
+        let update = settings_with_resets(&declared);
+        assert_eq!(update["executionTimeout"], json!(60));
+        assert!(settings_match(&declared, &json!({}), 60));
+        // An absent live key only matches a declared default, never another value.
+        assert!(!settings_match(&declared, &json!({}), 120));
+        // The same drift is not reported as an unmanaged key: the declaration
+        // names it.
+        assert!(unmanaged_settings(&declared, &stored).is_empty());
+    }
+
+    #[test]
+    fn settings_converge_through_n8ns_reset_token() {
+        let declared = json!({"executionOrder": "v1"});
+        // An operator's timezone was merged into the stored settings: it is drift,
+        // because the declaration is the whole of the managed settings.
+        assert!(!settings_match(
+            &declared,
+            &json!({"executionOrder": "v1", "timezone": "Europe/Berlin"}),
+            -1
+        ));
+        // The PATCH that put it back resets the key n8n deletes on "DEFAULT";
+        // the deployed copy then holds only the declared key and matches, which
+        // is what stops a rewrite on every run.
+        let update = settings_with_resets(&declared);
+        assert_eq!(update["executionOrder"], "v1");
+        assert_eq!(update["timezone"], SETTINGS_RESET);
+        assert_eq!(update["saveManualExecutions"], SETTINGS_RESET);
+        // A null stored key is an absent one.
+        assert!(settings_match(
+            &declared,
+            &json!({"executionOrder": "v1", "timezone": null}),
+            -1
+        ));
+        // A declared value must still be there.
+        assert!(!settings_match(
+            &declared,
+            &json!({"executionOrder": "v0"}),
+            -1
+        ));
+        assert!(!settings_match(&declared, &json!({}), -1));
+        // A key n8n cannot reset is excluded (and reported), not retried.
+        assert!(settings_match(
+            &declared,
+            &json!({"executionOrder": "v1", "executionTimeout": 30}),
+            60
+        ));
+        assert_eq!(
+            unmanaged_settings(
+                &declared,
+                &json!({"executionOrder": "v1", "executionTimeout": 30})
+            ),
+            vec!["executionTimeout".to_owned()]
+        );
+        // A declared key that n8n cannot reset is written and compared normally.
+        let declared = json!({"executionTimeout": 30});
+        assert!(settings_match(
+            &declared,
+            &json!({"executionTimeout": 30}),
+            60
+        ));
+        assert!(!settings_match(
+            &declared,
+            &json!({"executionTimeout": 60}),
+            60
+        ));
+        // Settings that are not an object are a declaration error.
+        assert!(settings_payload(&json!("nope")).is_err());
+        // An export that recorded n8n's own "default" choice (the value its UI
+        // writes) means "no key": it is dropped, not compared against a value
+        // n8n never stores.
+        assert_eq!(
+            settings_payload(&json!({"executionOrder": "v1", "timezone": SETTINGS_RESET})).unwrap(),
+            json!({"executionOrder": "v1"})
+        );
+        // An empty declaration still resets every resettable key.
+        assert_eq!(
+            settings_with_resets(&json!({})),
+            json!({
+                "errorWorkflow": SETTINGS_RESET,
+                "timezone": SETTINGS_RESET,
+                "saveDataErrorExecution": SETTINGS_RESET,
+                "saveDataSuccessExecution": SETTINGS_RESET,
+                "saveManualExecutions": SETTINGS_RESET,
+                "saveExecutionProgress": SETTINGS_RESET,
+            })
+        );
+    }
+
+    fn provisioned() -> BTreeMap<String, ProvisionedCredential> {
+        BTreeMap::from([
+            (
+                "hub-webhook".to_owned(),
+                ProvisionedCredential {
+                    id: "c1".into(),
+                    kind: "httpHeaderAuth".into(),
+                },
+            ),
+            (
+                "hub-db".to_owned(),
+                ProvisionedCredential {
+                    id: "c2".into(),
+                    kind: "postgres".into(),
+                },
+            ),
+        ])
+    }
+
+    #[test]
+    fn node_credentials_are_rewritten_to_the_provisioned_ids() {
+        let mut nodes = json!([
+            {"name": "Webhook", "credentials": {"httpHeaderAuth": {"name": "Fleetix Hub webhook token"}}},
+            {"name": "Record", "credentials": {"postgres": {"id": "stale", "name": "Fleetix Hub publications"}}},
+            {"name": "Plain", "parameters": {}},
+        ]);
+        let mapping = BTreeMap::from([
+            (
+                "Fleetix Hub webhook token".to_owned(),
+                "hub-webhook".to_owned(),
+            ),
+            ("Fleetix Hub publications".to_owned(), "hub-db".to_owned()),
+        ]);
+        bind_credentials(&mut nodes, &mapping, &provisioned()).unwrap();
+        assert_eq!(
+            nodes[0]["credentials"]["httpHeaderAuth"],
+            json!({"id": "c1", "name": "hub-webhook"})
+        );
+        assert_eq!(
+            nodes[1]["credentials"]["postgres"],
+            json!({"id": "c2", "name": "hub-db"})
+        );
+        assert!(nodes[2].get("credentials").is_none());
+    }
+
+    #[test]
+    fn an_unmapped_reference_must_be_a_declared_credential_name() {
+        // Identity mapping: the reference name is the declared credential name.
+        let mut nodes = json!([
+            {"name": "Webhook", "credentials": {"httpHeaderAuth": {"name": "hub-webhook"}}},
+        ]);
+        bind_credentials(&mut nodes, &BTreeMap::new(), &provisioned()).unwrap();
+        assert_eq!(
+            nodes[0]["credentials"]["httpHeaderAuth"],
+            json!({"id": "c1", "name": "hub-webhook"})
+        );
+        // An undeclared reference and a type mismatch both fail closed.
+        let mut ghost = json!([
+            {"name": "Webhook", "credentials": {"httpHeaderAuth": {"name": "ghost"}}},
+        ]);
+        let err = bind_credentials(&mut ghost, &BTreeMap::new(), &provisioned()).unwrap_err();
+        assert!(err.to_string().contains("ghost"), "{err}");
+        let mut wrong_type = json!([
+            {"name": "Record", "credentials": {"httpHeaderAuth": {"name": "hub-db"}}},
+        ]);
+        assert!(bind_credentials(&mut wrong_type, &BTreeMap::new(), &provisioned()).is_err());
+    }
+
+    #[test]
+    fn a_declaration_matches_only_an_identical_live_copy() {
+        let desired = json!({
+            "name": "w",
+            "nodes": [{"name": "Webhook", "type": "webhook", "position": [0, 0]}],
+            "connections": {"Webhook": {"main": [[]]}},
+            "settings": {"executionOrder": "v1"},
+        });
+        // n8n adds node ids, webhookId, active, versionId, checksum...
+        let live = json!({
+            "name": "w",
+            "active": false,
+            "versionId": "v1",
+            "checksum": "abc",
+            "nodes": [{
+                "id": "n1", "name": "Webhook", "type": "webhook",
+                "position": [0, 0], "webhookId": "hook-1",
+            }],
+            "connections": {"Webhook": {"main": [[]]}},
+            "settings": {"executionOrder": "v1"},
+        });
+        assert!(matches_declaration(&desired, &live, -1));
+        // A managed change (position, node count, settings, connections) is drift.
+        let moved = json!({
+            "nodes": [{"name": "Webhook", "type": "webhook", "position": [10, 0]}],
+        });
+        assert!(!matches_declaration(&moved, &live, -1));
+        let extra_node = json!({
+            "nodes": [
+                {"name": "Webhook", "type": "webhook", "position": [0, 0]},
+                {"name": "Extra", "type": "noop", "position": [0, 0]},
+            ],
+        });
+        assert!(!matches_declaration(&extra_node, &live, -1));
+        let other_order = json!({"settings": {"executionOrder": "v0"}});
+        assert!(!matches_declaration(&other_order, &live, -1));
+        let dropped_connection = json!({"connections": {}});
+        assert!(!matches_declaration(&dropped_connection, &live, -1));
+        // A field a UI edit added to a node is drift, not an extra to ignore.
+        let disabled = json!({
+            "nodes": [{
+                "id": "n1", "name": "Webhook", "type": "webhook",
+                "position": [0, 0], "webhookId": "hook-1", "disabled": true,
+            }],
+        });
+        assert!(!matches_declaration(&live, &disabled, -1));
+        // An extra resettable settings key is drift: the update resets it, so a
+        // comparison that ignored it would PATCH forever.
+        let extra_setting = json!({"settings": {"executionOrder": "v1", "timezone": "UTC"}});
+        assert!(!matches_declaration(&live, &extra_setting, -1));
+        assert!(!matches_declaration(&extra_setting, &live, -1));
+    }
+
+    #[test]
+    fn executed_workflows_are_references_only_when_they_name_one() {
+        let payload = json!({"nodes": [
+            {"name": "Claim", "type": EXECUTE_WORKFLOW, "parameters": {
+                "workflowId": {"__rl": true, "value": "fleetix-hub-claim", "mode": "list"},
+            }},
+            {"name": "Plain", "type": EXECUTE_WORKFLOW, "parameters": {
+                "workflowId": "by-id",
+            }},
+            {"name": "Database", "type": EXECUTE_WORKFLOW, "parameters": {
+                "source": "database", "workflowId": {"value": "from-database"},
+            }},
+            {"name": "Expression", "type": EXECUTE_WORKFLOW, "parameters": {
+                "workflowId": {"__rl": true, "value": "={{ $json.id }}", "mode": "list"},
+            }},
+            {"name": "Parameter", "type": EXECUTE_WORKFLOW, "parameters": {
+                "source": "parameter", "workflowId": {"value": "from-args"},
+            }},
+            {"name": "Local file", "type": EXECUTE_WORKFLOW, "parameters": {
+                "source": "localFile", "workflowId": {"value": "w"},
+            }},
+            {"name": "Remote url", "type": EXECUTE_WORKFLOW, "parameters": {
+                "source": "url", "workflowId": {"__rl": true, "value": "https://x/y", "mode": "url"},
+            }},
+            // n8n reads only `workflowId.value`: the locator's `mode` does not
+            // decide whether the reference is local, so this one is an id.
+            {"name": "Url locator", "type": EXECUTE_WORKFLOW, "parameters": {
+                "source": "database",
+                "workflowId": {"__rl": true, "value": "local-id", "mode": "url"},
+            }},
+            // n8n skips a disabled node, so its reference is no dependency.
+            {"name": "Disabled", "type": EXECUTE_WORKFLOW, "disabled": true, "parameters": {
+                "workflowId": "w0",
+            }},
+            {"name": "Empty", "type": EXECUTE_WORKFLOW, "parameters": {"workflowId": ""}},
+            {"name": "Other", "type": "n8n-nodes-base.code", "parameters": {}},
+        ]});
+        assert_eq!(
+            executed_references(&payload),
+            vec![
+                "fleetix-hub-claim".to_owned(),
+                "by-id".to_owned(),
+                "from-database".to_owned(),
+                "local-id".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn callers_are_imported_after_the_workflows_they_execute() {
+        let declared = |name: &str, executes: Option<&str>| DeclaredWorkflow {
+            name: name.to_owned(),
+            payload: json!({"name": name, "nodes": match executes {
+                Some(target) => json!([{"name": "Call", "type": EXECUTE_WORKFLOW, "parameters": {
+                    "workflowId": {"__rl": true, "value": target, "mode": "list"},
+                }}]),
+                None => json!([]),
+            }}),
+        };
+        // Declared order is alphabetical; the caller comes last in the import.
+        let order = import_order(&[
+            declared("fleetix-hub-bluesky", Some("fleetix-hub-claim")),
+            declared("fleetix-hub-claim", None),
+            declared("fleetix-hub-lookup", None),
+        ])
+        .unwrap();
+        let names: Vec<&str> = order
+            .iter()
+            .map(|i| {
+                [
+                    "fleetix-hub-bluesky",
+                    "fleetix-hub-claim",
+                    "fleetix-hub-lookup",
+                ][*i]
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "fleetix-hub-claim",
+                "fleetix-hub-lookup",
+                "fleetix-hub-bluesky"
+            ]
+        );
+        // A cycle has no valid order.
+        let err = import_order(&[declared("a", Some("b")), declared("b", Some("a"))]).unwrap_err();
+        assert!(err.to_string().contains("cycle"), "{err}");
+        // A reference outside the declaration is not a dependency.
+        assert_eq!(
+            import_order(&[declared("a", Some("elsewhere"))])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn execute_workflow_references_are_rewritten_to_live_ids() {
+        let mut index = WorkflowIndex::new(&[("w0".to_owned(), "fleetix-hub-claim".to_owned())]);
+        let mut payload = json!({"name": "caller", "nodes": [
+            {"name": "Claim", "type": EXECUTE_WORKFLOW, "parameters": {
+                "workflowId": {"__rl": true, "value": "fleetix-hub-claim", "mode": "list",
+                               "cachedResultName": "fleetix-hub-claim"},
+            }},
+            {"name": "Webhook", "type": "n8n-nodes-base.webhook", "parameters": {}},
+        ]});
+        bind_executed_workflows(&mut payload, "caller", &index).unwrap();
+        assert_eq!(
+            payload["nodes"][0]["parameters"]["workflowId"],
+            json!({"__rl": true, "value": "w0", "mode": "list",
+                   "cachedResultName": "fleetix-hub-claim"})
+        );
+        // An id already live is left alone, and an unknown reference fails.
+        let mut by_id = json!({"nodes": [{"name": "Claim", "type": EXECUTE_WORKFLOW,
+            "parameters": {"workflowId": {"value": "w0", "mode": "list"}}}]});
+        bind_executed_workflows(&mut by_id, "caller", &index).unwrap();
+        assert_eq!(by_id["nodes"][0]["parameters"]["workflowId"]["value"], "w0");
+        let mut ghost = json!({"nodes": [{"name": "Claim", "type": EXECUTE_WORKFLOW,
+            "parameters": {"workflowId": {"value": "ghost", "mode": "list"}}}]});
+        let err = bind_executed_workflows(&mut ghost, "caller", &index).unwrap_err();
+        assert!(err.to_string().contains("ghost"), "{err}");
+        // The next import in the run resolves the id it just created.
+        index.insert("w1", "fleetix-hub-bluesky");
+        assert_eq!(
+            index.resolve("fleetix-hub-bluesky").unwrap(),
+            Some(("w1".to_owned(), "fleetix-hub-bluesky".to_owned()))
+        );
+        assert_eq!(index.resolve("ghost").unwrap(), None);
+    }
+
+    #[test]
+    fn a_duplicate_name_is_refused_instead_of_picking_one() {
+        let index = WorkflowIndex::new(&[
+            ("a".to_owned(), "hook".to_owned()),
+            ("b".to_owned(), "hook".to_owned()),
+        ]);
+        // Both live copies are visible to deactivation.
+        assert_eq!(index.ids("hook"), ["a".to_owned(), "b".to_owned()]);
+        // Converging or binding by that name cannot choose: the ids are named.
+        let err = index.unique_id("hook").unwrap_err().to_string();
+        assert!(err.contains('a') && err.contains('b'), "{err}");
+        assert!(index.resolve("hook").is_err());
+        // An explicit id in a reference is unambiguous.
+        assert_eq!(
+            index.resolve("b").unwrap(),
+            Some(("b".to_owned(), "hook".to_owned()))
+        );
+        // One live copy resolves, none is absent.
+        let single = WorkflowIndex::new(&[("c".to_owned(), "one".to_owned())]);
+        assert_eq!(single.unique_id("one").unwrap(), Some("c"));
+        assert_eq!(single.unique_id("two").unwrap(), None);
+        assert!(single.ids("two").is_empty());
+    }
+
+    #[test]
+    fn two_declarations_cannot_share_one_n8n_credential() {
+        let state: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "credentials":{
+              "A":{"type":"httpHeaderAuth"},
+              "B":{"type":"httpHeaderAuth"}}}"#,
+        )
+        .unwrap();
+        // A was recorded under id 1; the credential it names is now called B,
+        // which is also declared, so both declarations resolve to id 1.
+        let existing = vec![("1".to_owned(), "B".to_owned())];
+        let previous = BTreeMap::from([("A".to_owned(), "1".to_owned())]);
+        let err = resolve_targets(&existing, &previous, &state).unwrap_err();
+        assert!(err.to_string().contains("both resolve"), "{err}");
+        // Distinct targets resolve without a claim.
+        let existing = vec![
+            ("1".to_owned(), "A".to_owned()),
+            ("2".to_owned(), "B".to_owned()),
+        ];
+        let targets = resolve_targets(&existing, &BTreeMap::new(), &state).unwrap();
+        assert_eq!(targets["A"], "1");
+        assert_eq!(targets["B"], "2");
+    }
+
+    #[test]
+    fn credential_prefix_is_applied_while_the_file_stays_the_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("token"), "abc123\n").unwrap();
+        let cred: state::Credential = serde_json::from_str(
+            r#"{"type":"httpHeaderAuth",
+                "data":{"name":"Authorization"},
+                "data_files":{"value":"token"},
+                "data_file_prefixes":{"value":"Bearer "}}"#,
+        )
+        .unwrap();
+        let data = resolve_data(&cred, dir.path()).unwrap();
+        assert_eq!(data["name"], "Authorization");
+        assert_eq!(data["value"], "Bearer abc123");
+    }
 
     #[test]
     fn target_prefers_recorded_id_and_refuses_ambiguity() {

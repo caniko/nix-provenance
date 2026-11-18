@@ -38,6 +38,7 @@
   notRuntime = f: !(lib.hasPrefix "/" f) || lib.hasPrefix builtins.storeDir f;
   fieldFiles = lib.concatLists (lib.mapAttrsToList (name: c: lib.mapAttrsToList (field: file: {inherit name field file;}) c.dataFiles) cfg.credentials);
   secretFiles = [cfg.owner.passwordFile] ++ map (f: toString f.file) fieldFiles;
+  hasWorkflows = cfg.workflows != {};
 
   ownerState = {
     inherit (cfg) url;
@@ -51,14 +52,45 @@
   # the n8n-owner-env oneshot sees only the owner, so credential edits neither
   # restart n8n nor can a credential mistake stop it from starting.
   ownerStateFile = pkgs.writeText "n8n-provision-owner.json" (builtins.toJSON ownerState);
+
+  # n8n drops an `executionTimeout` equal to the instance default from every
+  # saved workflow; the reconciler reads that default from n8n's `/rest/settings`
+  # rather than being handed a mirror of it here.
+
+  # The pre-pass sees only what deactivating needs: a workflow name or a
+  # credential the reconciler would reject must not keep it from unpublishing.
+  inactiveWorkflows = lib.attrNames (lib.filterAttrs (_: w: !w.active) cfg.workflows);
+  deactivateStateFile = pkgs.writeText "n8n-deactivate-state.json" (builtins.toJSON {
+    inherit (cfg) url;
+    owner = {
+      inherit (cfg.owner) email;
+      credential_name = ownerCredential;
+    };
+    inactive_workflows = inactiveWorkflows;
+  });
+
   stateFile = pkgs.writeText "n8n-provision-state.json" (builtins.toJSON (ownerState
     // {
-      credentials =
-        lib.mapAttrs (name: c: {
+      credentials = lib.mapAttrs (name: c:
+        {
           inherit (c) type data;
           data_files = lib.mapAttrs (field: _: fieldCredential name field) c.dataFiles;
+        }
+        // lib.optionalAttrs (c.dataFilePrefixes != {}) {
+          data_file_prefixes = c.dataFilePrefixes;
         })
-        cfg.credentials;
+      cfg.credentials;
+    }
+    // lib.optionalAttrs (cfg.workflows != {}) {
+      # A path literal is interpolated, not `toString`'d: the string keeps its
+      # store context, so the file enters the closure and a content change
+      # changes restartTriggers.
+      workflows =
+        lib.mapAttrs (name: w: {
+          file = "${w.file}";
+          inherit (w) active credentials;
+        })
+        cfg.workflows;
     }));
 in {
   options.services.n8n.provision = {
@@ -136,6 +168,78 @@ in {
             default = {};
             description = "Secret credential fields: field name to runtime file holding its value.";
           };
+          dataFilePrefixes = mkOption {
+            type = types.attrsOf types.str;
+            default = {};
+            description = ''
+              Prefix prepended to a `dataFiles` value at run time, so a raw
+              token file can become the field value n8n expects (a Header Auth
+              `Authorization` of `value = "Bearer <token>"` uses
+              `dataFilePrefixes.value = "Bearer "`). Read at run time with the
+              file; the prefix itself is not secret.
+            '';
+            example = lib.literalExpression ''{value = "Bearer ";}'';
+          };
+        };
+      });
+    };
+
+    workflows = mkOption {
+      default = {};
+      description = ''
+        n8n workflows imported or updated by name from a JSON export. The
+        reconciler rewrites each node's credential references to the ids of the
+        declared `credentials`, then activates or deactivates the workflow to
+        match `active`. An unchanged declaration writes nothing; a workflow
+        edited in the UI is put back to the declared content.
+      '';
+      example = lib.literalExpression ''
+        {
+          fleetix-hub-claim = {
+            file = ../n8n/workflows/fleetix-hub-claim.json;
+            credentials."Fleetix Hub webhook token" = "fleetix-hub-webhook";
+          };
+        }
+      '';
+      type = types.attrsOf (types.submodule {
+        options = {
+          file = mkOption {
+            type = types.oneOf [types.path types.str];
+            description = ''
+              n8n workflow JSON export (`nodes`, `connections`, optional
+              `settings` and `meta`). A path literal is interpolated, so it
+              stays in the closure and editing it changes the restart trigger.
+
+              The export is copied into the Nix store, which is readable by every
+              process and kept in every generation, so it must be sanitized
+              **before it enters the flake source**: a credential belongs in a
+              declared `credentials` entry and is referenced from a node, and a
+              value that must be computed uses an n8n expression (`=...`). Nix
+              has already copied the source by the time it evaluates this module,
+              so the reconciler's runtime check for a literal `Authorization`,
+              `apiKey`/`api-key` or `password` can only refuse the deployment; it
+              cannot keep the value out of the store.
+            '';
+          };
+          active = mkOption {
+            type = types.bool;
+            default = true;
+            description = ''
+              Activate (publish) the imported workflow after writing it. A
+              workflow declared inactive is deactivated by a separate unit that
+              loads only the owner password, before the credentials are loaded,
+              so a broken credential file cannot keep its webhook serving.
+            '';
+          };
+          credentials = mkOption {
+            type = types.attrsOf types.str;
+            default = {};
+            description = ''
+              Credential reference name as written in the JSON export, mapped
+              to a declared `credentials` entry. A reference with no entry here
+              must itself be a declared credential name.
+            '';
+          };
         };
       });
     };
@@ -162,6 +266,18 @@ in {
       {
         assertion = !(lib.any notRuntime secretFiles);
         message = "services.n8n.provision secret files must be absolute runtime paths outside ${builtins.storeDir}.";
+      }
+      {
+        assertion = lib.all (c: lib.all (field: c.dataFiles ? ${field}) (lib.attrNames c.dataFilePrefixes)) (lib.attrValues cfg.credentials);
+        message = "services.n8n.provision.credentials.*.dataFilePrefixes must only prefix fields declared in dataFiles.";
+      }
+      {
+        assertion = lib.all (w: lib.all (c: cfg.credentials ? ${c}) (lib.attrValues w.credentials)) (lib.attrValues cfg.workflows);
+        message = "services.n8n.provision.workflows.*.credentials values must be declared credentials.";
+      }
+      {
+        assertion = lib.all (w: lib.stringLength w != 0 && lib.stringLength w <= 128) (lib.attrNames cfg.workflows);
+        message = "services.n8n.provision.workflows names must be 1-128 characters (n8n's workflow name limit).";
       }
     ];
 
@@ -191,11 +307,43 @@ in {
       serviceConfig.EnvironmentFile = lib.mkAfter ["-${envFile}"];
     };
 
-    systemd.services.n8n-provision = {
-      description = "Declaratively provision n8n credentials";
+    # Deactivation runs in its own unit that loads only the owner password.
+    # systemd resolves a unit's whole LoadCredential= before ExecStart, so
+    # loading the field credentials here would let one missing credential file
+    # (or a corrupt credential registry) keep a webhook the declaration switched
+    # off serving.
+    #
+    # Only wired when a workflow is declared: a host pinning an older
+    # `provisionPackage` has no `deactivate` subcommand, and a declaration with no
+    # workflows asks it for nothing.
+    systemd.services.n8n-deactivate = mkIf hasWorkflows {
+      description = "Deactivate n8n workflows declared active = false";
       after = ["n8n.service"];
       requires = ["n8n.service"];
       partOf = ["n8n.service"];
+      # Retrying the provisioner means retrying the pre-pass with it; the timer
+      # is pulled in here rather than enabled on its own (see below).
+      wants = ["n8n-provision-retry.timer"];
+      wantedBy = ["multi-user.target"];
+      restartTriggers = [deactivateStateFile];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        UMask = "0077";
+        LoadCredential = ["${ownerCredential}:${cfg.owner.passwordFile}"];
+        ExecStart = "${exe} deactivate --state ${deactivateStateFile} --credential-dir %d --ready-timeout 600";
+        TimeoutStartSec = "15min";
+      };
+    };
+
+    systemd.services.n8n-provision = {
+      description = "Declaratively provision n8n credentials and workflows";
+      # Fail closed: no workflow is written or activated unless the deactivating
+      # pre-pass confirmed the declarations it had to unpublish.
+      after = ["n8n.service"] ++ lib.optional hasWorkflows "n8n-deactivate.service";
+      requires = ["n8n.service"] ++ lib.optional hasWorkflows "n8n-deactivate.service";
+      partOf = ["n8n.service"];
+      wants = ["n8n-provision-retry.timer"];
       wantedBy = ["multi-user.target"];
       restartTriggers = [stateFile];
       serviceConfig = {
@@ -209,6 +357,40 @@ in {
           ++ map (f: "${fieldCredential f.name f.field}:${f.file}") fieldFiles;
         ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir /var/lib/n8n-provision/markers --ready-timeout 600";
         TimeoutStartSec = "15min";
+      };
+    };
+
+    # A transient failure must not need a manual start. `Restart=` cannot do it
+    # alone: a failed `Requires=` dependency cancels the provisioning job before
+    # the unit runs, so no Restart= ever sees it. The timer keeps re-running the
+    # pair instead (a start job pulls the failed pre-pass in again) and goes idle
+    # once provisioning is active. A declaration that is genuinely broken still
+    # surfaces: it stays failed between ticks, and every tick re-reports why.
+    #
+    # The oneshots pull the timer in with `Wants=`; the timer is `PartOf=` them
+    # and n8n itself. A NixOS switch stops n8n between its stop and start phases,
+    # and a timer enabled on its own would tick in that window: it starts the
+    # units still loaded from the old generation, they stay active (exited), and
+    # the switch's start is a no-op, so a newly declared `active = false` never
+    # lands (and an explicit stop of n8n is undone the same way).
+    systemd.timers.n8n-provision-retry = mkIf hasWorkflows {
+      partOf = [
+        "n8n.service"
+        "n8n-provision.service"
+        "n8n-deactivate.service"
+      ];
+      # n8n's own restarts restart this timer (PartOf), so a crash-looping n8n
+      # would exhaust the timer's start limit and leave provisioning stranded
+      # after n8n recovers. The timer only arms a one-minute tick, so it needs
+      # no limit.
+      unitConfig.StartLimitIntervalSec = 0;
+      timerConfig = {
+        Unit = "n8n-provision.service";
+        # OnActiveSec arms the first tick (a unit that was never active has no
+        # inactive timestamp to count from); OnUnitInactiveSec re-arms while the
+        # unit is not active, failed included.
+        OnActiveSec = "1min";
+        OnUnitInactiveSec = "1min";
       };
     };
 

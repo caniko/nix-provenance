@@ -13,6 +13,22 @@
 
   stateDir = "/var/lib/windmill-provision";
   envFile = "/run/windmill-provision/env";
+  # Dispatcher state only, never a credential input: a credential directory
+  # is watched as a parent (agenix swaps), and deleting an entry one level
+  # below it does not wake that watch, so the marker sits in a subdirectory.
+  rotateDir = "/run/windmill-rotate/dispatch";
+  # Lexical normal form for the reservation check: drop empty and `.`
+  # components and fold /var/run into /run (a symlink to it on NixOS).
+  normalPath = p: let
+    joined = "/" + lib.concatStringsSep "/" (lib.filter (c: c != "" && c != ".") (lib.splitString "/" (toString p)));
+  in
+    if joined == "/var/run" || lib.hasPrefix "/var/run/" joined
+    then "/run" + lib.removePrefix "/var/run" joined
+    else joined;
+  inDispatch = p: let
+    n = normalPath p;
+  in
+    lib.elem ".." (lib.splitString "/" (toString p)) || n == rotateDir || lib.hasPrefix "${rotateDir}/" n;
   superadminCredential = "superadmin";
   lockOrder = lib.optional cfg.disableDefaultAdmin "windmill-lock-default-admin.service";
 
@@ -27,13 +43,52 @@
 
   notRuntime = f: !(lib.hasPrefix "/" f) || lib.hasPrefix builtins.storeDir f;
   secretFiles = [cfg.superadminSecretFile] ++ map (u: toString u.passwordFile) (lib.attrValues cfg.users);
+  scriptCount = builtins.foldl' (total: w: total + lib.length (lib.attrNames w.scripts)) 0 (lib.attrValues cfg.workspaces);
+  # One deploy can wait a whole dependency-job budget, and the deploys are
+  # serial; the rest is server readiness, logins, variables and tokens.
+  headroomSeconds = 600;
+  startTimeoutSeconds = scriptCount * cfg.deployTimeoutSeconds + headroomSeconds;
+
+  # Length-prefixed so (studio, f/a/b) and (studio-f, a/b) never share an id.
+  variableCredential = ws: path:
+    pw.credentialName "windmill-variable:${toString (lib.stringLength ws)}:${ws}:${toString (lib.stringLength path)}:${path}";
+  declaredVariables = lib.concatLists (lib.mapAttrsToList (ws: w:
+    lib.mapAttrsToList (path: v: {inherit ws path v;}) w.variables)
+  cfg.workspaces);
+  variableFiles = map (d: toString d.v.valueFile) declaredVariables;
+  variableCredentials = map (d: "${variableCredential d.ws d.path}:${d.v.valueFile}") declaredVariables;
 
   stateFile = pkgs.writeText "windmill-provision-state.json" (builtins.toJSON {
     inherit (cfg) url;
     database = wm.database.name;
     superadmin_credential = superadminCredential;
     disable_default_admin = cfg.disableDefaultAdmin;
-    workspaces = lib.mapAttrs (_: w: {inherit (w) name;}) cfg.workspaces;
+    workspaces = lib.mapAttrs (id: w:
+      {
+        inherit (w) name;
+      }
+      // lib.optionalAttrs (w.scripts != {}) {
+        # A path literal is interpolated, not `toString`'d: the string keeps its
+        # store context, so the file enters the closure and a content change
+        # changes restartTriggers.
+        scripts = lib.mapAttrs (_: s:
+          {
+            inherit (s) language summary;
+            content_file = "${s.contentFile}";
+          }
+          // lib.optionalAttrs (s.tag != null) {inherit (s) tag;})
+        w.scripts;
+      }
+      // lib.optionalAttrs (w.variables != {}) {
+        variables =
+          lib.mapAttrs (path: v: {
+            credential_name = variableCredential id path;
+            is_secret = v.isSecret;
+            inherit (v) description;
+          })
+          w.variables;
+      })
+    cfg.workspaces;
     users =
       lib.mapAttrs (name: u: {
         inherit (u) email workspaces admin;
@@ -75,13 +130,121 @@ in {
       description = "Loopback URL the reconciler uses to reach windmill-server.";
     };
 
+    deployTimeoutSeconds = mkOption {
+      type = types.ints.positive;
+      default = 300;
+      description = ''
+        Bound on waiting for one deployed version's lock generation job. Scripts
+        are deployed serially, so the reconcile unit's `TimeoutStartSec` is
+        derived from this budget times the number of declared scripts plus
+        startup headroom; raise it on a slow worker pool instead of editing the
+        unit.
+      '';
+    };
+
     workspaces = mkOption {
       default = {};
       description = "Workspaces to ensure, keyed by workspace id (`[a-z0-9_-]+`). The open-source server allows two besides `admins`.";
       type = types.attrsOf (types.submodule {
-        options.name = mkOption {
-          type = types.str;
-          description = "Workspace display name.";
+        options = {
+          name = mkOption {
+            type = types.str;
+            description = "Workspace display name.";
+          };
+
+          scripts = mkOption {
+            default = {};
+            description = ''
+              Scripts deployed into this workspace, keyed by full Windmill path.
+              The reconciler deploys a new version only when the content,
+              language or tag differs from the latest deployed one; the version
+              history is Windmill's.
+            '';
+            example = lib.literalExpression ''
+              {
+                "f/fleetix_hub/comfy_generate" = {
+                  language = "bun";
+                  contentFile = ../registry/windmill/comfy_generate.ts;
+                  summary = "Submit ComfyUI prompts";
+                };
+              }
+            '';
+            type = types.attrsOf (types.submodule {
+              options = {
+                language = mkOption {
+                  type = types.strMatching "[a-z][a-z0-9_]*";
+                  description = "Windmill script language (`bun`, `python3`, `deno`, `nativets`, ...).";
+                };
+                contentFile = mkOption {
+                  type = types.oneOf [types.path types.str];
+                  description = ''
+                    File holding the script content. Scripts are code, not
+                    secrets, so a store path is the normal choice: a path
+                    literal such as `./procedure.ts` (interpolated, so it stays
+                    in the closure) or `"''${pkgs.writeText ...}"`. Any readable
+                    absolute path works.
+                  '';
+                };
+                summary = mkOption {
+                  type = types.str;
+                  default = "";
+                  description = "Script summary shown in the Windmill UI.";
+                };
+                tag = mkOption {
+                  type = types.nullOr types.str;
+                  default = null;
+                  description = ''
+                    Worker-pool tag (`[A-Za-z0-9_-]+`), for example `hub` to route
+                    the runs and the lock job to a worker that listens for it. A
+                    new version does not inherit its parent's tag, so leaving
+                    this null keeps the deployed tag and declaring one changes it.
+
+                    Windmill also reads a `// tag <name>` badge from the top of a
+                    script's source and applies it over the tag sent with the
+                    deploy, so a source that disagrees with this declaration is
+                    refused before it is deployed; the tag Windmill stored is
+                    verified on read-back.
+                  '';
+                };
+              };
+            });
+          };
+
+          variables = mkOption {
+            default = {};
+            description = ''
+              Variables upserted in this workspace, keyed by full Windmill path.
+              The value is read from `valueFile` at run time and never enters
+              the Nix store, so `valueFile` must be a runtime path such as
+              `config.age.secrets.<name>.path`.
+            '';
+            example = lib.literalExpression ''
+              {
+                "f/fleetix_hub/hub_token" = {
+                  valueFile = config.age.secrets.fleetix-hub-windmill-token.path;
+                  description = "Fleetix Hub receipt bearer";
+                };
+              }
+            '';
+            type = types.attrsOf (types.submodule {
+              options = {
+                valueFile = mkOption {
+                  type = types.str;
+                  description = "Runtime file (not a store path) holding the variable value.";
+                };
+                isSecret = mkOption {
+                  type = types.bool;
+                  default = true;
+                  description = "Store the variable encrypted (Windmill secret).";
+                };
+                description = mkOption {
+                  type = types.str;
+                  default = "";
+                  description = "Variable description shown in the Windmill UI.";
+                };
+              };
+            });
+          };
         };
       });
     };
@@ -228,6 +391,26 @@ in {
         assertion = lib.all (u: lib.all (w: cfg.workspaces ? ${w}) u.workspaces) (lib.attrValues cfg.users);
         message = "services.windmill.provision.users.*.workspaces must be declared workspaces.";
       }
+      {
+        assertion = lib.all (w: lib.all (p: lib.stringLength p <= 255 && builtins.match "[ufg](/[A-Za-z0-9_-]+){2,}" p != null) (lib.attrNames w.scripts ++ lib.attrNames w.variables)) (lib.attrValues cfg.workspaces);
+        message = "services.windmill.provision.workspaces.*.{scripts,variables} must be keyed by a full Windmill path (`f/<folder>/<name>`, `u/<user>/<name>` or `g/<group>/<name>`; alphanumerics, `_` and `-`; at most 255 characters).";
+      }
+      {
+        # The tag becomes the job's queue tag, which Windmill splices into its SQL.
+        assertion = lib.all (w: lib.all (s: s.tag == null || builtins.match "[A-Za-z0-9_-]{1,50}" s.tag != null) (lib.attrValues w.scripts)) (lib.attrValues cfg.workspaces);
+        message = "services.windmill.provision.workspaces.*.scripts.*.tag must match [A-Za-z0-9_-]+ and be at most 50 characters.";
+      }
+      {
+        assertion = !(lib.any notRuntime variableFiles);
+        message = "services.windmill.provision.workspaces.*.variables.*.valueFile must be an absolute runtime path outside ${builtins.storeDir}: the value is a secret.";
+      }
+      {
+        # The rotation dispatcher owns this directory: an input there would make
+        # its own marker removal look like a rotation, and a file at the marker
+        # path would be deleted as one. `..` is refused rather than resolved.
+        assertion = !(lib.any inDispatch (secretFiles ++ variableFiles ++ map (t: t.path) (lib.attrValues cfg.tokens)));
+        message = "services.windmill.provision: secret files, variable value files and token paths must not be in ${rotateDir} (reserved for rotation state) or contain `..`.";
+      }
     ];
 
     # Service-root-secret exception: Windmill takes SUPERADMIN_SECRET from its
@@ -261,12 +444,16 @@ in {
     };
 
     systemd.services.windmill-provision = {
-      description = "Declaratively provision Windmill users, workspaces and tokens";
+      description = "Declaratively provision Windmill users, workspaces, scripts, variables and tokens";
       after = ["windmill-server.service" "postgresql.target"] ++ lockOrder;
       requires = ["windmill-server.service"] ++ lockOrder;
       partOf = ["windmill-server.service"];
       wantedBy = ["multi-user.target"];
       restartTriggers = [stateFile];
+      # Only events start it (boot, switches, the rotation dispatcher; it has no
+      # Restart=), so a burst of rotations must not trip systemd's start limit
+      # and leave the last secret unapplied.
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -275,40 +462,101 @@ in {
         UMask = "0077";
         LoadCredential =
           ["${superadminCredential}:${cfg.superadminSecretFile}"]
-          ++ pw.userPasswordCredentials "windmill-provision" cfg.users;
-        ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir ${stateDir}/markers --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql";
+          ++ pw.userPasswordCredentials "windmill-provision" cfg.users
+          ++ variableCredentials;
+        # A declaration with no scripts never waits on a deploy, and an older
+        # `provisionPackage` has no `--deploy-timeout` flag to accept.
+        ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir ${stateDir}/markers --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql${lib.optionalString (scriptCount > 0) " --deploy-timeout ${toString cfg.deployTimeoutSeconds}"}";
+        # One serial deploy waits (bounded) for its dependency job's lock: the
+        # start timeout must cover every declared script's budget plus startup,
+        # not one fixed number that a growing declaration can outgrow.
+        TimeoutStartSec = "${toString startTimeoutSeconds}s";
       };
     };
 
     # Runtime secret files rotate in place, so nothing in the store changes to
-    # restart on: watch them. A rotated password restarts the oneshot
-    # (RemainAfterExit makes a plain start a no-op); a rotated superadmin
-    # secret restarts the server (the env file is rendered at its start),
-    # which re-runs provisioning through partOf.
-    systemd.paths.windmill-provision-rotate = mkIf (cfg.users != {}) {
+    # restart on: watch them. One watcher covers every input, because an agenix
+    # generation swap changes all files under /run/agenix at once, and separate
+    # watchers each restarting the same oneshot kill each other's reconciles
+    # until systemd's start limit refuses the last one.
+    #
+    # Capture is split from work: systemd drops a path event that arrives while
+    # the triggered unit still runs, so the watcher only drops a pending marker
+    # (instant, watches re-armed at once). A PathExists unit starts a
+    # credential-free dispatcher that consumes the marker and runs one pass per
+    # marker it finds; each pass is its own oneshot, so it loads the superadmin
+    # credential fresh (a rotation that lands mid-pass is compared on the next
+    # pass, not against a stale copy) and a briefly missing file fails only that
+    # pass, never the watchers. A real superadmin change restarts the server
+    # (its env file is rendered at start) and then starts provisioning
+    # explicitly, since PartOf restarts an active oneshot but not a failed one;
+    # anything else restarts provisioning. `systemctl` blocks until each job
+    # finishes. Bursts of writes are normal, so none of these units has a start
+    # limit; the path units keep systemd's own trigger limit.
+    systemd.tmpfiles.rules = ["d ${dirOf rotateDir} 0700 root root -" "d ${rotateDir} 0700 root root -"];
+    systemd.paths.windmill-rotate = {
       wantedBy = ["multi-user.target"];
-      pathConfig.PathChanged = watchPaths (map (u: u.passwordFile) (lib.attrValues cfg.users));
-    };
-    systemd.services.windmill-provision-rotate = mkIf (cfg.users != {}) {
-      description = "Re-run Windmill provisioning after a password file rotates";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-provision.service";
+      pathConfig = {
+        PathChanged = watchPaths ([cfg.superadminSecretFile] ++ map (u: u.passwordFile) (lib.attrValues cfg.users) ++ variableFiles);
+        Unit = "windmill-rotate-mark.service";
       };
     };
-    systemd.paths.windmill-superadmin-rotate = {
-      wantedBy = ["multi-user.target"];
-      pathConfig.PathChanged = watchPaths [cfg.superadminSecretFile];
+    systemd.services.windmill-rotate-mark = {
+      description = "Record a pending Windmill secret rotation";
+      unitConfig.StartLimitIntervalSec = 0;
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.coreutils}/bin/touch ${rotateDir}/pending";
+      };
     };
-    systemd.services.windmill-superadmin-rotate = {
-      description = "Restart Windmill after the superadmin secret rotates";
+    systemd.paths.windmill-rotate-pending = {
+      wantedBy = ["multi-user.target"];
+      pathConfig = {
+        PathExists = "${rotateDir}/pending";
+        Unit = "windmill-rotate.service";
+      };
+    };
+    systemd.services.windmill-rotate = {
+      description = "Dispatch pending Windmill secret rotations";
+      unitConfig.StartLimitIntervalSec = 0;
+      serviceConfig = {
+        Type = "oneshot";
+        # A failed pass is logged by its own unit; the next write retries.
+        ExecStart = pkgs.writeShellScript "windmill-rotate" ''
+          set -u
+          while [ -e ${rotateDir}/pending ]; do
+            # Debounce: let a burst of writes (one agenix switch) settle so it
+            # costs one pass, not one per file.
+            ${pkgs.coreutils}/bin/sleep 1
+            ${pkgs.coreutils}/bin/rm -f ${rotateDir}/pending
+            ${config.systemd.package}/bin/systemctl start windmill-rotate-pass.service || true
+          done
+        '';
+      };
+    };
+    systemd.services.windmill-rotate-pass = {
+      description = "Re-run Windmill provisioning, or restart Windmill, after a secret file rotates";
+      # Boot writes the inputs too: a pass queued while the first provisioning
+      # run is still starting waits for it instead of killing it mid-run.
+      after = ["windmill-server.service" "windmill-provision.service"];
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         LoadCredential = ["${superadminCredential}:${cfg.superadminSecretFile}"];
-        # Only a real secret change restarts the server; an agenix generation
-        # switch that leaves the content alone is skipped (exit 1 = unmet).
-        ExecCondition = "${exe} changed --secret-file %d/${superadminCredential} --stamp /run/windmill-provision/superadmin.sha";
-        ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-server.service";
+        # `changed` exits 0 on a real superadmin change, 1 when it is unchanged
+        # (an agenix switch that leaves its content alone) and 2 when the
+        # comparison failed, which fails the pass without touching the services.
+        ExecStart = pkgs.writeShellScript "windmill-rotate-pass" ''
+          set -u
+          systemctl=${config.systemd.package}/bin/systemctl
+          status=0
+          ${exe} changed --secret-file "$CREDENTIALS_DIRECTORY/${superadminCredential}" --stamp /run/windmill-provision/superadmin.sha || status=$?
+          case "$status" in
+            0) $systemctl restart windmill-server.service && exec $systemctl start windmill-provision.service ;;
+            1) exec $systemctl restart windmill-provision.service ;;
+            *) exit "$status" ;;
+          esac
+        '';
       };
     };
   };

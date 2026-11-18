@@ -83,7 +83,11 @@ service's own consumption:
   set passwords over HTTP, so the reconciler writes an argon2id hash into the
   local `password` table through `psql` (hash on stdin only) and uses the API
   for the rest. Minted API tokens are server-generated and stored at the
-  declared path with the declared owner, group and mode.
+  declared path with the declared owner, group and mode. Declared scripts
+  (content from a file) and variables (value from a systemd credential, read at
+  run time) go over the same loopback API, and n8n workflows are imported the
+  same way with their credential references bound to provisioned credentials;
+  none of these produce a file on disk.
 
 The `adapter/` kind is the inverse of the others: instead of giving a system a
 tenant, it lets an **out-of-scope app reuse existing tenants** (rauthy and/or

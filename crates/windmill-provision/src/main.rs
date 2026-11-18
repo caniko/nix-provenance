@@ -19,7 +19,7 @@ use state::State;
 #[derive(Parser, Debug)]
 #[command(
     name = "windmill-provision",
-    about = "Declarative Windmill bootstrap: superadmin env file, operator logins, workspaces, tokens",
+    about = "Declarative Windmill bootstrap: superadmin env file, operator logins, workspaces, scripts, variables, tokens",
     version
 )]
 struct Cli {
@@ -41,8 +41,8 @@ enum Command {
         #[arg(long)]
         stamp: PathBuf,
     },
-    /// Exit 0 only when the secret differs from the digest recorded at the last
-    /// start (ExecCondition of the rotation restart; exit 1 skips it).
+    /// Exit 0 when the secret differs from the digest recorded at the last
+    /// start, 1 when it is unchanged, 2 when the comparison failed.
     Changed {
         #[arg(long)]
         secret_file: PathBuf,
@@ -78,6 +78,9 @@ enum Command {
         psql: PathBuf,
         #[arg(long, default_value_t = 120)]
         ready_timeout: u64,
+        /// Bound on waiting for a deployed version's lock generation job.
+        #[arg(long, default_value_t = 300)]
+        deploy_timeout: u64,
     },
 }
 
@@ -88,11 +91,17 @@ fn main() -> Result<()> {
             out,
             stamp,
         } => write_env(&secret_file, &out, &stamp),
+        // 0 = changed, 1 = unchanged, 2 = the comparison failed: a caller must
+        // not read an unreadable or empty secret as "unchanged".
         Command::Changed { secret_file, stamp } => {
-            if provenance_core::stamp::secret_unchanged(&secret_file, &stamp)? {
-                std::process::exit(1);
+            match provenance_core::stamp::secret_unchanged(&secret_file, &stamp) {
+                Ok(true) => std::process::exit(1),
+                Ok(false) => Ok(()),
+                Err(err) => {
+                    eprintln!("error: {err:#}");
+                    std::process::exit(2);
+                }
             }
-            Ok(())
         }
         Command::LockDefaultAdmin {
             state,
@@ -118,6 +127,7 @@ fn main() -> Result<()> {
             runuser,
             psql,
             ready_timeout,
+            deploy_timeout,
         } => {
             let state = read_state(&state)?;
             let db = db::Psql {
@@ -132,7 +142,14 @@ fn main() -> Result<()> {
                 lock_default_admin(&db, Duration::from_secs(ready_timeout))?;
             }
             state.validate()?;
-            reconcile(&state, &credential_dir, &marker_dir, &db, ready_timeout)
+            reconcile(
+                &state,
+                &credential_dir,
+                &marker_dir,
+                &db,
+                ready_timeout,
+                deploy_timeout,
+            )
         }
     }
 }
@@ -269,6 +286,7 @@ fn reconcile(
     marker_dir: &Path,
     db: &db::Psql,
     ready_timeout: u64,
+    deploy_timeout: u64,
 ) -> Result<()> {
     let wm = Windmill::new(&state.url)?;
     wm.wait_ready(Duration::from_secs(ready_timeout))?;
@@ -313,6 +331,101 @@ fn reconcile(
                     format!("{} is a member of {ws} but has no usr row", user.email)
                 })?;
                 wm.set_workspace_admin(&superadmin, ws, &username, user.admin)?;
+            }
+        }
+    }
+
+    // Code and configuration next: a script is redeployed only when its
+    // content, language or tag differs from the latest deployed version, and a
+    // variable only when its value, secrecy or description differs. The
+    // variable value comes from its runtime credential file, never the state.
+    for (ws, spec) in &state.workspaces {
+        for (path, script) in &spec.scripts {
+            let content = fs::read_to_string(&script.content_file)
+                .with_context(|| format!("reading {}", script.content_file.display()))?;
+            let deployed = wm.script(&superadmin, ws, path)?;
+            // A new version does not inherit its parent's tag: a declaration
+            // that says nothing about it must send the deployed one back.
+            let deployed_tag = deployed.as_ref().and_then(|d| d.tag.as_deref());
+            let tag = script
+                .tag
+                .as_deref()
+                .or(deployed_tag)
+                .filter(|tag| !tag.is_empty());
+            // Windmill 1.839.0 applies a `// tag <name>` badge from the source
+            // over the tag sent with the deploy, so a source that disagrees with
+            // the declaration would deploy a version the declaration does not
+            // describe. Refuse it before deploying.
+            if let Some(source) = source_tag(&content) {
+                anyhow::ensure!(
+                    Some(source) == tag,
+                    "script {ws}/{path}: the source declares `// tag {source}`, not the declared tag {}: remove the annotation or declare the same tag",
+                    tag.unwrap_or("")
+                );
+            }
+            if script_unchanged(deployed.as_ref(), &script.language, &content, tag) {
+                // The version is deployed but not necessarily runnable: its
+                // dependency job may still be queued, or may have failed.
+                let hash = deployed
+                    .as_ref()
+                    .map(|d| d.hash.as_str())
+                    .context("deployed script without a hash")?;
+                wm.wait_runnable(&superadmin, ws, hash, Duration::from_secs(deploy_timeout))?;
+                continue;
+            }
+            let hash = wm.create_script(
+                &superadmin,
+                ws,
+                &client::ScriptDeploy {
+                    path,
+                    language: &script.language,
+                    summary: &script.summary,
+                    content: &content,
+                    tag,
+                    parent: deployed.as_ref().map(|d| d.hash.as_str()),
+                },
+            )?;
+            wm.wait_runnable(&superadmin, ws, &hash, Duration::from_secs(deploy_timeout))?;
+            // Read the stored tag back: a version with the wrong tag is unrunnable
+            // (no worker pool serves it) while the deploy itself succeeded, so a
+            // mismatch is a failed declaration, not a cosmetic difference.
+            let stored = wm
+                .script(&superadmin, ws, path)?
+                .with_context(|| format!("script {ws}/{path}: vanished after deploying {hash}"))?;
+            anyhow::ensure!(
+                stored.tag.as_deref().filter(|tag| !tag.is_empty()) == tag,
+                "script {ws}/{path}: Windmill stored tag {:?}, not the declared {:?}",
+                stored.tag.as_deref().unwrap_or(""),
+                tag.unwrap_or("")
+            );
+            eprintln!("script {ws}/{path}: deployed");
+        }
+        for (path, variable) in &spec.variables {
+            let value = read_password_file(credential_dir.join(&variable.credential_name))?;
+            let deployed = wm.variable(&superadmin, ws, path)?;
+            if variable_unchanged(deployed.as_ref(), variable, &value) {
+                continue;
+            }
+            if deployed.is_some() {
+                wm.update_variable(
+                    &superadmin,
+                    ws,
+                    path,
+                    &value,
+                    variable.is_secret,
+                    &variable.description,
+                )?;
+                eprintln!("variable {ws}/{path}: updated");
+            } else {
+                wm.create_variable(
+                    &superadmin,
+                    ws,
+                    path,
+                    &value,
+                    variable.is_secret,
+                    &variable.description,
+                )?;
+                eprintln!("variable {ws}/{path}: created");
             }
         }
     }
@@ -381,8 +494,78 @@ fn reconcile(
     Ok(())
 }
 
-const TOKEN_REGISTRY: &str = "tokens.json";
+/// The tag a script's source declares with Windmill's `// tag <name>` badge.
+///
+/// Windmill 1.839.0 parses the leading comment block of a version's source and
+/// applies the `tag` badge over the tag sent with the deploy (its
+/// `parse_pipeline_annotations` sets `ns.tag`). `//`, `#` and `--` open a
+/// comment depending on the language; the badge is `tag` followed by its value.
+///
+/// A value with whitespace or over 50 bytes is a regular comment, not a badge
+/// (`// tag this for review`), and the first valid badge wins: the parser keeps
+/// scanning the rest of the block instead of stopping at the prose.
+fn source_tag(content: &str) -> Option<&str> {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // The annotation lives in the leading comment block: stop at the first
+        // line that is not a comment.
+        let Some(body) = ["//", "#", "--"]
+            .iter()
+            .find_map(|marker| line.strip_prefix(marker))
+        else {
+            break;
+        };
+        let Some(rest) = body.trim_start().strip_prefix("tag") else {
+            continue;
+        };
+        // A keyword must be followed by whitespace: `tags` is a plain comment.
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let tag = rest.trim();
+        // Worker tags are single-word identifiers: anything else is a comment
+        // that merely starts with the word.
+        if !tag.is_empty() && !tag.contains(char::is_whitespace) && tag.len() <= 50 {
+            return Some(tag);
+        }
+    }
+    None
+}
 
+/// True when the latest deployed version already holds exactly this code and
+/// tag: Windmill keeps a version per deploy, so a no-op must not call create.
+fn script_unchanged(
+    deployed: Option<&client::DeployedScript>,
+    language: &str,
+    content: &str,
+    tag: Option<&str>,
+) -> bool {
+    deployed.is_some_and(|d| {
+        d.language == language
+            && d.content == content
+            && d.tag.as_deref().filter(|tag| !tag.is_empty()) == tag
+    })
+}
+
+/// True when the deployed variable already holds exactly this declaration
+/// (value, secrecy and description). A secret Windmill refuses to decrypt
+/// (`value: null`) never matches, so it is written again.
+fn variable_unchanged(
+    deployed: Option<&client::DeployedVariable>,
+    declared: &state::Variable,
+    value: &str,
+) -> bool {
+    deployed.is_some_and(|d| {
+        d.is_secret == declared.is_secret
+            && d.description.as_deref().unwrap_or("") == declared.description
+            && d.value.as_deref() == Some(value)
+    })
+}
+
+const TOKEN_REGISTRY: &str = "tokens.json";
 /// Previous-run registry: only a missing file is an empty first run; an
 /// unreadable or corrupt one aborts so removals are never silently forgotten.
 fn read_registry<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T> {
@@ -626,6 +809,151 @@ mod tests {
             fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
             0o700
         );
+    }
+
+    #[test]
+    fn a_source_tag_badge_is_read_from_the_leading_comment_block() {
+        assert_eq!(source_tag("// tag hub\ncode"), Some("hub"));
+        assert_eq!(source_tag("\n// summary\n// tag hub\ncode"), Some("hub"));
+        assert_eq!(source_tag("# tag  hub \ncode"), Some("hub"));
+        assert_eq!(source_tag("-- tag hub\nselect 1"), Some("hub"));
+        // The badge does not apply past the comment block, and unrelated
+        // comments are not tags.
+        assert_eq!(source_tag("code\n// tag hub"), None);
+        assert_eq!(source_tag("// taga hub"), None);
+        assert_eq!(source_tag("// tags are useful"), None);
+        assert_eq!(source_tag("// tag"), None);
+        assert_eq!(source_tag("let x = 1;"), None);
+        // Prose is not a badge: Windmill ignores a value with whitespace, and
+        // keeps scanning instead of treating the line as the winning badge.
+        assert_eq!(source_tag("// tag this for review\ncode"), None);
+        assert_eq!(
+            source_tag("// tag this for review\n// tag hub\ncode"),
+            Some("hub")
+        );
+        // Nor is one longer than the `script.tag` column.
+        let long = "x".repeat(51);
+        assert_eq!(source_tag(&format!("// tag {long}\ncode")), None);
+        let fits = "y".repeat(50);
+        assert_eq!(
+            source_tag(&format!("// tag {fits}\ncode")),
+            Some(fits.as_str())
+        );
+        // The first valid badge wins over a later one.
+        assert_eq!(
+            source_tag("// tag first\n// tag second\ncode"),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn a_deploy_is_skipped_only_for_identical_code_and_tag() {
+        let deployed = client::DeployedScript {
+            content: "export function main() {}".into(),
+            language: "bun".into(),
+            hash: "4376b64b1b94b9b9".into(),
+            tag: Some("hub".into()),
+        };
+        assert!(script_unchanged(
+            Some(&deployed),
+            "bun",
+            "export function main() {}",
+            Some("hub")
+        ));
+        assert!(!script_unchanged(
+            Some(&deployed),
+            "bun",
+            "export function main() { 1 }",
+            Some("hub")
+        ));
+        assert!(!script_unchanged(
+            Some(&deployed),
+            "deno",
+            &deployed.content,
+            Some("hub")
+        ));
+        // A changed tag is a new version; an undeclared one keeps the deployed.
+        assert!(!script_unchanged(
+            Some(&deployed),
+            "bun",
+            &deployed.content,
+            Some("other")
+        ));
+        assert!(!script_unchanged(
+            Some(&deployed),
+            "bun",
+            &deployed.content,
+            None
+        ));
+        assert!(!script_unchanged(
+            None,
+            "bun",
+            &deployed.content,
+            Some("hub")
+        ));
+        // Windmill reports an untagged version as `""` or null; both mean no tag.
+        let untagged = client::DeployedScript {
+            tag: Some(String::new()),
+            ..deployed.clone()
+        };
+        assert!(script_unchanged(
+            Some(&untagged),
+            "bun",
+            &deployed.content,
+            None
+        ));
+        assert!(script_unchanged(
+            Some(&client::DeployedScript {
+                tag: None,
+                ..deployed.clone()
+            }),
+            "bun",
+            &deployed.content,
+            None
+        ));
+    }
+
+    #[test]
+    fn a_variable_is_written_unless_value_secrecy_and_description_match() {
+        let declared = state::Variable {
+            credential_name: "password-hub".into(),
+            is_secret: true,
+            description: String::new(),
+        };
+        let live = |value: Option<&str>, is_secret: bool, description: Option<&str>| {
+            client::DeployedVariable {
+                value: value.map(str::to_owned),
+                is_secret,
+                description: description.map(str::to_owned),
+            }
+        };
+        assert!(variable_unchanged(
+            Some(&live(Some("tok"), true, None)),
+            &declared,
+            "tok"
+        ));
+        assert!(variable_unchanged(
+            Some(&live(Some("tok"), true, Some(""))),
+            &declared,
+            "tok"
+        ));
+        assert!(!variable_unchanged(
+            Some(&live(Some("tok"), true, None)),
+            &declared,
+            "rotated"
+        ));
+        // A secret Windmill did not decrypt cannot be compared: rewrite it.
+        assert!(!variable_unchanged(
+            Some(&live(None, true, None)),
+            &declared,
+            "tok"
+        ));
+        assert!(!variable_unchanged(
+            Some(&live(Some("tok"), false, None)),
+            &declared,
+            "tok"
+        ));
+        assert!(!variable_unchanged(None, &declared, "tok"));
     }
 
     #[test]

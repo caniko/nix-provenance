@@ -4,6 +4,30 @@
 
 ### Added
 
+- `services.windmill.provision.deployTimeoutSeconds` is the bound on one
+  deployed version's lock generation job. Scripts deploy serially, so the
+  reconcile unit's `TimeoutStartSec` is that budget times the number of declared
+  scripts plus startup headroom instead of a fixed 15 minutes a growing
+  declaration can outgrow.
+- `services.n8n.provision.dataFilePrefixes` builds a credential field from
+  a raw token file and a runtime prefix (`Bearer ` plus an age-decrypted
+  token), so a Header Auth credential can hold `Bearer <token>` without the
+  prefix or the token entering the store.
+- `services.windmill.provision.workspaces.*.scripts` deploys Windmill scripts
+  from a content file and pushes a new version only when the content or
+  language differs from the latest deployed one.
+  `workspaces.*.variables` creates or updates workspace variables whose value
+  is read from a runtime file (systemd credential), never the store, and
+  rotates with it. `scripts.*.tag` declares the worker-pool tag (`hub`); a
+  redeploy that leaves it null carries the deployed tag forward, because a new
+  version does not inherit its parent's.
+- `services.n8n.provision.workflows` imports or updates n8n workflows by name
+  from a JSON export, rewrites each node's credential references to the
+  provisioned credential ids, and activates or deactivates them to match
+  `active`. An unchanged declaration writes nothing; a UI edit is reverted.
+  A node that calls another declared workflow by name (`parameters.workflowId`)
+  is imported after it and its reference is rewritten to the live id, which is
+  what n8n validates when the caller is published.
 - `homeModules.antigravity` (`nix-provenance.antigravity.googleAuth`) registers
   one Antigravity Google sign-in in every listed agy profile. A user oneshot
   copies agy's `acp_token.json` from a runtime agenix file into each
@@ -23,6 +47,93 @@
 
 ### Fixed
 
+- n8n provisioning retries a transient failure on its own: a failed
+  `Requires=` dependency makes systemd cancel the reconciling job before the
+  unit runs, so `Restart=` on either oneshot never sees it and the pair stayed
+  down until someone started it by hand. `n8n-provision-retry.timer` re-runs the
+  pair while provisioning is not active — a start job pulls the failed pre-pass
+  in with it — and goes idle once it is. The oneshots pull the timer in with
+  `Wants=` and it is `PartOf=` them and `n8n.service`, so it stops whenever they
+  do: enabled on its own it ticked in the stop→start window of a NixOS switch,
+  started the units still loaded from the old generation, left them
+  `active (exited)` so the switch's own start did nothing, and held a newly
+  declared `active = false` (or an explicit stop of n8n) off. `Requires=`/
+  `After=` still make the pre-pass fail-closed, and the pre-pass, its state file
+  and the timer are wired only when a workflow is declared, so a host pinning an
+  older `provisionPackage` without the `deactivate` subcommand still starts.
+- `n8n-deactivate` reads its own state file, which holds only the URL, the
+  owner and the names declared inactive. A declaration the reconciler rejects
+  (a credential name over n8n's 128-character limit, a missing field credential)
+  used to make the pre-pass exit before contacting n8n, leaving the webhook it
+  should unpublish serving.
+- An n8n workflow export that declares `executionTimeout` equal to the instance
+  default no longer PATCHes on every run, and declaring that default now resets
+  a stored override: n8n 2.39.6 deletes a saved timeout equal to its
+  `EXECUTIONS_TIMEOUT` (`removeDefaultValues`), so the reconciler reads that
+  default from n8n's own `/rest/settings` when a declaration names one. An
+  absent live key matches a declared default, a different stored value is drift
+  and the PATCH sends the declared default back. The module no longer mirrors
+  the default from `EXECUTIONS_TIMEOUT` (`lib.toInt` broke on `"060"` and
+  ignored `EXECUTIONS_TIMEOUT_FILE`), and the state schema is unchanged again.
+- The Windmill `// tag` badge check no longer treats prose as a badge:
+  Windmill 1.839.0 ignores a value with whitespace or over 50 bytes
+  (`// tag this for review`) and keeps scanning for the first valid one, and the
+  check mirrors it.
+- The n8n module's evaluation-time literal-credential lint is gone: Nix has
+  already copied the flake source before it evaluates that check, so it could
+  never keep a value out of the store and broke evaluation on a non-string
+  header `name`. The reconciler's runtime check is the deployment guard, and the
+  option text and guide now say exports must be sanitized before they enter the
+  flake source.
+- The `executeWorkflow` dependency predicate reads only `parameters.source`:
+  n8n never consults the locator's `mode`, so a `mode: "url"` locator with a
+  `database` source is a local id it validates, and is now treated as one
+  instead of being skipped.
+- n8n deactivates a workflow declared `active = false` in
+  `n8n-deactivate.service`, a oneshot that loads only the owner password and
+  runs before the unit that loads the field credentials. systemd resolves a
+  unit's whole `LoadCredential=` before its first step, so a missing credential
+  file (or a corrupt credential registry) used to keep the webhook serving
+  because the reconciling unit could not start at all. The main unit now orders
+  after and requires the pre-pass, and a duplicate workflow name is refused by
+  one shared name lookup instead of being picked first for deactivation and last
+  for reference binding (all live copies of a deactivated name are deactivated).
+- n8n workflow settings converge: n8n merges a PATCH into the stored settings,
+  so a key an operator added (a `timezone`, say) survived every write and was
+  re-PATCHed forever. The update sends n8n's own `"DEFAULT"` reset token for
+  every resettable key the declaration leaves out, settings are compared key by
+  key, and a key n8n cannot reset is reported once and excluded. The dependency
+  order of `executeWorkflow` nodes now uses n8n's predicate: a disabled node,
+  a `localFile`/`url`/`parameter` source, an empty id or an `=` expression is
+  not a reference.
+- n8n and Windmill provisioning no longer copy sensitive detail into journald or
+  the store: a failed Windmill lock job is reported by version hash and job id
+  (its logs stay in the job), and an n8n export that carries a literal
+  `Authorization`, `apiKey`/`api-key` or `password` value fails the run, because
+  exports are copied into the Nix store. The module and guide say exports must
+  be sanitized.
+- Windmill scripts declare a worker tag that a `// tag <name>` badge in the
+  source would silently override on 1.839.0: a conflicting badge is refused
+  before the deploy, and the stored tag is verified on read-back.
+- Windmill and n8n provisioning state files now interpolate `contentFile` and
+  workflow `file` path literals instead of `toString`-ing them: the string keeps
+  its store context, so the file is in the closure and editing it changes the
+  units' restart trigger. A deploy also waits (bounded) for the version's lock
+  job and fails on a failed or still-queued job, instead of treating an
+  unrunnable version as deployed and skipping it next run. The modules omit
+  `scripts`, `variables`, `workflows` and `data_file_prefixes` when empty, gate
+  n8n's `deactivate` unit, its state file and the retry timer on a declared
+  workflow, and pass `--deploy-timeout` only when a script is declared, so a
+  host pinning an older provisioner still starts and parses the state.
+  `windmill-provision` now has a start timeout that covers that wait.
+- n8n workflow reconciliation deactivates every existing workflow declared
+  `active = false` before credentials and content, so a failing replacement
+  export or credential write cannot leave the old webhook serving. Workflows
+  are compared node by node (ignoring only the ids and `webhookId` n8n
+  generates) and connection by connection, so a UI edit such as adding
+  `disabled` to a node is drift again. Two declared credentials that resolve to
+  one n8n id now fail before any write instead of overwriting each other's
+  secret.
 - Rauthy provisioning evicts users that Rauthy's email lookup still serves
   from its cache after the database row is gone (its magic-link cleanup
   deletes with raw SQL), then reconciles them as absent instead of failing

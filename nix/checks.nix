@@ -62,6 +62,12 @@
     import ./modules/test/windmill-bootstrap-vmtest.nix {
       inherit pkgs self;
       windmillPackage = atlasPkgs.windmill;
+      # 1.839.0 can deploy the Bun language the consumer uses.
+      scriptLanguage = "bun";
+      # The hub's procedures declare `tag: hub`, and a bun version is only
+      # runnable once its dependency job wrote the lock: run a tagged worker.
+      scriptTag = "hub";
+      runWorker = true;
       nameSuffix = "-atlas";
     };
   n8nEval = evalSystem ./modules/test/n8n-provision-eval.nix;
@@ -999,7 +1005,7 @@ in
       server = windmillEval.config.systemd.services.windmill-server;
       svc = windmillEval.config.systemd.services.windmill-provision;
       lock = windmillEval.config.systemd.services.windmill-lock-default-admin;
-      rotate = windmillEval.config.systemd.services.windmill-superadmin-rotate;
+      rotate = windmillEval.config.systemd.services.windmill-rotate-pass;
       json = builtins.toJSON;
       failed = c: lib.filter (m: lib.hasPrefix "services.windmill.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
       ext = m: windmillEval.extendModules {modules = [m];};
@@ -1023,12 +1029,31 @@ in
       };
       upperEmail = ext {services.windmill.provision.users.can.email = lib.mkForce "Can@example.test";};
       plainHttpUrl = ext {services.windmill.provision.url = "http://windmill.example.test";};
+      storeVariable = ext {
+        services.windmill.provision.workspaces.studio.variables."f/fleetix_hub/hub_token".valueFile = lib.mkForce "/nix/store/x-token";
+      };
+      badScriptPath = ext {
+        services.windmill.provision.workspaces.studio.scripts = lib.mkForce {
+          "f/fleetix hub/gen" = {
+            language = "bun";
+            contentFile = "/nix/store/x.ts";
+          };
+        };
+      };
+      badVariablePath = ext {
+        services.windmill.provision.workspaces.studio.variables = lib.mkForce {
+          "not-a-windmill-path" = {valueFile = "/run/agenix/x";};
+        };
+      };
       threeWorkspaces = ext {
         services.windmill.provision.workspaces = {
           a.name = "A";
           b.name = "B";
           c.name = "C";
         };
+      };
+      noScripts = ext {
+        services.windmill.provision.workspaces.studio.scripts = lib.mkForce {};
       };
     in
       runCommand "windmill-module-eval" {} ''
@@ -1041,17 +1066,37 @@ in
         test ${lib.escapeShellArg (json (failed plainHttpUrl.config))} != '[]'
         test ${lib.escapeShellArg (json (failed upperEmail.config))} != '[]'
         test ${lib.escapeShellArg (json (failed memberless.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed storeVariable.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed badScriptPath.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed badVariablePath.config))} != '[]'
+        # The dispatcher directory is reserved, through aliases and `..` too.
+        ${lib.concatMapStrings (p: "test ${lib.escapeShellArg (json (failed (ext {services.windmill.provision.users.can.passwordFile = lib.mkForce p;}).config))} != '[]'\n") ["/run/windmill-rotate/dispatch/can" "/run/windmill-rotate/dispatch/pending" "/var/run/windmill-rotate/dispatch/can" "/run//windmill-rotate/./dispatch/can" "/run/agenix/../windmill-rotate/dispatch/can"]}
+        test ${lib.escapeShellArg (json (failed
+          (ext {
+            services.windmill.provision.tokens.t = {
+              user = "can";
+              path = "/run/windmill-rotate/dispatch/pending";
+            };
+          }).config))} != '[]'
+        test ${lib.escapeShellArg (json (failed (ext {services.windmill.provision.users.can.passwordFile = lib.mkForce "/run/windmill-rotate/can";}).config))} = '[]'
         # Rotation watch covers the secret and its parent dir (agenix symlink swap).
-        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-superadmin-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
+        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-server.service
         # Locking the stock admin must not wait on (or load) any secret file.
         test ${lib.escapeShellArg (json (lock.serviceConfig.LoadCredential or []))} = '[]'
         printf '%s' ${lib.escapeShellArg (json svc.requires)} | grep -q windmill-lock-default-admin.service
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-lock-default-admin.service
+        # Deploys are serial, so the start timeout is the per-script budget times
+        # the declared script count (2 in the fixture) plus startup headroom.
+        printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.TimeoutStartSec)} | grep -q '^"1200s"$'
+        printf '%s' ${lib.escapeShellArg svc.serviceConfig.ExecStart} | grep -q -- '--deploy-timeout 300'
+        # Nothing to deploy means nothing to wait for, and an older provisioner
+        # has no `--deploy-timeout` flag to accept.
+        ! printf '%s' ${lib.escapeShellArg noScripts.config.systemd.services.windmill-provision.serviceConfig.ExecStart} | grep -q -- '--deploy-timeout'
         # The rotation check reads the secret as a credential, not from its path.
         printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
-        printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--secret-file %d/superadmin'
+        grep -q -- '--secret-file "$CREDENTIALS_DIRECTORY/superadmin"' ${rotate.serviceConfig.ExecStart}
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.ExecStartPre)} | grep -q ' env '
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.EnvironmentFile)} | grep -q '/run/windmill-provision/env'
@@ -1061,7 +1106,39 @@ in
         grep -q '"disable_default_admin":true' "$state_file"
         grep -q '"email":"can@example.test"' "$state_file"
         grep -q '"mode":"0640"' "$state_file"
+        # Scripts ship their code path, not their content; the variable ships a
+        # credential id and never its runtime file or value.
+        grep -q '"f/fleetix_hub/comfy_generate":{"content_file":"/nix/store/fixture-comfy_generate.ts","language":"bun","summary":"Submit ComfyUI prompts"}' "$state_file"
+        grep -q '"f/fleetix_hub/hub_token":{"credential_name":"password-windmill-variable-[^"]*","description":"Fleetix Hub receipt bearer","is_secret":true}' "$state_file"
+        # A path literal keeps its store context: the file is realized and in the
+        # state file's closure. A `toString` leaves the string without context, so
+        # the path is never copied to the store and this read fails.
+        literal=$(sed -n 's/.*"f\/fleetix_hub\/literal":{"content_file":"\([^"]*\)".*/\1/p' "$state_file")
+        case "$literal" in /nix/store/*) ;; *) echo "literal content file missing: $literal"; exit 1;; esac
+        grep -q LITERAL_FIXTURE_MARKER "$literal"
+        grep -q '"f/fleetix_hub/literal":{"content_file":"[^"]*","language":"bun","summary":"Literal path fixture","tag":"hub"}' "$state_file"
+        # Empty script and variable maps are omitted, so a host pinning an older
+        # provisioner (strict state parsing) still starts.
+        ! grep -q '"other":{"name":"Other","scripts"' "$state_file"
+        ! grep -q '"other":{"name":"Other","variables"' "$state_file"
+        grep -q '"other":{"name":"Other"}' "$state_file"
         ! grep -q '/run/agenix' "$state_file"
+        # The value file is a systemd credential, watched for in-place rotation.
+        printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q ':/run/agenix/windmill-hub-token'
+        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix/windmill-hub-token"'
+        # One watcher for every input: separate ones restart the oneshot over each other.
+        test ${lib.escapeShellArg (json (lib.filter (n: lib.hasPrefix "windmill-" n && lib.hasSuffix "rotate" n) (lib.attrNames windmillEval.config.systemd.paths)))} = '["windmill-rotate"]'
+        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.services.windmill-rotate-pass.after)} | grep -q windmill-provision.service
+        # The marker lives one level below every watched directory, even when a
+        # credential sits in /run/windmill-rotate (its parent stays watched).
+        ${assert (let
+          watch = (ext {services.windmill.provision.users.can.passwordFile = lib.mkForce "/run/windmill-rotate/can";}).config.systemd.paths.windmill-rotate.pathConfig.PathChanged;
+          marker = windmillEval.config.systemd.paths.windmill-rotate-pending.pathConfig.PathExists;
+        in
+          lib.elem "/run/windmill-rotate" watch && !(lib.elem (dirOf marker) watch)); ""}
+        # The dispatcher loads no credential; a missing file fails only one pass.
+        test ${lib.escapeShellArg (json (windmillEval.config.systemd.services.windmill-rotate.serviceConfig.LoadCredential or null))} = null
+        ${lib.concatMapStrings (u: "test ${lib.escapeShellArg (toString windmillEval.config.systemd.services.${u}.unitConfig.StartLimitIntervalSec)} = 0\n") ["windmill-rotate-mark" "windmill-rotate" "windmill-rotate-pass" "windmill-provision"]}
         touch $out
       '';
 
@@ -1094,16 +1171,66 @@ in
         ];
       };
       collideIds = map (e: lib.head (lib.splitString ":" e)) (lib.filter (e: lib.hasInfix "/run/agenix/a" e || lib.hasInfix "/run/agenix/b" e) collide.config.systemd.services.n8n-provision.serviceConfig.LoadCredential);
+      undeclaredWorkflowCredential = n8nEval.extendModules {
+        modules = [
+          {
+            services.n8n.provision.workflows.fleetix-hub-claim.credentials."Fleetix Hub webhook token" = lib.mkForce "ghost";
+          }
+        ];
+      };
+      misplacedPrefix = n8nEval.extendModules {
+        modules = [
+          {
+            services.n8n.provision.credentials.studio-webhook.dataFilePrefixes.name = lib.mkForce "Bearer ";
+          }
+        ];
+      };
+      noWorkflows = n8nEval.extendModules {
+        modules = [{services.n8n.provision.workflows = lib.mkForce {};}];
+      };
+      deactivateStateFile = builtins.head (builtins.filter (p: lib.hasInfix "n8n-deactivate-state.json" (toString p)) n8nEval.config.systemd.services.n8n-deactivate.restartTriggers);
     in
       runCommand "n8n-module-eval" {} ''
         test ${lib.escapeShellArg (json (failed n8nEval.config))} = '[]'
         test ${lib.escapeShellArg (json (failed storeSecret.config))} != '[]'
         test ${lib.escapeShellArg (json (failed overlap.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed undeclaredWorkflowCredential.config))} != '[]'
+        test ${lib.escapeShellArg (json (failed misplacedPrefix.config))} != '[]'
         printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.paths.n8n-provision-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg (toString (lib.length collideIds))} = 2
         test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n.service
+        # Deactivation is its own unit, ordered before the credential-loading one,
+        # and holds only the owner password.
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.services.n8n-deactivate.serviceConfig.LoadCredential)} | grep -q '^\["owner-password:/run/agenix/n8n-owner"\]$'
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.services.n8n-deactivate.serviceConfig.ExecStart)} | grep -q ' deactivate '
+        # The pre-pass state carries the URL, the owner and the inactive names,
+        # and no credential or workflow declaration: a declaration the reconciler
+        # rejects must not stop an unpublish.
+        grep -q '"inactive_workflows":\[\]' ${lib.escapeShellArg (toString deactivateStateFile)}
+        ! grep -q '"credentials"\|"workflows"\|"execution_timeout"' ${lib.escapeShellArg (toString deactivateStateFile)}
+        grep -q '"credential_name":"owner-password"' ${lib.escapeShellArg (toString deactivateStateFile)}
+        # A transient pre-pass failure is retried without a manual start, but the
+        # timer is pulled in by the oneshots and stops with them: enabled on its
+        # own it would tick inside a switch's stop→start window and start the
+        # units still loaded from the old generation.
+        test ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.timerConfig.Unit)} = '"n8n-provision.service"'
+        test ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.wantedBy)} = '[]'
+        test ${lib.escapeShellArg (toString n8nEval.config.systemd.timers.n8n-provision-retry.unitConfig.StartLimitIntervalSec)} = 0
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.partOf)} | grep -q '"n8n.service"'
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.partOf)} | grep -q '"n8n-provision.service"'
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.partOf)} | grep -q '"n8n-deactivate.service"'
+        test ${lib.escapeShellArg (json svc.wants)} = '["n8n-provision-retry.timer"]'
+        test ${lib.escapeShellArg (json n8nEval.config.systemd.services.n8n-deactivate.wants)} = '["n8n-provision-retry.timer"]'
+        # No workflows declared: no pre-pass, no retry timer, and the reconciler
+        # unit does not order after a pre-pass that does not exist. An older
+        # provisioner has no `deactivate` subcommand.
+        test ${lib.escapeShellArg (json (noWorkflows.config.systemd.services ? n8n-deactivate))} = 'false'
+        test ${lib.escapeShellArg (json (noWorkflows.config.systemd.timers ? n8n-provision-retry))} = 'false'
+        test ${lib.escapeShellArg (json noWorkflows.config.systemd.services.n8n-provision.requires)} = '["n8n.service"]'
+        printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n-deactivate.service
+        printf '%s' ${lib.escapeShellArg (json svc.requires)} | grep -q n8n-deactivate.service
         # The rotation check reads the password as a credential, not from its path.
         printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'
         printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--password-file %d/owner-password'
@@ -1117,6 +1244,24 @@ in
         state_file=$(printf '%s' ${lib.escapeShellArg svc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*n8n-provision-state.json')
         grep -q '"type":"httpHeaderAuth"' "$state_file"
         grep -q '"name":"X-Studio-Token"' "$state_file"
+        # n8n's default execution timeout is read from /rest/settings at run time,
+        # so it is not mirrored into the state file.
+        ! grep -q 'execution_timeout' "$state_file"
+        # The workflow ships its JSON path and the reference->credential map; the
+        # credential itself stays a provisioned id resolved at run time.
+        grep -q '"fleetix-hub-claim":{"active":true,"credentials":{"Fleetix Hub webhook token":"studio-webhook"},"file":"/nix/store/[^"]*-fixture-n8n-workflow.json"}' "$state_file"
+        # A path literal keeps its store context: the file is realized and in the
+        # state file's closure. A `toString` leaves the string without context, so
+        # the path is never copied to the store and this read fails.
+        workflow_file=$(sed -n 's/.*"file":"\([^"]*\)".*/\1/p' "$state_file")
+        case "$workflow_file" in /nix/store/*) ;; *) echo "workflow file missing: $workflow_file"; exit 1;; esac
+        grep -q '"type": "n8n-nodes-base.webhook"' "$workflow_file"
+        # Empty maps are omitted, so a host pinning an older provisioner (strict
+        # state parsing) still starts, and no prefix key appears without one.
+        no_workflows_state=$(printf '%s' ${lib.escapeShellArg (json noWorkflows.config.systemd.services.n8n-provision.serviceConfig.ExecStart)} | grep -o '/nix/store/[^ ]*n8n-provision-state.json')
+        test "$state_file" != "$no_workflows_state"
+        ! grep -q '"workflows"' "$no_workflows_state"
+        ! grep -q 'data_file_prefixes' "$state_file"
         ! grep -q '/run/agenix' "$state_file"
         touch $out
       '';

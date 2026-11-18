@@ -28,6 +28,42 @@ pub struct State {
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
     pub name: String,
+    /// Scripts deployed into this workspace, keyed by full Windmill path.
+    #[serde(default)]
+    pub scripts: BTreeMap<String, Script>,
+    /// Variables upserted in this workspace, keyed by full Windmill path.
+    #[serde(default)]
+    pub variables: BTreeMap<String, Variable>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Script {
+    /// Windmill script language (`bun`, `python3`, `deno`, ...).
+    pub language: String,
+    /// File holding the script content. Code, not a secret: a store path is fine.
+    pub content_file: PathBuf,
+    #[serde(default)]
+    pub summary: String,
+    /// Worker-pool tag. `null` keeps whatever the deployed version has: a new
+    /// version does not inherit its parent's tag.
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Variable {
+    /// Credential (file name inside `--credential-dir`) holding the value.
+    pub credential_name: String,
+    #[serde(default = "default_true")]
+    pub is_secret: bool,
+    #[serde(default)]
+    pub description: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +96,41 @@ impl Token {
         ensure!(mode <= 0o777, "token mode {} out of range", self.mode);
         Ok(mode)
     }
+}
+
+/// Windmill's stored-path rule (`proper_id`, mirrored from `check_proper_path`):
+/// `u`, `f` or `g` followed by two or more `/segment` parts of ASCII
+/// alphanumerics, `_` or `-`, at most 255 characters. Stricter than the server
+/// (which also accepts other alphabets), so every declared path is storable.
+pub fn is_windmill_path(value: &str) -> bool {
+    let mut parts = value.split('/');
+    let root = parts.next();
+    let segments: Vec<&str> = parts.collect();
+    matches!(root, Some("u" | "f" | "g"))
+        && value.len() <= 255
+        && segments.len() >= 2
+        && segments.iter().all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        })
+}
+
+/// Windmill script languages are lowercase identifiers (`bun`, `python3`,
+/// `nativets`, `postgresql`, ...); a typo is cheaper to catch here.
+pub fn is_language(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A systemd credential name (`LoadCredential=<id>:<file>`).
+pub fn is_credential_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
 }
 
 /// Characters allowed in values that are later spliced into SQL literals.
@@ -157,6 +228,44 @@ impl State {
                 "workspace id {id} must match [a-z0-9_-]+"
             );
             ensure!(!ws.name.is_empty(), "workspace {id}: empty name");
+            for (path, script) in &ws.scripts {
+                ensure!(
+                    is_windmill_path(path),
+                    "workspace {id}: script path {path:?} must look like f/<folder>/<name>, u/<user>/<name> or g/<group>/<name> (alphanumerics, `_` and `-`)"
+                );
+                ensure!(
+                    is_language(&script.language),
+                    "workspace {id}: script {path}: language {:?} must be a lowercase identifier such as `bun` or `python3`",
+                    script.language
+                );
+                ensure!(
+                    script.content_file.is_absolute(),
+                    "workspace {id}: script {path}: content_file must be absolute"
+                );
+                if let Some(tag) = &script.tag {
+                    // The tag becomes the job's queue tag, which Windmill splices
+                    // into its SQL: keep it to a plain identifier.
+                    ensure!(
+                        !tag.is_empty()
+                            && tag.len() <= 50
+                            && tag
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                        "workspace {id}: script {path}: tag {tag:?} must match [A-Za-z0-9_-]+ (at most 50 characters)"
+                    );
+                }
+            }
+            for (path, variable) in &ws.variables {
+                ensure!(
+                    is_windmill_path(path),
+                    "workspace {id}: variable path {path:?} must look like f/<folder>/<name>, u/<user>/<name> or g/<group>/<name> (alphanumerics, `_` and `-`)"
+                );
+                ensure!(
+                    is_credential_name(&variable.credential_name),
+                    "workspace {id}: variable {path}: credential_name {:?} is not a systemd credential name",
+                    variable.credential_name
+                );
+            }
         }
         for (label, token) in &self.tokens {
             ensure!(is_safe_ident(label), "token label {label:?} is unsafe");
@@ -298,6 +407,8 @@ mod tests {
             "other".into(),
             Workspace {
                 name: "Other".into(),
+                scripts: BTreeMap::new(),
+                variables: BTreeMap::new(),
             },
         );
         s.tokens.get_mut("t").unwrap().workspace = Some("other".into());
@@ -314,6 +425,127 @@ mod tests {
         );
         s.tokens.get_mut("t").unwrap().user = "ops".into();
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_declared_scripts_and_variables() {
+        let s = state(BASE);
+        assert!(s.workspaces["studio"].scripts.is_empty());
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().scripts.insert(
+            "f/fleetix_hub/comfy_generate".into(),
+            Script {
+                language: "bun".into(),
+                content_file: "/nix/store/x-comfy_generate.ts".into(),
+                summary: "generate".into(),
+                tag: None,
+            },
+        );
+        s.workspaces.get_mut("studio").unwrap().variables.insert(
+            "f/fleetix_hub/hub_token".into(),
+            Variable {
+                credential_name: "password-hub-token".into(),
+                is_secret: true,
+                description: String::new(),
+            },
+        );
+        s.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_bad_script_and_variable_declarations() {
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().scripts.insert(
+            "f/fleetix_hub/comfy generate".into(),
+            Script {
+                language: "bun".into(),
+                content_file: "/nix/store/x.ts".into(),
+                summary: String::new(),
+                tag: None,
+            },
+        );
+        assert!(s.validate().is_err(), "space in path");
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().scripts.insert(
+            "f/only".into(),
+            Script {
+                language: "bun".into(),
+                content_file: "/nix/store/x.ts".into(),
+                summary: String::new(),
+                tag: None,
+            },
+        );
+        assert!(s.validate().is_err(), "needs two segments after the root");
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().scripts.insert(
+            "d/not/a/root".into(),
+            Script {
+                language: "bun".into(),
+                content_file: "/nix/store/x.ts".into(),
+                summary: String::new(),
+                tag: None,
+            },
+        );
+        assert!(s.validate().is_err(), "root must be u, f or g");
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().scripts.insert(
+            "f/fleetix_hub/x".into(),
+            Script {
+                language: "Bun".into(),
+                content_file: "/nix/store/x.ts".into(),
+                summary: String::new(),
+                tag: None,
+            },
+        );
+        assert!(s.validate().is_err(), "language is lowercase");
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().scripts.insert(
+            "f/fleetix_hub/x".into(),
+            Script {
+                language: "bun".into(),
+                content_file: "/nix/store/x.ts".into(),
+                summary: String::new(),
+                tag: Some("hub; drop table job".into()),
+            },
+        );
+        assert!(s.validate().is_err(), "tag is a plain identifier");
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().scripts.insert(
+            "f/fleetix_hub/x".into(),
+            Script {
+                language: "bun".into(),
+                content_file: "/nix/store/x.ts".into(),
+                summary: String::new(),
+                tag: Some("hub".into()),
+            },
+        );
+        s.validate().unwrap();
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().variables.insert(
+            "f/fleetix_hub/hub_token".into(),
+            Variable {
+                credential_name: "not a credential".into(),
+                is_secret: true,
+                description: String::new(),
+            },
+        );
+        assert!(s.validate().is_err(), "credential name");
+    }
+
+    #[test]
+    fn windmill_paths_follow_the_stored_path_rule() {
+        for ok in [
+            "f/folder/name",
+            "u/can/token-value",
+            "g/studio/x_y-1",
+            "f/a/b/c",
+        ] {
+            assert!(is_windmill_path(ok), "{ok}");
+        }
+        for bad in ["", "f/x", "x/a/b", "f/a//b", "f/a/b.c", "f/a/b c", "/f/a/b"] {
+            assert!(!is_windmill_path(bad), "{bad}");
+        }
+        assert!(!is_windmill_path(&format!("f/a/{}", "b".repeat(260))));
     }
 
     #[test]
