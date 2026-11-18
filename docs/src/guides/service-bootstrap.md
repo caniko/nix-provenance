@@ -64,11 +64,12 @@ services.windmill = {
   Windmill's version history stays one entry per real change. `tag` (for
   example `hub`) routes runs and the lock job to a worker pool that listens for
   it; leaving it null keeps the deployed tag, because a new version does not
-  inherit its parent's. A deploy then waits (bounded by `deployTimeout`,
-  default 300s) for the dependency job to write the version's lock: a version
-  without a lock is not runnable, so a queued or failed lock job fails the run
-  instead of matching the source on the next run and reporting success. The
-  `schema`, `lock`, dependencies and permissions are Windmill's.
+  inherit its parent's. A deploy then waits (bounded; the reconcile
+  `--deploy-timeout` defaults to 300s) for the dependency job to write the
+  version's lock: a version without a lock is not runnable, so a queued or
+  failed lock job fails the run instead of matching the source on the next run
+  and reporting success. The `schema`, `lock`, dependencies and permissions are
+  Windmill's.
 - Variables are upserted by full path. `valueFile` is a runtime secret
   (`config.age.secrets.<name>.path`), loaded as a systemd credential; the value
   is read at run time, sent to Windmill, and never enters the store, the state

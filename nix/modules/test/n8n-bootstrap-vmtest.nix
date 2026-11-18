@@ -174,8 +174,8 @@ in
             file = "${workflow}";
             credentials."Fleetix Hub webhook token" = "studio-webhook";
           };
-          # Declared after the caller, so only the dependency order imports the
-          # claim first.
+          # `fixture-caller` sorts before `fixture-claim`, so only the
+          # dependency order can import the claim first.
           workflows.fixture-caller = {
             file = "${caller}";
           };
