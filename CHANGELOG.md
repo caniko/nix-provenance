@@ -13,11 +13,16 @@
   language differs from the latest deployed one.
   `workspaces.*.variables` creates or updates workspace variables whose value
   is read from a runtime file (systemd credential), never the store, and
-  rotates with it.
+  rotates with it. `scripts.*.tag` declares the worker-pool tag (`hub`); a
+  redeploy that leaves it null carries the deployed tag forward, because a new
+  version does not inherit its parent's.
 - `services.n8n.provision.workflows` imports or updates n8n workflows by name
   from a JSON export, rewrites each node's credential references to the
   provisioned credential ids, and activates or deactivates them to match
   `active`. An unchanged declaration writes nothing; a UI edit is reverted.
+  A node that calls another declared workflow by name (`parameters.workflowId`)
+  is imported after it and its reference is rewritten to the live id, which is
+  what n8n validates when the caller is published.
 - `services.immich.provision.apiKeys` declares admin-owned Immich API keys.
   `immich-provision` creates each key with its permissions, writes the secret
   once to a mode-0600 file under its state directory for `LoadCredential=`
@@ -31,6 +36,23 @@
 
 ### Fixed
 
+- Windmill and n8n provisioning state files now interpolate `contentFile` and
+  workflow `file` path literals instead of `toString`-ing them: the string keeps
+  its store context, so the file is in the closure and editing it changes the
+  units' restart trigger. A deploy also waits (bounded) for the version's lock
+  job and fails on a failed or still-queued job, instead of treating an
+  unrunnable version as deployed and skipping it next run. The modules omit
+  `scripts`, `variables`, `workflows` and `data_file_prefixes` when empty, so a
+  host pinning an older provisioner still parses the state. `windmill-provision`
+  now has a start timeout that covers that wait.
+- n8n workflow reconciliation deactivates every existing workflow declared
+  `active = false` before credentials and content, so a failing replacement
+  export or credential write cannot leave the old webhook serving. Workflows
+  are compared node by node (ignoring only the ids and `webhookId` n8n
+  generates) and connection by connection, so a UI edit such as adding
+  `disabled` to a node is drift again. Two declared credentials that resolve to
+  one n8n id now fail before any write instead of overwriting each other's
+  secret.
 - Rauthy provisioning evicts users that Rauthy's email lookup still serves
   from its cache after the database row is gone (its magic-link cleanup
   deletes with raw SQL), then reconciles them as absent instead of failing

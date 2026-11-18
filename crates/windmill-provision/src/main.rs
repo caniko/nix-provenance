@@ -78,6 +78,9 @@ enum Command {
         psql: PathBuf,
         #[arg(long, default_value_t = 120)]
         ready_timeout: u64,
+        /// Bound on waiting for a deployed version's lock generation job.
+        #[arg(long, default_value_t = 300)]
+        deploy_timeout: u64,
     },
 }
 
@@ -118,6 +121,7 @@ fn main() -> Result<()> {
             runuser,
             psql,
             ready_timeout,
+            deploy_timeout,
         } => {
             let state = read_state(&state)?;
             let db = db::Psql {
@@ -132,7 +136,14 @@ fn main() -> Result<()> {
                 lock_default_admin(&db, Duration::from_secs(ready_timeout))?;
             }
             state.validate()?;
-            reconcile(&state, &credential_dir, &marker_dir, &db, ready_timeout)
+            reconcile(
+                &state,
+                &credential_dir,
+                &marker_dir,
+                &db,
+                ready_timeout,
+                deploy_timeout,
+            )
         }
     }
 }
@@ -269,6 +280,7 @@ fn reconcile(
     marker_dir: &Path,
     db: &db::Psql,
     ready_timeout: u64,
+    deploy_timeout: u64,
 ) -> Result<()> {
     let wm = Windmill::new(&state.url)?;
     wm.wait_ready(Duration::from_secs(ready_timeout))?;
@@ -318,7 +330,7 @@ fn reconcile(
     }
 
     // Code and configuration next: a script is redeployed only when its
-    // content or language differs from the latest deployed version, and a
+    // content, language or tag differs from the latest deployed version, and a
     // variable only when its value, secrecy or description differs. The
     // variable value comes from its runtime credential file, never the state.
     for (ws, spec) in &state.workspaces {
@@ -326,10 +338,25 @@ fn reconcile(
             let content = fs::read_to_string(&script.content_file)
                 .with_context(|| format!("reading {}", script.content_file.display()))?;
             let deployed = wm.script(&superadmin, ws, path)?;
-            if script_unchanged(deployed.as_ref(), &script.language, &content) {
+            // A new version does not inherit its parent's tag: a declaration
+            // that says nothing about it must send the deployed one back.
+            let deployed_tag = deployed.as_ref().and_then(|d| d.tag.as_deref());
+            let tag = script
+                .tag
+                .as_deref()
+                .or(deployed_tag)
+                .filter(|tag| !tag.is_empty());
+            if script_unchanged(deployed.as_ref(), &script.language, &content, tag) {
+                // The version is deployed but not necessarily runnable: its
+                // dependency job may still be queued, or may have failed.
+                let hash = deployed
+                    .as_ref()
+                    .map(|d| d.hash.as_str())
+                    .context("deployed script without a hash")?;
+                wm.wait_runnable(&superadmin, ws, hash, Duration::from_secs(deploy_timeout))?;
                 continue;
             }
-            wm.create_script(
+            let hash = wm.create_script(
                 &superadmin,
                 ws,
                 &client::ScriptDeploy {
@@ -337,9 +364,11 @@ fn reconcile(
                     language: &script.language,
                     summary: &script.summary,
                     content: &content,
+                    tag,
                     parent: deployed.as_ref().map(|d| d.hash.as_str()),
                 },
             )?;
+            wm.wait_runnable(&superadmin, ws, &hash, Duration::from_secs(deploy_timeout))?;
             eprintln!("script {ws}/{path}: deployed");
         }
         for (path, variable) in &spec.variables {
@@ -436,14 +465,19 @@ fn reconcile(
     Ok(())
 }
 
-/// True when the latest deployed version already holds exactly this code:
-/// Windmill keeps a version per deploy, so a no-op must not call create.
+/// True when the latest deployed version already holds exactly this code and
+/// tag: Windmill keeps a version per deploy, so a no-op must not call create.
 fn script_unchanged(
     deployed: Option<&client::DeployedScript>,
     language: &str,
     content: &str,
+    tag: Option<&str>,
 ) -> bool {
-    deployed.is_some_and(|d| d.language == language && d.content == content)
+    deployed.is_some_and(|d| {
+        d.language == language
+            && d.content == content
+            && d.tag.as_deref().filter(|tag| !tag.is_empty()) == tag
+    })
 }
 
 /// True when the deployed variable already holds exactly this declaration
@@ -708,28 +742,70 @@ mod tests {
     }
 
     #[test]
-    fn a_deploy_is_skipped_only_for_identical_code() {
+    fn a_deploy_is_skipped_only_for_identical_code_and_tag() {
         let deployed = client::DeployedScript {
             content: "export function main() {}".into(),
             language: "bun".into(),
             hash: "4376b64b1b94b9b9".into(),
+            tag: Some("hub".into()),
         };
         assert!(script_unchanged(
             Some(&deployed),
             "bun",
-            "export function main() {}"
+            "export function main() {}",
+            Some("hub")
         ));
         assert!(!script_unchanged(
             Some(&deployed),
             "bun",
-            "export function main() { 1 }"
+            "export function main() { 1 }",
+            Some("hub")
         ));
         assert!(!script_unchanged(
             Some(&deployed),
             "deno",
-            &deployed.content
+            &deployed.content,
+            Some("hub")
         ));
-        assert!(!script_unchanged(None, "bun", &deployed.content));
+        // A changed tag is a new version; an undeclared one keeps the deployed.
+        assert!(!script_unchanged(
+            Some(&deployed),
+            "bun",
+            &deployed.content,
+            Some("other")
+        ));
+        assert!(!script_unchanged(
+            Some(&deployed),
+            "bun",
+            &deployed.content,
+            None
+        ));
+        assert!(!script_unchanged(
+            None,
+            "bun",
+            &deployed.content,
+            Some("hub")
+        ));
+        // Windmill reports an untagged version as `""` or null; both mean no tag.
+        let untagged = client::DeployedScript {
+            tag: Some(String::new()),
+            ..deployed.clone()
+        };
+        assert!(script_unchanged(
+            Some(&untagged),
+            "bun",
+            &deployed.content,
+            None
+        ));
+        assert!(script_unchanged(
+            Some(&client::DeployedScript {
+                tag: None,
+                ..deployed.clone()
+            }),
+            "bun",
+            &deployed.content,
+            None
+        ));
     }
 
     #[test]

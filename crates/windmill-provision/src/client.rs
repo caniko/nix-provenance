@@ -15,6 +15,23 @@ pub struct DeployedScript {
     pub language: String,
     /// Hex version hash, the parent a new version must supersede.
     pub hash: String,
+    /// Worker-pool tag; a new version does not inherit its parent's, so a
+    /// redeploy that leaves it undeclared must send the deployed one back.
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+/// A version's lock generation, which Windmill runs as its own job: `lock` is
+/// null until that job writes it (an empty lock means "no dependencies"), and
+/// `lock_error_logs` is set when the job failed and the version will never run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct DeploymentStatus {
+    #[serde(default)]
+    pub lock: Option<String>,
+    #[serde(default)]
+    pub lock_error_logs: Option<String>,
+    #[serde(default)]
+    pub job_id: Option<String>,
 }
 
 /// The deployed fields of a variable. Windmill returns `value` as null for a
@@ -40,6 +57,7 @@ fn script_body(deploy: &ScriptDeploy<'_>) -> serde_json::Value {
         "summary": deploy.summary,
         "description": "",
         "kind": "script",
+        "tag": deploy.tag,
         "parent_hash": deploy.parent,
     })
 }
@@ -50,6 +68,9 @@ pub struct ScriptDeploy<'a> {
     pub language: &'a str,
     pub summary: &'a str,
     pub content: &'a str,
+    /// Worker-pool tag (`hub` routes the runs and the lock job there). `None`
+    /// on a redeploy keeps the deployed tag.
+    pub tag: Option<&'a str>,
     /// Hash of the version this supersedes; `None` only for a new path.
     pub parent: Option<&'a str>,
 }
@@ -194,8 +215,14 @@ impl Windmill {
 
     /// Deploy one version at its path, superseding `deploy.parent` (the hash
     /// Windmill reported for the current version). Windmill keeps the version
-    /// history; the caller decides whether the content changed.
-    pub fn create_script(&self, bearer: &str, ws: &str, deploy: &ScriptDeploy<'_>) -> Result<()> {
+    /// history; the caller decides whether the content changed. Returns the new
+    /// version's hash, whose lock generation is still running.
+    pub fn create_script(
+        &self,
+        bearer: &str,
+        ws: &str,
+        deploy: &ScriptDeploy<'_>,
+    ) -> Result<String> {
         let resp = self
             .http
             .post(format!("{}/api/w/{ws}/scripts/create", self.base))
@@ -204,12 +231,68 @@ impl Windmill {
             .send()?;
         let status = resp.status();
         if status.is_success() {
-            return Ok(());
+            return Ok(resp.text()?.trim().to_owned());
         }
         // Windmill's body here is a deploy error (bad language, path conflict),
         // never a credential: the script content is caller-supplied code.
         let body = resp.text().unwrap_or_default();
         bail!("deploying script {}: HTTP {status}: {body}", deploy.path);
+    }
+
+    /// The deployment status of one version by hash.
+    pub fn deployment_status(
+        &self,
+        bearer: &str,
+        ws: &str,
+        hash: &str,
+    ) -> Result<DeploymentStatus> {
+        let resp = self
+            .http
+            .get(format!(
+                "{}/api/w/{ws}/scripts/deployment_status/h/{hash}",
+                self.base
+            ))
+            .bearer_auth(bearer)
+            .send()?;
+        let body = provenance_core::http::json_ok(resp, "script deployment status")
+            .with_context(|| format!("reading deployment status of {hash}"))?;
+        serde_json::from_value(body)
+            .with_context(|| format!("decoding deployment status of {hash}"))
+    }
+
+    /// Wait (bounded) until the version's dependency job has written its lock,
+    /// and fail when that job failed or never ran. Only a version with a lock is
+    /// runnable, so a queued or failed job is a failed declaration, not a
+    /// no-op: the source already matches on the next run, and would otherwise
+    /// be skipped while the path keeps executing the previous version.
+    pub fn wait_runnable(
+        &self,
+        bearer: &str,
+        ws: &str,
+        hash: &str,
+        timeout: Duration,
+    ) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let status = self.deployment_status(bearer, ws, hash)?;
+            if let Some(logs) = status
+                .lock_error_logs
+                .as_deref()
+                .filter(|logs| !logs.trim().is_empty())
+            {
+                bail!("lock generation failed for script version {hash}: {logs}");
+            }
+            if status.lock.is_some() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "script version {hash} still has no lock after {timeout:?} (dependency job {:?})",
+                    status.job_id
+                );
+            }
+            sleep(Duration::from_secs(1));
+        }
     }
 
     /// The variable at `path` with its value decrypted (Windmill's `get` does
@@ -395,6 +478,7 @@ mod tests {
             language: "bun",
             summary: "sum",
             content: "code",
+            tag: Some("hub"),
             parent: None,
         });
         assert_eq!(creating["path"], "f/a/b");
@@ -402,6 +486,8 @@ mod tests {
         assert_eq!(creating["summary"], "sum");
         assert_eq!(creating["content"], "code");
         assert_eq!(creating["kind"], "script");
+        // A new version does not inherit its parent's worker tag.
+        assert_eq!(creating["tag"], "hub");
         assert!(creating["parent_hash"].is_null());
         // Redeploying over an existing path must name the version it supersedes,
         // or Windmill answers "Path conflict for <path> with non-archived hash".
@@ -410,21 +496,63 @@ mod tests {
             language: "bun",
             summary: "sum",
             content: "code2",
+            tag: None,
             parent: Some("4376b64b1b94b9b9"),
         });
         assert_eq!(redeploying["parent_hash"], "4376b64b1b94b9b9");
+        assert!(redeploying["tag"].is_null());
     }
 
     #[test]
     fn deployed_scripts_carry_their_version_hash() {
         // 1.601 nests the script, 1.839 flattens it: both expose the fields.
         for body in [
-            json!({"hash": "4376b64b1b94b9b9", "content": "c", "language": "bun", "starred": null}),
-            json!({"hash": "4376b64b1b94b9b9", "content": "c", "language": "bun", "is_draft": false}),
+            json!({"hash": "4376b64b1b94b9b9", "content": "c", "language": "bun", "starred": null, "tag": "hub"}),
+            json!({"hash": "4376b64b1b94b9b9", "content": "c", "language": "bun", "is_draft": false, "tag": "hub"}),
         ] {
             let script: DeployedScript = serde_json::from_value(body).unwrap();
             assert_eq!(script.hash, "4376b64b1b94b9b9");
             assert_eq!(script.language, "bun");
+            assert_eq!(script.tag.as_deref(), Some("hub"));
         }
+        // An untagged script answers null (or an empty string); never a tag.
+        let untagged: DeployedScript =
+            serde_json::from_value(json!({"hash": "h", "content": "c", "language": "bash"}))
+                .unwrap();
+        assert_eq!(untagged.tag, None);
+    }
+
+    #[test]
+    fn deployment_status_distinguishes_ready_pending_and_failed() {
+        // A language without dependencies gets an empty lock at create time.
+        let ready: DeploymentStatus =
+            serde_json::from_value(json!({"lock": "", "lock_error_logs": null, "job_id": "1"}))
+                .unwrap();
+        assert_eq!(ready.lock.as_deref(), Some(""));
+        assert!(ready.lock_error_logs.is_none());
+        // A dependency job that has not written the lock yet.
+        let pending: DeploymentStatus =
+            serde_json::from_value(json!({"lock": null, "job_id": "1"})).unwrap();
+        assert!(pending.lock.is_none());
+        assert_eq!(pending.job_id.as_deref(), Some("1"));
+        // A dependency job that failed stamps the error and never a lock.
+        let failed: DeploymentStatus = serde_json::from_value(json!(
+            {"lock": null, "lock_error_logs": "bun install failed"}
+        ))
+        .unwrap();
+        assert!(failed.lock.is_none());
+        assert!(
+            failed
+                .lock_error_logs
+                .as_deref()
+                .is_some_and(|logs| !logs.trim().is_empty())
+        );
+        // An older Windmill that elides null fields answers pending, not ready.
+        assert!(
+            serde_json::from_value::<DeploymentStatus>(json!({}))
+                .unwrap()
+                .lock
+                .is_none()
+        );
     }
 }

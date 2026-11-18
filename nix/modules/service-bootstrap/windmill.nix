@@ -42,15 +42,23 @@
     database = wm.database.name;
     superadmin_credential = superadminCredential;
     disable_default_admin = cfg.disableDefaultAdmin;
-    workspaces =
-      lib.mapAttrs (id: w: {
+    workspaces = lib.mapAttrs (id: w:
+      {
         inherit (w) name;
-        scripts =
-          lib.mapAttrs (_: s: {
+      }
+      // lib.optionalAttrs (w.scripts != {}) {
+        # A path literal is interpolated, not `toString`'d: the string keeps its
+        # store context, so the file enters the closure and a content change
+        # changes restartTriggers.
+        scripts = lib.mapAttrs (_: s:
+          {
             inherit (s) language summary;
-            content_file = toString s.contentFile;
-          })
-          w.scripts;
+            content_file = "${s.contentFile}";
+          }
+          // lib.optionalAttrs (s.tag != null) {inherit (s) tag;})
+        w.scripts;
+      }
+      // lib.optionalAttrs (w.variables != {}) {
         variables =
           lib.mapAttrs (path: v: {
             credential_name = variableCredential id path;
@@ -59,7 +67,7 @@
           })
           w.variables;
       })
-      cfg.workspaces;
+    cfg.workspaces;
     users =
       lib.mapAttrs (name: u: {
         inherit (u) email workspaces admin;
@@ -115,8 +123,8 @@ in {
             default = {};
             description = ''
               Scripts deployed into this workspace, keyed by full Windmill path.
-              The reconciler deploys a new version only when the content or
-              language differs from the latest deployed one; the version
+              The reconciler deploys a new version only when the content,
+              language or tag differs from the latest deployed one; the version
               history is Windmill's.
             '';
             example = lib.literalExpression ''
@@ -138,15 +146,26 @@ in {
                   type = types.oneOf [types.path types.str];
                   description = ''
                     File holding the script content. Scripts are code, not
-                    secrets, so a store path (a path literal such as
-                    `./procedure.ts`, or `toString`/`"''${pkgs.writeText ...}"`)
-                    is the normal choice; any readable absolute path works.
+                    secrets, so a store path is the normal choice: a path
+                    literal such as `./procedure.ts` (interpolated, so it stays
+                    in the closure) or `"''${pkgs.writeText ...}"`. Any readable
+                    absolute path works.
                   '';
                 };
                 summary = mkOption {
                   type = types.str;
                   default = "";
                   description = "Script summary shown in the Windmill UI.";
+                };
+                tag = mkOption {
+                  type = types.nullOr types.str;
+                  default = null;
+                  description = ''
+                    Worker-pool tag (`[A-Za-z0-9_-]+`), for example `hub` to route
+                    the runs and the lock job to a worker that listens for it. A
+                    new version does not inherit its parent's tag, so leaving
+                    this null keeps the deployed tag and declaring one changes it.
+                  '';
                 };
               };
             });
@@ -338,6 +357,11 @@ in {
         message = "services.windmill.provision.workspaces.*.{scripts,variables} must be keyed by a full Windmill path (`f/<folder>/<name>`, `u/<user>/<name>` or `g/<group>/<name>`; alphanumerics, `_` and `-`; at most 255 characters).";
       }
       {
+        # The tag becomes the job's queue tag, which Windmill splices into its SQL.
+        assertion = lib.all (w: lib.all (s: s.tag == null || builtins.match "[A-Za-z0-9_-]{1,50}" s.tag != null) (lib.attrValues w.scripts)) (lib.attrValues cfg.workspaces);
+        message = "services.windmill.provision.workspaces.*.scripts.*.tag must match [A-Za-z0-9_-]+ and be at most 50 characters.";
+      }
+      {
         assertion = !(lib.any notRuntime variableFiles);
         message = "services.windmill.provision.workspaces.*.variables.*.valueFile must be an absolute runtime path outside ${builtins.storeDir}: the value is a secret.";
       }
@@ -391,6 +415,9 @@ in {
           ++ pw.userPasswordCredentials "windmill-provision" cfg.users
           ++ variableCredentials;
         ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir ${stateDir}/markers --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql";
+        # A deploy waits (bounded) for its dependency job's lock: the service's
+        # default start timeout would kill it before that.
+        TimeoutStartSec = "15min";
       };
     };
 

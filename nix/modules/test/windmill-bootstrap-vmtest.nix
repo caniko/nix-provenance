@@ -8,6 +8,11 @@
   # (1.601.1) variant therefore deploys a bash script (no lock job), while the
   # Atlas variant (1.839.0) covers the language the consumer really uses.
   scriptLanguage ? "bash",
+  # Worker tag declared on the fixture script (null keeps it untagged).
+  scriptTag ? null,
+  # Run a worker, so a dependency job is picked up and the deployed version
+  # really gets its lock (only the bun/Atlas variant needs one).
+  runWorker ? false,
   nameSuffix ? "",
   ...
 }:
@@ -32,6 +37,7 @@ pkgs.testers.nixosTest {
         language = scriptLanguage;
         contentFile = "${scriptV1}";
         summary = "fixture procedure";
+        tag = scriptTag;
       };
       variables."f/fixture/hub_token" = {
         valueFile = "/var/lib/fixture/hub-token";
@@ -62,7 +68,11 @@ pkgs.testers.nixosTest {
     };
   in {
     imports = [self.nixosModules.windmillProvision];
-    virtualisation.memorySize = 3072;
+    # A worker adds a second windmill process to the VM.
+    virtualisation.memorySize =
+      if runWorker
+      then 4096
+      else 3072;
     virtualisation.cores = 2;
     environment.systemPackages = [pkgs.curl pkgs.jq];
     users.groups.studio = {};
@@ -121,8 +131,15 @@ pkgs.testers.nixosTest {
       users = lib.mkForce {can = canUser;};
       tokens = lib.mkForce {paperclip-studio = studioToken;};
     };
-    # Jobs are out of scope; keep the VM small.
-    systemd.services.windmill-worker.enable = lib.mkForce false;
+    # The bun variant deploys a script whose version is only runnable once its
+    # dependency job has written the lock, so it runs a worker; the bash variant
+    # needs none and keeps the VM small.
+    systemd.services.windmill-worker = {
+      enable = lib.mkForce runWorker;
+      # A tagged script's dependency job is queued on that tag (the default
+      # worker tags are replaced), so the worker must listen for it.
+      environment = lib.mkIf (scriptTag != null) {WORKER_TAGS = lib.mkForce scriptTag;};
+    };
     systemd.services.windmill-worker-native.enable = lib.mkForce false;
     system.stateVersion = "25.11";
   };
@@ -166,17 +183,30 @@ pkgs.testers.nixosTest {
     def script_hash(path="f/fixture/hello"):
         return machine.succeed(f"curl -sf {superadmin} {api}/w/studio/scripts/get_latest_version/{path} | jq -r .script_hash")
 
+    def script_tag(path="f/fixture/hello"):
+        return machine.succeed(
+            f"curl -sf {superadmin} {api}/w/studio/scripts/get/p/{path} | jq -r '.tag // \"\"'"
+        ).strip()
+
     def variable_field(field, path="f/fixture/hub_token"):
         return machine.succeed(
             f"curl -sf {superadmin} {api}/w/studio/variables/get/{path} | jq -r '{field}'"
         ).strip()
 
-    with subtest("the declared script is deployed with its language and content"):
+    with subtest("the declared script is deployed with its language, content and tag"):
         document = machine.succeed(f"curl -sf {superadmin} {api}/w/studio/scripts/get/p/f/fixture/hello")
         assert script_field(".language") == "${scriptLanguage}", document
         assert script_field(".summary") == "fixture procedure", document
         content = script_field(".content")
         assert "v1" in content, document
+        assert script_tag() == "${
+      if scriptTag == null
+      then ""
+      else scriptTag
+    }", document
+        # Windmill queues a dependency job for a bun script and only a version
+        # whose lock that job wrote is runnable: the reconciler waited for it.
+        assert script_field(".lock") != "null", document
 
     with subtest("the declared variable holds the runtime credential value, as a secret"):
         document = machine.succeed(f"curl -sf {superadmin} {api}/w/studio/variables/get/f/fixture/hub_token")
@@ -225,10 +255,22 @@ pkgs.testers.nixosTest {
         content = script_field(".content")
         assert "v2" in content, content
         assert script_hash() != before
+        # A new version does not inherit its parent's tag: the reconciler sends
+        # the deployed one back when the declaration does not change it.
+        assert script_tag() == "${
+      if scriptTag == null
+      then ""
+      else scriptTag
+    }"
         switch(base)
         content = script_field(".content")
         assert "v1" in content, content
         assert script_hash() != before
+        assert script_tag() == "${
+      if scriptTag == null
+      then ""
+      else scriptTag
+    }"
 
     with subtest("flipping a variable's secrecy updates it in place"):
         switch(spec["variablepublic"])

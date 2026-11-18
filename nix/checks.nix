@@ -64,6 +64,10 @@
       windmillPackage = atlasPkgs.windmill;
       # 1.839.0 can deploy the Bun language the consumer uses.
       scriptLanguage = "bun";
+      # The hub's procedures declare `tag: hub`, and a bun version is only
+      # runnable once its dependency job wrote the lock: run a tagged worker.
+      scriptTag = "hub";
+      runWorker = true;
       nameSuffix = "-atlas";
     };
   n8nEval = evalSystem ./modules/test/n8n-provision-eval.nix;
@@ -1019,6 +1023,18 @@ in
         # credential id and never its runtime file or value.
         grep -q '"f/fleetix_hub/comfy_generate":{"content_file":"/nix/store/fixture-comfy_generate.ts","language":"bun","summary":"Submit ComfyUI prompts"}' "$state_file"
         grep -q '"f/fleetix_hub/hub_token":{"credential_name":"password-windmill-variable-[^"]*","description":"Fleetix Hub receipt bearer","is_secret":true}' "$state_file"
+        # A path literal keeps its store context: the file is realized and in the
+        # state file's closure. A `toString` leaves the string without context, so
+        # the path is never copied to the store and this read fails.
+        literal=$(sed -n 's/.*"f\/fleetix_hub\/literal":{"content_file":"\([^"]*\)".*/\1/p' "$state_file")
+        case "$literal" in /nix/store/*) ;; *) echo "literal content file missing: $literal"; exit 1;; esac
+        grep -q LITERAL_FIXTURE_MARKER "$literal"
+        grep -q '"f/fleetix_hub/literal":{"content_file":"[^"]*","language":"bun","summary":"Literal path fixture","tag":"hub"}' "$state_file"
+        # Empty script and variable maps are omitted, so a host pinning an older
+        # provisioner (strict state parsing) still starts.
+        ! grep -q '"other":{"name":"Other","scripts"' "$state_file"
+        ! grep -q '"other":{"name":"Other","variables"' "$state_file"
+        grep -q '"other":{"name":"Other"}' "$state_file"
         ! grep -q '/run/agenix' "$state_file"
         # The value file is a systemd credential, watched for in-place rotation.
         printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q ':/run/agenix/windmill-hub-token'

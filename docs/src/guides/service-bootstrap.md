@@ -19,6 +19,8 @@ services.windmill = {
         language = "bun";
         contentFile = ./registry/windmill/comfy_generate.ts;
         summary = "Submit ComfyUI prompts";
+        # The worker pool the hub's procedures run on.
+        tag = "hub";
       };
       variables."f/fleetix_hub/hub_token" = {
         valueFile = config.age.secrets.fleetix-hub-windmill-token.path;
@@ -55,11 +57,18 @@ services.windmill = {
 - Scripts are keyed by full Windmill path (`f/<folder>/<name>`,
   `u/<user>/<name>` or `g/<group>/<name>`; alphanumerics, `_` and `-`).
   `contentFile` is code, so a store path (a path literal, or
-  `toString`/`"''${pkgs.writeText ...}"`) is normal. The reconciler reads the
-  latest deployed version and calls `scripts/create` only when the content or
-  language differs, so Windmill's version history stays one entry per real
-  change. The script's `tag`, `schema`, `lock`, dependencies and permissions
-  are Windmill's: declaring `summary` and `language` is all the tenant owns.
+  `"''${pkgs.writeText ...}"`) is normal; a path literal is interpolated, so
+  the file enters the closure and editing it changes the state file (and the
+  units' restart trigger). The reconciler reads the latest deployed version and
+  calls `scripts/create` only when the content, language or `tag` differs, so
+  Windmill's version history stays one entry per real change. `tag` (for
+  example `hub`) routes runs and the lock job to a worker pool that listens for
+  it; leaving it null keeps the deployed tag, because a new version does not
+  inherit its parent's. A deploy then waits (bounded by `deployTimeout`,
+  default 300s) for the dependency job to write the version's lock: a version
+  without a lock is not runnable, so a queued or failed lock job fails the run
+  instead of matching the source on the next run and reporting success. The
+  `schema`, `lock`, dependencies and permissions are Windmill's.
 - Variables are upserted by full path. `valueFile` is a runtime secret
   (`config.age.secrets.<name>.path`), loaded as a systemd credential; the value
   is read at run time, sent to Windmill, and never enters the store, the state
@@ -194,14 +203,14 @@ services.n8n = {
   created are recorded for pruning. Removing an adopted one from the
   declaration leaves it in n8n with the last declared values; delete it by
   hand.
-- Windmill script drift is only detected through `content` and `language`: a
-  `summary` edit in the declaration does not redeploy a version, and a script
-  edited in the Windmill UI is put back on the next run. Version history and
-  old versions are Windmill's to prune.
-- A Windmill script keeps whatever `tag`, `schema`, `lock`, permissions and
-  triggers it already has; the tenant only writes path, content, language and
-  summary. A script that must run on a tagged worker pool needs that tag set in
-  Windmill (or a `scripts` option for it, which this does not have yet).
+- Windmill script drift is only detected through `content`, `language` and a
+  declared `tag`: a `summary` edit in the declaration does not redeploy a
+  version, and a script edited in the Windmill UI is put back on the next run.
+  Version history and old versions are Windmill's to prune.
+- A Windmill script keeps whatever `schema`, `lock`, dependencies, permissions
+  and triggers it already has; the tenant writes path, content, language,
+  summary and `tag` (when declared). A script that must run on a tagged worker
+  pool needs that worker listening for the tag (`WORKER_TAGS`).
 - n8n workflows are matched by their globally unique name. Renaming a workflow
   in n8n while it stays declared imports a second one under the declared name;
   the renamed copy is left in place. A workflow dropped from the declaration is

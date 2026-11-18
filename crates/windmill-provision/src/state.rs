@@ -45,6 +45,10 @@ pub struct Script {
     pub content_file: PathBuf,
     #[serde(default)]
     pub summary: String,
+    /// Worker-pool tag. `null` keeps whatever the deployed version has: a new
+    /// version does not inherit its parent's tag.
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -238,6 +242,18 @@ impl State {
                     script.content_file.is_absolute(),
                     "workspace {id}: script {path}: content_file must be absolute"
                 );
+                if let Some(tag) = &script.tag {
+                    // The tag becomes the job's queue tag, which Windmill splices
+                    // into its SQL: keep it to a plain identifier.
+                    ensure!(
+                        !tag.is_empty()
+                            && tag.len() <= 50
+                            && tag
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                        "workspace {id}: script {path}: tag {tag:?} must match [A-Za-z0-9_-]+ (at most 50 characters)"
+                    );
+                }
             }
             for (path, variable) in &ws.variables {
                 ensure!(
@@ -422,6 +438,7 @@ mod tests {
                 language: "bun".into(),
                 content_file: "/nix/store/x-comfy_generate.ts".into(),
                 summary: "generate".into(),
+                tag: None,
             },
         );
         s.workspaces.get_mut("studio").unwrap().variables.insert(
@@ -444,6 +461,7 @@ mod tests {
                 language: "bun".into(),
                 content_file: "/nix/store/x.ts".into(),
                 summary: String::new(),
+                tag: None,
             },
         );
         assert!(s.validate().is_err(), "space in path");
@@ -454,6 +472,7 @@ mod tests {
                 language: "bun".into(),
                 content_file: "/nix/store/x.ts".into(),
                 summary: String::new(),
+                tag: None,
             },
         );
         assert!(s.validate().is_err(), "needs two segments after the root");
@@ -464,6 +483,7 @@ mod tests {
                 language: "bun".into(),
                 content_file: "/nix/store/x.ts".into(),
                 summary: String::new(),
+                tag: None,
             },
         );
         assert!(s.validate().is_err(), "root must be u, f or g");
@@ -474,9 +494,32 @@ mod tests {
                 language: "Bun".into(),
                 content_file: "/nix/store/x.ts".into(),
                 summary: String::new(),
+                tag: None,
             },
         );
         assert!(s.validate().is_err(), "language is lowercase");
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().scripts.insert(
+            "f/fleetix_hub/x".into(),
+            Script {
+                language: "bun".into(),
+                content_file: "/nix/store/x.ts".into(),
+                summary: String::new(),
+                tag: Some("hub; drop table job".into()),
+            },
+        );
+        assert!(s.validate().is_err(), "tag is a plain identifier");
+        let mut s = state(BASE);
+        s.workspaces.get_mut("studio").unwrap().scripts.insert(
+            "f/fleetix_hub/x".into(),
+            Script {
+                language: "bun".into(),
+                content_file: "/nix/store/x.ts".into(),
+                summary: String::new(),
+                tag: Some("hub".into()),
+            },
+        );
+        s.validate().unwrap();
         let mut s = state(BASE);
         s.workspaces.get_mut("studio").unwrap().variables.insert(
             "f/fleetix_hub/hub_token".into(),
