@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use provenance_oauth::{
-    Config, Enrollment, Target, now,
+    Config, Enrollment, OAuthClient, Secret, Target,
+    google::Google,
+    now,
     openai::OpenAi,
     state::{Store, atomic_write, read_json},
 };
@@ -9,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{IsTerminal, Read, Write},
-    path::PathBuf,
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
 };
 use zeroize::Zeroizing;
@@ -42,6 +45,9 @@ enum Action {
         /// The existing agenix-rekey declaration's encrypted source path.
         #[arg(long)]
         secret: PathBuf,
+        /// Google OAuth client JSON downloaded from Cloud Console.
+        #[arg(long)]
+        client_file: Option<PathBuf>,
         /// Private operator-side transaction directory. Retries reuse enrollment.
         #[arg(long)]
         pending_directory: PathBuf,
@@ -74,6 +80,11 @@ enum Action {
         /// Emit only the access token for a stock command-based consumer.
         #[arg(long)]
         raw: bool,
+    },
+    /// Emit an rclone Drive remote to a pipe without refreshing it.
+    RcloneConfig {
+        #[arg(long)]
+        remote: String,
     },
     /// Inspect enrollment metadata; never prints token values.
     Status,
@@ -144,6 +155,7 @@ fn run(cli: Cli) -> Result<()> {
         profile,
         account,
         secret,
+        client_file,
         pending_directory,
         reauth,
         agenix,
@@ -160,6 +172,10 @@ fn run(cli: Cli) -> Result<()> {
                     account
                 },
             "requested target does not match the evaluated manifest"
+        );
+        ensure!(
+            (config.target.provider == "google") == client_file.is_some(),
+            "--client-file is required for google and rejected for openai"
         );
         let pending_config = Config {
             state_directory: pending_directory,
@@ -199,18 +215,28 @@ fn run(cli: Cli) -> Result<()> {
                 last.checked_add(1)
                     .context("enrollment generation overflow")?,
             );
-            let grant = OpenAi::new()?.authorize(|url, code| {
+            let prompt = |url: &str, code: &str| {
                 eprintln!(
                     "Authorize {} for {}@{}: {url}\nDevice code: {code}",
                     config.target.profile, config.target.user, config.target.host
                 );
-            })?;
+            };
+            let grant = match config.target.provider.as_str() {
+                "openai" => OpenAi::new()?.authorize(prompt)?,
+                "google" => {
+                    let credentials =
+                        read_client_file(client_file.as_deref().context("missing --client-file")?)?;
+                    Google::new()?.authorize(credentials, prompt)?
+                }
+                _ => unreachable!(),
+            };
             let enrollment = Enrollment {
                 version: 1,
                 target: config.target.clone(),
                 generation,
                 grant,
             };
+            enrollment.validate(&config.target)?;
             atomic_write(&pending, &Zeroizing::new(serde_json::to_vec(&enrollment)?))?;
             enrollment
         };
@@ -260,6 +286,11 @@ fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
     verify_local_target(&config.target)?;
+    // Refused before the lock: a Google access call must not create or wait on state.
+    ensure!(
+        !matches!(cli.command, Action::Access { .. }) || config.target.provider == "openai",
+        "google grants are refreshed by their rclone consumer"
+    );
     let store = Store::lock(&config)?;
     match cli.command {
         Action::Apply {
@@ -274,6 +305,7 @@ fn run(cli: Cli) -> Result<()> {
                 !std::io::stdout().is_terminal(),
                 "access credentials must be consumed through a pipe"
             );
+            // Construct the client before access can persist refresh intent.
             let provider = OpenAi::new()?;
             let access = store.access(now, |previous| provider.refresh(previous))?;
             let mut stdout = std::io::stdout().lock();
@@ -283,6 +315,19 @@ fn run(cli: Cli) -> Result<()> {
                 serde_json::to_writer(&mut stdout, &access)?;
                 writeln!(stdout)?;
             }
+        }
+        Action::RcloneConfig { remote } => {
+            ensure!(
+                config.target.provider == "google" && config.target.profile == "drive-file",
+                "rclone config requires google/drive-file"
+            );
+            ensure!(
+                !std::io::stdout().is_terminal(),
+                "rclone credentials must be consumed through a pipe"
+            );
+            let grant = store.grant()?;
+            let output = Zeroizing::new(rclone_config(&remote, &grant)?);
+            std::io::stdout().lock().write_all(output.as_bytes())?;
         }
         Action::Status => println!("{}", store.status()?),
         Action::Remove => {
@@ -296,6 +341,78 @@ fn run(cli: Cli) -> Result<()> {
         Action::Authorize { .. } | Action::Finalize { .. } => unreachable!(),
     }
     Ok(())
+}
+
+fn read_client_file(path: &Path) -> Result<OAuthClient> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .context("cannot open Google client file")?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.len() <= 64 * 1024,
+        "Google client file must be a bounded regular file"
+    );
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= 64 * 1024,
+        "Google client file exceeds size limit"
+    );
+    let document: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow::anyhow!("invalid Google client JSON"))?;
+    let root = document.as_object().context("invalid Google client JSON")?;
+    let fields = if root.contains_key("client_id") || root.contains_key("client_secret") {
+        root
+    } else {
+        let mut objects = root.values().filter_map(serde_json::Value::as_object);
+        let object = objects.next().context("invalid Google client JSON")?;
+        ensure!(objects.next().is_none(), "invalid Google client JSON");
+        object
+    };
+    let client = OAuthClient {
+        client_id: fields
+            .get("client_id")
+            .and_then(serde_json::Value::as_str)
+            .context("invalid Google client credentials")?
+            .to_owned(),
+        client_secret: Secret(
+            fields
+                .get("client_secret")
+                .and_then(serde_json::Value::as_str)
+                .context("invalid Google client credentials")?
+                .to_owned(),
+        ),
+    };
+    client.validate()?;
+    Ok(client)
+}
+
+fn rclone_config(remote: &str, grant: &provenance_oauth::Grant) -> Result<String> {
+    ensure!(
+        !remote.is_empty()
+            && remote
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)),
+        "invalid rclone remote name"
+    );
+    let client = grant
+        .client
+        .as_ref()
+        .context("Google grant is missing client credentials")?;
+    let millis = i64::try_from(grant.expires_at).context("invalid token expiry")?;
+    let expiry = chrono::DateTime::from_timestamp_millis(millis)
+        .context("invalid token expiry")?
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let token = Zeroizing::new(serde_json::to_string(
+        &serde_json::json!({"access_token": grant.access_token.0, "token_type": "Bearer", "refresh_token": grant.refresh_token.0, "expiry": expiry}),
+    )?);
+    let token = Zeroizing::new(token.replace('%', "\\u0025"));
+    Ok(format!(
+        "[{remote}]\ntype = drive\nclient_id = {}\nclient_secret = {}\nscope = drive.file\ntoken = {}\n",
+        client.client_id, client.client_secret.0, *token
+    ))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -351,4 +468,65 @@ fn verify_local_target(target: &Target) -> Result<()> {
         "this OAuth profile belongs to another local user"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn google_client_files_are_bounded_and_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("client.json");
+        for json in [
+            r#"{"client_id":"id","client_secret":"secret"}"#,
+            r#"{"installed":{"client_id":"id","client_secret":"secret","redirect_uris":[]}}"#,
+        ] {
+            fs::write(&path, json).unwrap();
+            let client = read_client_file(&path).unwrap();
+            assert_eq!(client.client_id, "id");
+            assert_eq!(client.client_secret.0, "secret");
+        }
+        for json in [
+            r#"{"client_id":"id"}"#,
+            r#"{"client_id":"id","client_secret":"unsafe%"}"#,
+            r#"{"a":{"client_id":"id","client_secret":"secret"},"b":{}}"#,
+        ] {
+            fs::write(&path, json).unwrap();
+            assert!(read_client_file(&path).is_err());
+        }
+        fs::write(&path, vec![b' '; 64 * 1024 + 1]).unwrap();
+        assert!(read_client_file(&path).is_err());
+    }
+
+    #[test]
+    fn renders_rclone_config_and_rejects_bad_remote() {
+        let grant = provenance_oauth::Grant {
+            access_token: Secret("access".into()),
+            refresh_token: Secret("refresh".into()),
+            expires_at: 1_700_000_000_000,
+            account_id: "id".into(),
+            client: Some(OAuthClient {
+                client_id: "id".into(),
+                client_secret: Secret("secret".into()),
+            }),
+        };
+        assert_eq!(
+            rclone_config("gdrive", &grant).unwrap(),
+            "[gdrive]\ntype = drive\nclient_id = id\nclient_secret = secret\nscope = drive.file\ntoken = {\"access_token\":\"access\",\"expiry\":\"2023-11-14T22:13:20.000Z\",\"refresh_token\":\"refresh\",\"token_type\":\"Bearer\"}\n"
+        );
+        assert!(rclone_config("bad\n[other]", &grant).is_err());
+        let mut grant = grant;
+        grant.access_token.0 = "%(type)s".into();
+        let output = rclone_config("gdrive", &grant).unwrap();
+        let token = output
+            .lines()
+            .find_map(|line| line.strip_prefix("token = "))
+            .unwrap();
+        assert!(!token.contains('%'));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(token).unwrap()["access_token"],
+            "%(type)s"
+        );
+    }
 }

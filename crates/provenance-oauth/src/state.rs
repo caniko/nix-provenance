@@ -150,7 +150,7 @@ impl<'a> Store<'a> {
             "OAuth state has an incompatible version or target"
         );
         if let Some(grant) = &state.grant {
-            grant.validate()?;
+            grant.validate_for(&self.config.target)?;
         }
         Ok(state)
     }
@@ -212,6 +212,10 @@ impl<'a> Store<'a> {
         clock: impl Fn() -> Result<u64>,
         refresh: impl FnOnce(&Grant) -> Result<Grant>,
     ) -> Result<Access> {
+        ensure!(
+            self.config.target.provider == "openai",
+            "google grants are refreshed by their rclone consumer"
+        );
         let now = clock()?;
         let mut state = self.load()?;
         ensure!(
@@ -237,7 +241,7 @@ impl<'a> Store<'a> {
                     .context("could not checkpoint refresh intent; no exchange was sent");
             }
             let next = refresh(grant)?;
-            next.validate()?;
+            next.validate_for(&self.config.target)?;
             ensure!(
                 next.account_id == grant.account_id,
                 "refresh changed the authorized account"
@@ -286,6 +290,21 @@ impl<'a> Store<'a> {
         })?)
     }
 
+    /// The full Google grant for its rclone consumer. OpenAI refresh tokens
+    /// never leave the store; they are only used through `access`.
+    pub fn grant(&self) -> Result<Grant> {
+        ensure!(
+            self.config.target.provider == "google",
+            "only google grants are exported"
+        );
+        let state = self.load()?;
+        ensure!(
+            !state.refresh_pending,
+            "OAuth refresh outcome is uncertain; reauthorize"
+        );
+        state.grant.context("OAuth enrollment has been removed")
+    }
+
     pub fn remove(&self) -> Result<()> {
         let mut state = self.load()?;
         state.grant = None;
@@ -309,7 +328,7 @@ impl<'a> Store<'a> {
             "checkpoint has an uncertain refresh; reauthorize"
         );
         if let Some(grant) = &state.grant {
-            grant.validate()?;
+            grant.validate_for(&self.config.target)?;
         }
         self.save(&state)?;
         self.checkpoint(&state)

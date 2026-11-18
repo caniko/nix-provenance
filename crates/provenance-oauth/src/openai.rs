@@ -186,6 +186,7 @@ fn into_grant(tokens: Tokens, previous: Option<&Grant>, now: u64) -> Result<Gran
         refresh_token,
         expires_at,
         account_id,
+        client: None,
     };
     grant.validate()?;
     Ok(grant)
@@ -213,6 +214,7 @@ mod tests {
             refresh_token: Secret("refresh-secret".into()),
             expires_at: 123,
             account_id: "account".into(),
+            client: None,
         };
         let tokens = Tokens {
             access_token: Secret("next-access-secret".into()),
@@ -234,6 +236,7 @@ mod tests {
             refresh_token: Secret("refresh".into()),
             expires_at: 123,
             account_id: "account".into(),
+            client: None,
         };
         let tokens = || Tokens {
             access_token: Secret("next".into()),

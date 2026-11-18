@@ -405,6 +405,8 @@ in
       initial = oauthEval.config.systemd.services.provenance-oauth-alice-openai-initialize;
     in
       assert svc.serviceConfig.User == "alice";
+      assert oauthEval.config.systemd.services.provenance-oauth-root-google.serviceConfig.User == "root";
+      assert oauthEval.config.services.provenance.oauth.users.root.providers.google.profile == "drive-file";
       assert svc.serviceConfig.StateDirectoryMode == "0700";
       assert svc.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-openai"];
       assert !(lib.hasInfix "--initialize" svc.serviceConfig.ExecStart);

@@ -87,7 +87,7 @@ in {
           type = types.attrsOf (types.submodule {
             options = {
               profile = mkOption {
-                type = types.enum ["chatgpt"];
+                type = types.enum ["chatgpt" "drive-file"];
                 default = "chatgpt";
                 description = "Compatible provider authorization profile.";
               };
@@ -106,7 +106,7 @@ in {
               };
             };
           });
-          description = "Host-shared OAuth provider enrollments (currently openai/chatgpt).";
+          description = "Host-shared OAuth provider enrollments.";
         };
       });
       description = "Enrollments isolated by host and local user; compatible enabled Home Manager apps bind automatically.";
@@ -127,8 +127,8 @@ in {
       assertions =
         lib.concatMap (entry: [
           {
-            assertion = entry.provider == "openai";
-            message = "provenance OAuth: unsupported provider '${entry.provider}'.";
+            assertion = (entry.provider == "openai" && entry.settings.profile == "chatgpt") || (entry.provider == "google" && entry.settings.profile == "drive-file");
+            message = "provenance OAuth: unsupported provider/profile pair '${entry.provider}/${entry.settings.profile}'.";
           }
           {
             assertion = builtins.match "[a-zA-Z0-9_-]+" entry.user != null && config.users.users ? ${entry.user};
@@ -167,7 +167,7 @@ in {
             package = helper;
           };
         }) {}
-      entries;
+      (lib.filter (entry: entry.provider == "openai") entries);
     })
   ];
 }
