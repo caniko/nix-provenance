@@ -20,7 +20,8 @@
         dataFiles.value = "/run/agenix/n8n-webhook";
       };
       workflows.fleetix-hub-claim = {
-        file = "/nix/store/fixture-fleetix-hub-claim.json";
+        # A path literal: its store context must survive into the state file.
+        file = ./fixture-n8n-workflow.json;
         credentials."Fleetix Hub webhook token" = "studio-webhook";
       };
     };

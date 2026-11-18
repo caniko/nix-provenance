@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 use provenance_core::generated_secret::atomic_write_secret;
 use provenance_core::password::{PasswordMarkerStore, read_password_file, secret_digest};
@@ -237,11 +237,22 @@ fn reconcile(
     // name -> what n8n holds after this run, for the workflow credential ids.
     let mut provisioned: BTreeMap<String, ProvisionedCredential> = BTreeMap::new();
 
+    // Deactivation comes before every step that can fail: a bad replacement
+    // export or a credential write must not leave the old webhook serving.
+    if state.workflows.values().any(|workflow| !workflow.active) {
+        deactivate_declared(&n8n, state, &n8n.list_workflows()?)?;
+    }
+
+    // Resolve every target before writing anything: two declarations can
+    // resolve to one n8n credential (a rename recorded under its old name plus
+    // its live name), and the second write would overwrite the first's secret.
+    let targets = resolve_targets(&existing, &previous, state)?;
+
     for (name, cred) in &state.credentials {
         let data = resolve_data(cred, credential_dir)?;
         // Digest over type + resolved data: the marker says "n8n holds exactly this".
         let id = format!("n8n-credential:{name}");
-        let found = pick_target(&existing, &previous, name)?;
+        let found = targets.get(name.as_str()).copied();
         // A credential we created, renamed in n8n and in the declaration
         // alike, stays ours under its new name (and is not pruned below).
         if let Some(cred_id) = found
@@ -316,11 +327,35 @@ struct ProvisionedCredential {
     kind: String,
 }
 
+/// Deactivate every existing workflow declared `active = false`, before any
+/// other step: publishing state is the only thing a later failure must not
+/// strand, because a live webhook outlives a failed provision run.
+fn deactivate_declared(n8n: &N8n, state: &State, existing: &[(String, String)]) -> Result<()> {
+    for (name, workflow) in &state.workflows {
+        if workflow.active {
+            continue;
+        }
+        let Some((id, _)) = existing.iter().find(|(_, known)| known == name) else {
+            continue;
+        };
+        if !n8n.workflow(id)?["active"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        n8n.deactivate_workflow(id)?;
+        eprintln!("workflow {name}: deactivated");
+    }
+    Ok(())
+}
+
 /// Import or update every declared workflow by name, bind its credential
 /// references to the provisioned credential ids, and converge its activation.
 ///
 /// Workflows are compared against the live copy (n8n's read-back), not a
 /// marker: a UI edit is reverted and an unchanged declaration writes nothing.
+///
+/// A workflow that executes another one is imported after it: n8n generates
+/// the ids and validates an `executeWorkflow` reference by id when the caller
+/// is published, so the reference is rewritten to the live id first.
 fn reconcile_workflows(
     n8n: &N8n,
     state: &State,
@@ -330,54 +365,246 @@ fn reconcile_workflows(
         return Ok(());
     }
     let existing = n8n.list_workflows()?;
-    for (name, workflow) in &state.workflows {
-        let raw = fs::read_to_string(&workflow.file)
-            .with_context(|| format!("reading {}", workflow.file.display()))?;
-        let file: Value = serde_json::from_str(&raw)
-            .with_context(|| format!("parsing workflow file {}", workflow.file.display()))?;
-        let mut payload = workflow_payload(name, &file)?;
+    let mut index = WorkflowIndex::new(&existing);
+    let mut declared = read_declared(state)?;
+    for position in import_order(&declared)? {
+        let declared = &mut declared[position];
+        let name = declared.name.clone();
+        let workflow = &state.workflows[&name];
+        let mut payload = declared.payload.clone();
+        bind_executed_workflows(&mut payload, &name, &index)?;
         bind_credentials(&mut payload["nodes"], &workflow.credentials, provisioned)
             .with_context(|| format!("workflow {name}"))?;
+        let id = converge_workflow(n8n, &name, workflow.active, &payload, &existing)?;
+        index.insert(&id, &name);
+    }
+    Ok(())
+}
 
-        let mut created = false;
-        let (id, version, was_active, active_version) =
-            match existing.iter().find(|(_, known)| known == name) {
-                None => {
-                    let state = n8n.create_workflow(&payload)?;
-                    created = true;
-                    eprintln!("workflow {name}: created");
-                    (state.id, state.version, false, None)
+/// Import (or update) one workflow and converge its activation. Returns its id.
+fn converge_workflow(
+    n8n: &N8n,
+    name: &str,
+    active: bool,
+    payload: &Value,
+    existing: &[(String, String)],
+) -> Result<String> {
+    let mut created = false;
+    let (id, version, was_active, active_version) =
+        match existing.iter().find(|(_, known)| known == name) {
+            None => {
+                let state = n8n.create_workflow(payload)?;
+                created = true;
+                eprintln!("workflow {name}: created");
+                (state.id, state.version, false, None)
+            }
+            Some((id, _)) => {
+                let live = n8n.workflow(id)?;
+                let version = live["versionId"].as_str().map(str::to_owned);
+                let was_active = live["active"].as_bool().unwrap_or(false);
+                let active_version = live["activeVersionId"].as_str().map(str::to_owned);
+                if matches_declaration(payload, &live) {
+                    (id.to_owned(), version, was_active, active_version)
+                } else {
+                    let state = n8n.update_workflow(id, payload)?;
+                    eprintln!("workflow {name}: updated");
+                    (state.id, state.version, was_active, active_version)
                 }
-                Some((id, _)) => {
-                    let live = n8n.workflow(id)?;
-                    let version = live["versionId"].as_str().map(str::to_owned);
-                    let was_active = live["active"].as_bool().unwrap_or(false);
-                    let active_version = live["activeVersionId"].as_str().map(str::to_owned);
-                    if covers(&payload, &live) {
-                        (id.clone(), version, was_active, active_version)
-                    } else {
-                        let state = n8n.update_workflow(id, &payload)?;
-                        eprintln!("workflow {name}: updated");
-                        (state.id, state.version, was_active, active_version)
-                    }
-                }
-            };
+            }
+        };
 
-        // Published means: active on exactly the version this run wrote. An
-        // update to an active workflow bumps versionId, so it is republished.
-        let published = was_active && version.is_some() && active_version == version;
-        if workflow.active && !published {
-            let version = version.with_context(|| {
-                format!("workflow {name}: n8n returned no versionId to activate")
-            })?;
-            n8n.activate_workflow(&id, &version)?;
-            eprintln!(
-                "workflow {name}: {}",
-                if created { "activated" } else { "republished" }
+    // Published means: active on exactly the version this run wrote. An
+    // update to an active workflow bumps versionId, so it is republished.
+    let published = was_active && version.is_some() && active_version == version;
+    if active && !published {
+        let version = version
+            .with_context(|| format!("workflow {name}: n8n returned no versionId to activate"))?;
+        n8n.activate_workflow(&id, &version)?;
+        eprintln!(
+            "workflow {name}: {}",
+            if created { "activated" } else { "republished" }
+        );
+    } else if !active && was_active {
+        n8n.deactivate_workflow(&id)?;
+        eprintln!("workflow {name}: deactivated");
+    }
+    Ok(id)
+}
+
+/// A declared workflow read from its export, before references are resolved.
+struct DeclaredWorkflow {
+    name: String,
+    payload: Value,
+}
+
+fn read_declared(state: &State) -> Result<Vec<DeclaredWorkflow>> {
+    state
+        .workflows
+        .iter()
+        .map(|(name, workflow)| {
+            let raw = fs::read_to_string(&workflow.file)
+                .with_context(|| format!("reading {}", workflow.file.display()))?;
+            let file: Value = serde_json::from_str(&raw)
+                .with_context(|| format!("parsing workflow file {}", workflow.file.display()))?;
+            Ok(DeclaredWorkflow {
+                name: name.clone(),
+                payload: workflow_payload(name, &file)?,
+            })
+        })
+        .collect()
+}
+
+/// Declared positions ordered so every workflow follows the declared ones it
+/// executes. A cycle cannot be imported, because no member can be published
+/// before another.
+fn import_order(declared: &[DeclaredWorkflow]) -> Result<Vec<usize>> {
+    let position: BTreeMap<&str, usize> = declared
+        .iter()
+        .enumerate()
+        .map(|(i, workflow)| (workflow.name.as_str(), i))
+        .collect();
+    let dependencies: Vec<Vec<usize>> = declared
+        .iter()
+        .map(|workflow| {
+            executed_references(&workflow.payload)
+                .iter()
+                .filter_map(|reference| position.get(reference.as_str()).copied())
+                .collect()
+        })
+        .collect();
+    let mut imported = vec![false; declared.len()];
+    let mut order = Vec::with_capacity(declared.len());
+    while order.len() < declared.len() {
+        let ready: Vec<usize> = (0..declared.len())
+            .filter(|i| !imported[*i] && dependencies[*i].iter().all(|d| imported[*d]))
+            .collect();
+        if ready.is_empty() {
+            let cyclic: Vec<&str> = (0..declared.len())
+                .filter(|i| !imported[*i])
+                .map(|i| declared[i].name.as_str())
+                .collect();
+            bail!(
+                "declared workflows execute each other in a cycle: {}",
+                cyclic.join(", ")
             );
-        } else if !workflow.active && was_active {
-            n8n.deactivate_workflow(&id)?;
-            eprintln!("workflow {name}: deactivated");
+        }
+        for i in ready {
+            imported[i] = true;
+            order.push(i);
+        }
+    }
+    Ok(order)
+}
+
+/// Workflow identity by name and by id, kept current as this run imports.
+struct WorkflowIndex {
+    id_by_name: BTreeMap<String, String>,
+    name_by_id: BTreeMap<String, String>,
+}
+
+impl WorkflowIndex {
+    fn new(existing: &[(String, String)]) -> Self {
+        let mut index = Self {
+            id_by_name: BTreeMap::new(),
+            name_by_id: BTreeMap::new(),
+        };
+        for (id, name) in existing {
+            index.insert(id, name);
+        }
+        index
+    }
+
+    fn insert(&mut self, id: &str, name: &str) {
+        self.id_by_name.insert(name.to_owned(), id.to_owned());
+        self.name_by_id.insert(id.to_owned(), name.to_owned());
+    }
+
+    /// The live `(id, name)` a reference names: an id already, a declared name,
+    /// or the name of a workflow that existed in n8n before this run.
+    fn resolve(&self, reference: &str) -> Option<(String, String)> {
+        if let Some(name) = self.name_by_id.get(reference) {
+            return Some((reference.to_owned(), name.clone()));
+        }
+        self.id_by_name
+            .get(reference)
+            .map(|id| (id.clone(), reference.to_owned()))
+    }
+}
+
+/// The workflows a declared payload executes, as written in its
+/// `executeWorkflow` nodes.
+fn executed_references(payload: &Value) -> Vec<String> {
+    payload["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(executed_reference)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The workflow reference an `executeWorkflow` node carries, when it resolves
+/// one from a name or id rather than at run time.
+fn executed_reference(node: &Value) -> Option<&str> {
+    if node.get("type").and_then(Value::as_str) != Some(EXECUTE_WORKFLOW) {
+        return None;
+    }
+    let parameters = node.get("parameters")?;
+    // `source = parameter` means the id comes from an expression.
+    if parameters.get("source").and_then(Value::as_str) == Some("parameter") {
+        return None;
+    }
+    let value = match parameters.get("workflowId")? {
+        // "By URL" names another instance's workflow, never one here.
+        Value::Object(object) => {
+            if object.get("mode").and_then(Value::as_str) == Some("url") {
+                return None;
+            }
+            object.get("value")?.as_str()?
+        }
+        Value::String(value) => value.as_str(),
+        _ => return None,
+    };
+    (!value.contains("{{")).then_some(value)
+}
+
+/// Rewrite every `executeWorkflow` reference of `payload` to the live id of the
+/// workflow it names. n8n generates the ids and validates the reference by id
+/// when the caller is published, so a name (or a stale id) never survives.
+fn bind_executed_workflows(payload: &mut Value, caller: &str, index: &WorkflowIndex) -> Result<()> {
+    let nodes = payload["nodes"]
+        .as_array_mut()
+        .context("nodes must be an array")?;
+    for node in nodes {
+        let Some(reference) = executed_reference(node).map(str::to_owned) else {
+            continue;
+        };
+        let node_name = node
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>")
+            .to_owned();
+        let Some((id, name)) = index.resolve(&reference) else {
+            bail!(
+                "workflow {caller}, node {node_name}: executes {reference:?}, which is neither declared nor present in n8n"
+            )
+        };
+        if id == reference {
+            continue;
+        }
+        let Some(locator) = node
+            .get_mut("parameters")
+            .and_then(|parameters| parameters.get_mut("workflowId"))
+        else {
+            continue;
+        };
+        match locator {
+            Value::String(value) => *value = id,
+            Value::Object(object) => {
+                object.insert("value".into(), json!(id));
+                object.insert("cachedResultName".into(), json!(name));
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -448,25 +675,43 @@ fn bind_credentials(
     Ok(())
 }
 
-/// True when every field the tenant manages in `desired` is present unchanged
-/// in `live`. Extra fields are ignored (n8n adds node ids and `webhookId`s),
-/// while a changed managed field forces a write.
-fn covers(desired: &Value, live: &Value) -> bool {
-    match desired {
-        Value::Object(desired) => live.as_object().is_some_and(|live| {
-            desired
+/// True when the live copy is exactly the declaration: the same name, the same
+/// nodes (field for field, after dropping the ids n8n generates and mints), the
+/// same connections, settings and metadata. Anything extra in the live copy is
+/// drift too — a `disabled` a UI edit added to a node, an edited connection —
+/// while a workflow n8n left alone matches.
+fn matches_declaration(desired: &Value, live: &Value) -> bool {
+    let (Some(desired), Some(live)) = (desired.as_object(), live.as_object()) else {
+        return false;
+    };
+    desired.iter().all(|(key, value)| {
+        let live = live.get(key);
+        match key.as_str() {
+            "nodes" => live.is_some_and(|live| nodes(value) == nodes(live)),
+            _ => live == Some(value),
+        }
+    })
+}
+
+/// Node fields n8n owns: the id it assigns and the `webhookId` it mints for
+/// trigger nodes. The tenant declares neither, so they never count as drift.
+const NODE_GENERATED: [&str; 2] = ["id", "webhookId"];
+
+/// The nodes with their n8n-generated fields removed, for an exact comparison.
+fn nodes(value: &Value) -> Vec<BTreeMap<&str, &Value>> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|node| match node.as_object() {
+            Some(node) => node
                 .iter()
-                .all(|(key, value)| live.get(key).is_some_and(|other| covers(value, other)))
-        }),
-        Value::Array(desired) => live.as_array().is_some_and(|live| {
-            desired.len() == live.len()
-                && desired
-                    .iter()
-                    .zip(live)
-                    .all(|(value, other)| covers(value, other))
-        }),
-        _ => desired == live,
-    }
+                .filter(|(key, _)| !NODE_GENERATED.contains(&key.as_str()))
+                .map(|(key, value)| (key.as_str(), value))
+                .collect(),
+            None => BTreeMap::from([("", node)]),
+        })
+        .collect()
 }
 /// The n8n credential to update: the recorded one when it still exists, else a
 /// single same-named one (adopted); several candidates are ambiguous, so refuse.
@@ -490,6 +735,8 @@ fn pick_target<'a>(
 }
 
 const CREDENTIAL_REGISTRY: &str = "credentials.json";
+/// The n8n node type that calls another workflow, by name or id.
+const EXECUTE_WORKFLOW: &str = "n8n-nodes-base.executeWorkflow";
 
 /// Previous-run registry: only a missing file is an empty first run; an
 /// unreadable or corrupt one aborts so removals are never silently forgotten.
@@ -513,6 +760,30 @@ fn removed_credentials(
         .filter(|(name, _)| !state.credentials.contains_key(*name))
         .map(|(n, i)| (n.clone(), i.clone()))
         .collect()
+}
+
+/// Resolve every declared credential's n8n target before any write. Two
+/// declarations that resolve to one credential (a recorded id plus a live name
+/// match after a rename) would overwrite each other's secret, so refuse.
+fn resolve_targets<'a>(
+    existing: &'a [(String, String)],
+    previous: &BTreeMap<String, String>,
+    state: &'a State,
+) -> Result<BTreeMap<&'a str, &'a str>> {
+    let mut targets = BTreeMap::new();
+    let mut claimed: BTreeMap<&str, &str> = BTreeMap::new();
+    for name in state.credentials.keys() {
+        let Some(cred_id) = pick_target(existing, previous, name)? else {
+            continue;
+        };
+        if let Some(other) = claimed.insert(cred_id, name) {
+            bail!(
+                "credentials {other} and {name} both resolve to n8n credential {cred_id}: rename or delete one in n8n"
+            );
+        }
+        targets.insert(name.as_str(), cred_id);
+    }
+    Ok(targets)
 }
 
 #[cfg(test)]
@@ -612,10 +883,11 @@ mod tests {
     }
 
     #[test]
-    fn covers_ignores_fields_n8n_adds_but_sees_managed_changes() {
+    fn a_declaration_matches_only_an_identical_live_copy() {
         let desired = json!({
             "name": "w",
             "nodes": [{"name": "Webhook", "type": "webhook", "position": [0, 0]}],
+            "connections": {"Webhook": {"main": [[]]}},
             "settings": {"executionOrder": "v1"},
         });
         // n8n adds node ids, webhookId, active, versionId, checksum...
@@ -628,24 +900,171 @@ mod tests {
                 "id": "n1", "name": "Webhook", "type": "webhook",
                 "position": [0, 0], "webhookId": "hook-1",
             }],
-            "settings": {"executionOrder": "v1", "timezone": "UTC"},
-        });
-        assert!(covers(&desired, &live));
-        // A managed change (position, node count, settings) is not covered.
-        let moved = json!({
-            "nodes": [{"name": "Webhook", "type": "webhook", "position": [10, 0]}],
+            "connections": {"Webhook": {"main": [[]]}},
             "settings": {"executionOrder": "v1"},
         });
-        assert!(!covers(&moved, &live));
+        assert!(matches_declaration(&desired, &live));
+        // A managed change (position, node count, settings, connections) is drift.
+        let moved = json!({
+            "nodes": [{"name": "Webhook", "type": "webhook", "position": [10, 0]}],
+        });
+        assert!(!matches_declaration(&moved, &live));
         let extra_node = json!({
             "nodes": [
                 {"name": "Webhook", "type": "webhook", "position": [0, 0]},
                 {"name": "Extra", "type": "noop", "position": [0, 0]},
             ],
         });
-        assert!(!covers(&extra_node, &live));
+        assert!(!matches_declaration(&extra_node, &live));
         let other_order = json!({"settings": {"executionOrder": "v0"}});
-        assert!(!covers(&other_order, &live));
+        assert!(!matches_declaration(&other_order, &live));
+        let dropped_connection = json!({"connections": {}});
+        assert!(!matches_declaration(&dropped_connection, &live));
+        // A field a UI edit added to a node is drift, not an extra to ignore.
+        let disabled = json!({
+            "nodes": [{
+                "id": "n1", "name": "Webhook", "type": "webhook",
+                "position": [0, 0], "webhookId": "hook-1", "disabled": true,
+            }],
+        });
+        assert!(!matches_declaration(&live, &disabled));
+        // An extra settings key is drift too.
+        let extra_setting = json!({"settings": {"executionOrder": "v1", "timezone": "UTC"}});
+        assert!(!matches_declaration(&extra_setting, &live));
+    }
+
+    #[test]
+    fn executed_workflows_are_references_only_when_they_name_one() {
+        let payload = json!({"nodes": [
+            {"name": "Claim", "type": EXECUTE_WORKFLOW, "parameters": {
+                "workflowId": {"__rl": true, "value": "fleetix-hub-claim", "mode": "list"},
+            }},
+            {"name": "Plain", "type": EXECUTE_WORKFLOW, "parameters": {
+                "workflowId": "by-id",
+            }},
+            {"name": "Expression", "type": EXECUTE_WORKFLOW, "parameters": {
+                "workflowId": {"__rl": true, "value": "={{ $json.id }}", "mode": "list"},
+            }},
+            {"name": "Parameter", "type": EXECUTE_WORKFLOW, "parameters": {
+                "source": "parameter", "workflowId": {"value": "from-args"},
+            }},
+            {"name": "Url", "type": EXECUTE_WORKFLOW, "parameters": {
+                "workflowId": {"__rl": true, "value": "https://x/y", "mode": "url"},
+            }},
+            {"name": "Other", "type": "n8n-nodes-base.code", "parameters": {}},
+        ]});
+        assert_eq!(
+            executed_references(&payload),
+            vec!["fleetix-hub-claim".to_owned(), "by-id".to_owned()]
+        );
+    }
+
+    #[test]
+    fn callers_are_imported_after_the_workflows_they_execute() {
+        let declared = |name: &str, executes: Option<&str>| DeclaredWorkflow {
+            name: name.to_owned(),
+            payload: json!({"name": name, "nodes": match executes {
+                Some(target) => json!([{"name": "Call", "type": EXECUTE_WORKFLOW, "parameters": {
+                    "workflowId": {"__rl": true, "value": target, "mode": "list"},
+                }}]),
+                None => json!([]),
+            }}),
+        };
+        // Declared order is alphabetical; the caller comes last in the import.
+        let order = import_order(&[
+            declared("fleetix-hub-bluesky", Some("fleetix-hub-claim")),
+            declared("fleetix-hub-claim", None),
+            declared("fleetix-hub-lookup", None),
+        ])
+        .unwrap();
+        let names: Vec<&str> = order
+            .iter()
+            .map(|i| {
+                [
+                    "fleetix-hub-bluesky",
+                    "fleetix-hub-claim",
+                    "fleetix-hub-lookup",
+                ][*i]
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "fleetix-hub-claim",
+                "fleetix-hub-lookup",
+                "fleetix-hub-bluesky"
+            ]
+        );
+        // A cycle has no valid order.
+        let err = import_order(&[declared("a", Some("b")), declared("b", Some("a"))]).unwrap_err();
+        assert!(err.to_string().contains("cycle"), "{err}");
+        // A reference outside the declaration is not a dependency.
+        assert_eq!(
+            import_order(&[declared("a", Some("elsewhere"))])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn execute_workflow_references_are_rewritten_to_live_ids() {
+        let mut index = WorkflowIndex::new(&[("w0".to_owned(), "fleetix-hub-claim".to_owned())]);
+        let mut payload = json!({"name": "caller", "nodes": [
+            {"name": "Claim", "type": EXECUTE_WORKFLOW, "parameters": {
+                "workflowId": {"__rl": true, "value": "fleetix-hub-claim", "mode": "list",
+                               "cachedResultName": "fleetix-hub-claim"},
+            }},
+            {"name": "Webhook", "type": "n8n-nodes-base.webhook", "parameters": {}},
+        ]});
+        bind_executed_workflows(&mut payload, "caller", &index).unwrap();
+        assert_eq!(
+            payload["nodes"][0]["parameters"]["workflowId"],
+            json!({"__rl": true, "value": "w0", "mode": "list",
+                   "cachedResultName": "fleetix-hub-claim"})
+        );
+        // An id already live is left alone, and an unknown reference fails.
+        let mut by_id = json!({"nodes": [{"name": "Claim", "type": EXECUTE_WORKFLOW,
+            "parameters": {"workflowId": {"value": "w0", "mode": "list"}}}]});
+        bind_executed_workflows(&mut by_id, "caller", &index).unwrap();
+        assert_eq!(by_id["nodes"][0]["parameters"]["workflowId"]["value"], "w0");
+        let mut ghost = json!({"nodes": [{"name": "Claim", "type": EXECUTE_WORKFLOW,
+            "parameters": {"workflowId": {"value": "ghost", "mode": "list"}}}]});
+        let err = bind_executed_workflows(&mut ghost, "caller", &index).unwrap_err();
+        assert!(err.to_string().contains("ghost"), "{err}");
+        // The next import in the run resolves the id it just created.
+        index.insert("w1", "fleetix-hub-bluesky");
+        assert_eq!(
+            index.resolve("fleetix-hub-bluesky"),
+            Some(("w1".to_owned(), "fleetix-hub-bluesky".to_owned()))
+        );
+        assert_eq!(index.resolve("ghost"), None);
+    }
+
+    #[test]
+    fn two_declarations_cannot_share_one_n8n_credential() {
+        let state: State = serde_json::from_str(
+            r#"{"url":"http://127.0.0.1:5678",
+            "owner":{"email":"a@b.c","first_name":"A","last_name":"B","credential_name":"p"},
+            "credentials":{
+              "A":{"type":"httpHeaderAuth"},
+              "B":{"type":"httpHeaderAuth"}}}"#,
+        )
+        .unwrap();
+        // A was recorded under id 1; the credential it names is now called B,
+        // which is also declared, so both declarations resolve to id 1.
+        let existing = vec![("1".to_owned(), "B".to_owned())];
+        let previous = BTreeMap::from([("A".to_owned(), "1".to_owned())]);
+        let err = resolve_targets(&existing, &previous, &state).unwrap_err();
+        assert!(err.to_string().contains("both resolve"), "{err}");
+        // Distinct targets resolve without a claim.
+        let existing = vec![
+            ("1".to_owned(), "A".to_owned()),
+            ("2".to_owned(), "B".to_owned()),
+        ];
+        let targets = resolve_targets(&existing, &BTreeMap::new(), &state).unwrap();
+        assert_eq!(targets["A"], "1");
+        assert_eq!(targets["B"], "2");
     }
 
     #[test]

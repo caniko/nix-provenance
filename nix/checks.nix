@@ -1069,6 +1069,9 @@ in
           }
         ];
       };
+      noWorkflows = n8nEval.extendModules {
+        modules = [{services.n8n.provision.workflows = lib.mkForce {};}];
+      };
     in
       runCommand "n8n-module-eval" {} ''
         test ${lib.escapeShellArg (json (failed n8nEval.config))} = '[]'
@@ -1096,7 +1099,19 @@ in
         grep -q '"name":"X-Studio-Token"' "$state_file"
         # The workflow ships its JSON path and the reference->credential map; the
         # credential itself stays a provisioned id resolved at run time.
-        grep -q '"fleetix-hub-claim":{"active":true,"credentials":{"Fleetix Hub webhook token":"studio-webhook"},"file":"/nix/store/fixture-fleetix-hub-claim.json"}' "$state_file"
+        grep -q '"fleetix-hub-claim":{"active":true,"credentials":{"Fleetix Hub webhook token":"studio-webhook"},"file":"/nix/store/[^"]*-fixture-n8n-workflow.json"}' "$state_file"
+        # A path literal keeps its store context: the file is realized and in the
+        # state file's closure. A `toString` leaves the string without context, so
+        # the path is never copied to the store and this read fails.
+        workflow_file=$(sed -n 's/.*"file":"\([^"]*\)".*/\1/p' "$state_file")
+        case "$workflow_file" in /nix/store/*) ;; *) echo "workflow file missing: $workflow_file"; exit 1;; esac
+        grep -q '"type": "n8n-nodes-base.webhook"' "$workflow_file"
+        # Empty maps are omitted, so a host pinning an older provisioner (strict
+        # state parsing) still starts, and no prefix key appears without one.
+        no_workflows_state=$(printf '%s' ${lib.escapeShellArg (json noWorkflows.config.systemd.services.n8n-provision.serviceConfig.ExecStart)} | grep -o '/nix/store/[^ ]*n8n-provision-state.json')
+        test "$state_file" != "$no_workflows_state"
+        ! grep -q '"workflows"' "$no_workflows_state"
+        ! grep -q 'data_file_prefixes' "$state_file"
         ! grep -q '/run/agenix' "$state_file"
         touch $out
       '';

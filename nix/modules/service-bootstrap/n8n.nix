@@ -53,16 +53,23 @@
   ownerStateFile = pkgs.writeText "n8n-provision-owner.json" (builtins.toJSON ownerState);
   stateFile = pkgs.writeText "n8n-provision-state.json" (builtins.toJSON (ownerState
     // {
-      credentials =
-        lib.mapAttrs (name: c: {
+      credentials = lib.mapAttrs (name: c:
+        {
           inherit (c) type data;
           data_files = lib.mapAttrs (field: _: fieldCredential name field) c.dataFiles;
+        }
+        // lib.optionalAttrs (c.dataFilePrefixes != {}) {
           data_file_prefixes = c.dataFilePrefixes;
         })
-        cfg.credentials;
+      cfg.credentials;
+    }
+    // lib.optionalAttrs (cfg.workflows != {}) {
+      # A path literal is interpolated, not `toString`'d: the string keeps its
+      # store context, so the file enters the closure and a content change
+      # changes restartTriggers.
       workflows =
         lib.mapAttrs (name: w: {
-          file = toString w.file;
+          file = "${w.file}";
           inherit (w) active credentials;
         })
         cfg.workflows;
@@ -180,7 +187,11 @@ in {
         options = {
           file = mkOption {
             type = types.oneOf [types.path types.str];
-            description = "n8n workflow JSON export (`nodes`, `connections`, optional `settings` and `meta`).";
+            description = ''
+              n8n workflow JSON export (`nodes`, `connections`, optional
+              `settings` and `meta`). A path literal is interpolated, so it
+              stays in the closure and editing it changes the restart trigger.
+            '';
           };
           active = mkOption {
             type = types.bool;

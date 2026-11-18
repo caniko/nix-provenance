@@ -150,13 +150,24 @@ services.n8n = {
   be a declared credential name. The node's credential type must match the
   declared credential's `type`, so a postgres node cannot be handed a Header
   Auth credential.
+- A node that calls another workflow (`n8n-nodes-base.executeWorkflow`) names it
+  in `parameters.workflowId.value`, as the studio-pipeline exports do. n8n
+  generates workflow ids and validates that reference by id when the caller is
+  published, so declared workflows are imported in dependency order and the
+  reference is rewritten to the live id. A cycle between declared workflows is
+  an error, and so is a reference to a workflow that is neither declared nor
+  already present in n8n (for example a leftover id from another instance).
 - Idempotency comes from the live copy, not a marker: the reconciler reads the
-  workflow back and writes only when a managed field differs, so an edit made in
-  the n8n UI is put back on the next run without a redeclaration. The
-  activation converges separately: `active = true` (default) publishes the
-  version just written, `active = false` deactivates a running workflow.
-  Deactivation is the only removal: a workflow dropped from the declaration is
-  left in n8n.
+  workflow back and writes only when a managed field differs. Nodes are compared
+  field for field (only the ids n8n generates and the `webhookId` it mints are
+  ignored) and connections exactly, so a UI edit that adds `disabled` to a node
+  or drops a connection is drift and is put back, without a redeclaration. An
+  unchanged declaration writes nothing. The activation converges separately:
+  `active = true` (default) publishes the version just written, `active = false`
+  deactivates a running workflow. A declared `active = false` is applied before
+  credentials and content are reconciled, so a failing replacement export never
+  leaves the old webhook serving. Deactivation is the only removal: a workflow
+  dropped from the declaration is left in n8n.
 
 ## Known limits
 

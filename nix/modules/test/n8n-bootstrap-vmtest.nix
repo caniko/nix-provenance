@@ -39,6 +39,96 @@ in
         settings.executionOrder = "v1";
         active = false;
       });
+      # A sub-workflow its callers reach by name: n8n assigns the id, so the
+      # declaration cannot know it in advance.
+      claim = pkgs.writeText "fleetix-hub-claim-fixture.json" (builtins.toJSON {
+        name = "exported claim";
+        nodes = [
+          {
+            parameters = {};
+            id = "claim-trigger";
+            name = "When Executed by Another Workflow";
+            type = "n8n-nodes-base.executeWorkflowTrigger";
+            typeVersion = 1;
+            position = [0 0];
+          }
+          {
+            parameters = {
+              mode = "runOnceForAllItems";
+              jsCode = "return items;";
+            };
+            id = "claim-code";
+            name = "Claim";
+            type = "n8n-nodes-base.code";
+            typeVersion = 2;
+            position = [220 0];
+          }
+        ];
+        connections."When Executed by Another Workflow".main = [
+          [
+            {
+              node = "Claim";
+              type = "main";
+              index = 0;
+            }
+          ]
+        ];
+        settings.executionOrder = "v1";
+        active = false;
+      });
+      # A caller that names `fixture-claim` exactly as the studio-pipeline
+      # exports do (`parameters.workflowId.value`): publishing validates the
+      # reference by id, so a name never activates.
+      caller = pkgs.writeText "fleetix-hub-caller-fixture.json" (builtins.toJSON {
+        name = "exported caller";
+        nodes = [
+          {
+            parameters = {
+              path = "fleetix-hub-caller";
+              httpMethod = "POST";
+              responseMode = "onReceived";
+              options = {};
+            };
+            id = "caller-webhook";
+            name = "Webhook";
+            type = "n8n-nodes-base.webhook";
+            typeVersion = 2;
+            position = [0 0];
+          }
+          {
+            parameters = {
+              source = "database";
+              workflowId = {
+                __rl = true;
+                value = "fixture-claim";
+                mode = "list";
+                cachedResultName = "fixture-claim";
+              };
+              workflowInputs = {
+                mappingMode = "passthrough";
+                value = {};
+              };
+              options = {};
+            };
+            id = "caller-claim";
+            name = "Claim";
+            type = "n8n-nodes-base.executeWorkflow";
+            typeVersion = 1.1;
+            position = [220 0];
+          }
+        ];
+        connections."Webhook".main = [
+          [
+            {
+              node = "Claim";
+              type = "main";
+              index = 0;
+            }
+          ]
+        ];
+        settings.executionOrder = "v1";
+        active = false;
+      });
     in {
       imports = [self.nixosModules.n8nProvision];
       virtualisation.memorySize = 3072;
@@ -83,6 +173,14 @@ in
           workflows.fixture-workflow = {
             file = "${workflow}";
             credentials."Fleetix Hub webhook token" = "studio-webhook";
+          };
+          # Declared after the caller, so only the dependency order imports the
+          # claim first.
+          workflows.fixture-caller = {
+            file = "${caller}";
+          };
+          workflows.fixture-claim = {
+            file = "${claim}";
           };
         };
       };
@@ -159,6 +257,33 @@ in
           ).strip()
           assert not exported, exported
 
+      with subtest("a caller of a declared sub-workflow is imported after it and bound by id"):
+          rows = machine.succeed(
+              f"curl -sf -b /tmp/jar3 {base}/rest/workflows "
+              "| jq -r '.data[] | select(.name == \"fixture-claim\" or .name == \"fixture-caller\") | [.name, .id, .active] | @tsv'"
+          ).strip()
+          entries = dict(
+              (name, (workflow, active))
+              for name, workflow, active in (row.split("\t") for row in rows.split("\n"))
+          )
+          assert set(entries) == {"fixture-claim", "fixture-caller"}, entries
+          claim_id, claim_active = entries["fixture-claim"]
+          caller_id, caller_active = entries["fixture-caller"]
+          assert claim_active == "true", entries
+          # The caller was published, which n8n only does when the reference
+          # names an existing workflow id.
+          assert caller_active == "true", entries
+          referenced = machine.succeed(
+              f"curl -sf -b /tmp/jar3 {base}/rest/workflows/{caller_id} "
+              "| jq -r '(.data // .).nodes[] | select(.name == \"Claim\") | .parameters.workflowId.value'"
+          ).strip()
+          assert referenced == claim_id, (referenced, claim_id)
+          # And it resolves at run time, not just at publish time.
+          code = machine.succeed(
+              f"curl -s -o /dev/null -w '%{{http_code}}' -X POST {base}/webhook/fleetix-hub-caller"
+          ).strip()
+          assert code == "200", code
+
       with subtest("second reconcile and restart are no-ops"):
           hash_before = machine.succeed("cat /var/lib/n8n-owner-env/owner.bcrypt")
           machine.succeed("systemctl restart n8n.service")
@@ -186,13 +311,26 @@ in
           assert login_code("Fixture-owner-pw-1") != "200"
           machine.wait_for_unit("n8n-provision.service")
 
-      with subtest("deactivating the workflow stops its webhook"):
+      with subtest("deactivating the workflow unregisters its webhook"):
+          # The rotated token is the one the workflow now uses: prove it serves.
+          assert hook("Bearer rotated-webhook-token") == "200", hook("Bearer rotated-webhook-token")
           machine.succeed(f"{system}/specialisation/workflowoff/bin/switch-to-configuration test")
           machine.wait_for_unit("n8n-provision.service")
           machine.wait_until_succeeds(
               "journalctl -u n8n-provision.service -o cat | grep -q 'workflow fixture-workflow: deactivated'"
           )
-          assert hook("Bearer fixture-webhook-token") != "200", hook("Bearer fixture-webhook-token")
+          # The webhook path is unregistered (404), not merely rejecting tokens,
+          # and the declared workflow id itself is inactive.
+          assert hook("Bearer rotated-webhook-token") == "404", hook("Bearer rotated-webhook-token")
+          machine.succeed(
+              f"curl -sf -c /tmp/jar4 -X POST {base}/rest/login -H 'content-type: application/json' "
+              "-d '{\"emailOrLdapLoginId\":\"can@example.test\",\"password\":\"Rotated-owner-pw-2\"}'"
+          )
+          row = machine.succeed(
+              f"curl -sf -b /tmp/jar4 {base}/rest/workflows "
+              "| jq -r '.data[] | select(.name == \"fixture-workflow\") | [.id, .active] | @tsv'"
+          ).strip()
+          assert row == f"{workflow_id}\tfalse", row
 
       with subtest("removing a credential declaration deletes it from n8n"):
           machine.succeed(f"{system}/specialisation/nocreds/bin/switch-to-configuration test")
