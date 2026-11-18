@@ -65,6 +65,7 @@ in
   assert builtins.elem "agenix.service" service.Unit.After;
   assert builtins.elem "oo7-daemon.service" service.Unit.After;
   assert service.Service.RestartPreventExitStatus == 2;
+  assert service.Service.Type == "exec" && !(service.Service ? TimeoutStartSec);
   assert builtins.length enabled.home.packages == 3;
     pkgs.runCommand "proton-vpn-module-eval" {} ''
       touch $out

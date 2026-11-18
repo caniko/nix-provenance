@@ -99,7 +99,10 @@ in {
           StartLimitBurst = 3;
         };
         Service = {
-          Type = "oneshot";
+          # exec, not oneshot: graphical-session.target wants this unit, so a
+          # oneshot held the target (and every autostart behind it) until the
+          # login finished. RuntimeMaxSec keeps the old bound on a hung login.
+          Type = "exec";
           LoadCredential = ["account.age:${credentialPath}"];
           ExecStart = lib.concatStringsSep " " [
             (lib.escapeShellArg (lib.getExe cfg.login.package))
@@ -110,7 +113,7 @@ in {
             "--setsid ${lib.escapeShellArg "${pkgs.util-linux}/bin/setsid"}"
             "--timeout-seconds ${toString cfg.login.timeoutSeconds}"
           ];
-          TimeoutStartSec = cfg.login.timeoutSeconds * 3 + 10;
+          RuntimeMaxSec = cfg.login.timeoutSeconds * 3 + 10;
           Restart = "on-failure";
           RestartSec = "60s";
           RestartPreventExitStatus = 2;
