@@ -379,6 +379,11 @@ in {
         "n8n-provision.service"
         "n8n-deactivate.service"
       ];
+      # n8n's own restarts restart this timer (PartOf), so a crash-looping n8n
+      # would exhaust the timer's start limit and leave provisioning stranded
+      # after n8n recovers. The timer only arms a one-minute tick, so it needs
+      # no limit.
+      unitConfig.StartLimitIntervalSec = 0;
       timerConfig = {
         Unit = "n8n-provision.service";
         # OnActiveSec arms the first tick (a unit that was never active has no

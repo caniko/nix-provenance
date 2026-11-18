@@ -368,5 +368,22 @@ pkgs.testers.nixosTest {
             f"curl -sf -H 'Authorization: Bearer rotated-superadmin-secret' {api}/users/whoami"
         )
         machine.wait_for_unit("windmill-provision.service")
+
+    with subtest("one activation rotating every input converges without hitting a start limit"):
+        machine.succeed(
+            "printf 'swap-can-password' > /var/lib/fixture/can"
+            " && printf 'swap-hub-token' > /var/lib/fixture/hub-token"
+            " && printf 'swap-superadmin-secret' > /var/lib/fixture/superadmin"
+        )
+        machine.wait_until_succeeds(
+            "curl -sf -H 'Authorization: Bearer swap-superadmin-secret' "
+            f"{api}/w/studio/variables/get/f/fixture/hub_token | jq -e '.value == \"swap-hub-token\"'"
+        )
+        machine.wait_until_succeeds(
+            f"curl -sf -X POST {api}/auth/login -H 'content-type: application/json' "
+            "-d '{\"email\":\"can@example.test\",\"password\":\"swap-can-password\"}'"
+        )
+        machine.wait_for_unit("windmill-provision.service")
+        machine.fail("journalctl -b --no-pager | grep -q 'windmill-provision.service: Start request repeated too quickly'")
   '';
 }

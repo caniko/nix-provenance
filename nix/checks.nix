@@ -1005,7 +1005,7 @@ in
       server = windmillEval.config.systemd.services.windmill-server;
       svc = windmillEval.config.systemd.services.windmill-provision;
       lock = windmillEval.config.systemd.services.windmill-lock-default-admin;
-      rotate = windmillEval.config.systemd.services.windmill-superadmin-rotate;
+      rotate = windmillEval.config.systemd.services.windmill-rotate;
       json = builtins.toJSON;
       failed = c: lib.filter (m: lib.hasPrefix "services.windmill.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
       ext = m: windmillEval.extendModules {modules = [m];};
@@ -1070,7 +1070,7 @@ in
         test ${lib.escapeShellArg (json (failed badScriptPath.config))} != '[]'
         test ${lib.escapeShellArg (json (failed badVariablePath.config))} != '[]'
         # Rotation watch covers the secret and its parent dir (agenix symlink swap).
-        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-superadmin-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
+        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-server.service
         # Locking the stock admin must not wait on (or load) any secret file.
@@ -1086,7 +1086,7 @@ in
         ! printf '%s' ${lib.escapeShellArg noScripts.config.systemd.services.windmill-provision.serviceConfig.ExecStart} | grep -q -- '--deploy-timeout'
         # The rotation check reads the secret as a credential, not from its path.
         printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
-        printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--secret-file %d/superadmin'
+        grep -q -- '--secret-file "$CREDENTIALS_DIRECTORY/superadmin"' ${rotate.serviceConfig.ExecStart}
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.ExecStartPre)} | grep -q ' env '
         printf '%s' ${lib.escapeShellArg (json server.serviceConfig.EnvironmentFile)} | grep -q '/run/windmill-provision/env'
@@ -1115,7 +1115,9 @@ in
         ! grep -q '/run/agenix' "$state_file"
         # The value file is a systemd credential, watched for in-place rotation.
         printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.LoadCredential)} | grep -q ':/run/agenix/windmill-hub-token'
-        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-variables-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix/windmill-hub-token"'
+        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix/windmill-hub-token"'
+        # One watcher for every input: separate ones restart the oneshot over each other.
+        test ${lib.escapeShellArg (json (lib.filter (n: lib.hasPrefix "windmill-" n && lib.hasSuffix "rotate" n) (lib.attrNames windmillEval.config.systemd.paths)))} = '["windmill-rotate"]'
         touch $out
       '';
 
@@ -1194,6 +1196,7 @@ in
         # units still loaded from the old generation.
         test ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.timerConfig.Unit)} = '"n8n-provision.service"'
         test ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.wantedBy)} = '[]'
+        test ${lib.escapeShellArg (toString n8nEval.config.systemd.timers.n8n-provision-retry.unitConfig.StartLimitIntervalSec)} = 0
         printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.partOf)} | grep -q '"n8n.service"'
         printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.partOf)} | grep -q '"n8n-provision.service"'
         printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.partOf)} | grep -q '"n8n-deactivate.service"'

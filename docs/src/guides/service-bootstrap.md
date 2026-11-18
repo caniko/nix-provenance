@@ -246,6 +246,11 @@ services.n8n = {
   server or n8n for the superadmin secret or owner password only happens when
   the secret content really changed (a recorded digest is compared); plain
   deploys do not restart them.
+  Windmill uses one watcher for all its inputs (superadmin secret, user
+  passwords, variable values): a real superadmin change restarts the server,
+  anything else re-runs provisioning once, so one activation that rotates
+  several files never restarts the oneshot over itself. n8n's retry timer has
+  no start limit, so a crash-looping n8n cannot strand provisioning.
 - Token ownership: a token kept on disk is trusted when Windmill answers 200
   with the declared user's email, or 403 (a scoped token that cannot call
   `whoami` on a workspace it is not a member of). A 403 cannot reveal the

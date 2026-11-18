@@ -448,48 +448,36 @@ in {
     };
 
     # Runtime secret files rotate in place, so nothing in the store changes to
-    # restart on: watch them. A rotated password restarts the oneshot
-    # (RemainAfterExit makes a plain start a no-op); a rotated superadmin
-    # secret restarts the server (the env file is rendered at its start),
-    # which re-runs provisioning through partOf.
-    systemd.paths.windmill-provision-rotate = mkIf (cfg.users != {}) {
+    # restart on: watch them. One watcher covers every input, because an agenix
+    # generation swap changes all files under /run/agenix at once, and separate
+    # watchers each restarting the same oneshot kill each other's reconciles
+    # until systemd's start limit refuses the last one. The handler restarts the
+    # server when the superadmin secret really changed (its env file is rendered
+    # at start; provisioning follows through partOf), else only the oneshot
+    # (RemainAfterExit makes a plain start a no-op); never both. `systemctl
+    # restart` blocks until the job finishes, so events during it coalesce.
+    systemd.paths.windmill-rotate = {
       wantedBy = ["multi-user.target"];
-      pathConfig.PathChanged = watchPaths (map (u: u.passwordFile) (lib.attrValues cfg.users));
+      pathConfig.PathChanged = watchPaths ([cfg.superadminSecretFile] ++ map (u: u.passwordFile) (lib.attrValues cfg.users) ++ variableFiles);
     };
-    systemd.services.windmill-provision-rotate = mkIf (cfg.users != {}) {
-      description = "Re-run Windmill provisioning after a password file rotates";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-provision.service";
-      };
-    };
-    # Variable values are runtime secrets: an in-place rotation re-runs the
-    # oneshot so Windmill picks up the new value without a full restart.
-    systemd.paths.windmill-variables-rotate = mkIf (variableFiles != []) {
-      wantedBy = ["multi-user.target"];
-      pathConfig.PathChanged = watchPaths variableFiles;
-    };
-    systemd.services.windmill-variables-rotate = mkIf (variableFiles != []) {
-      description = "Re-run Windmill provisioning after a variable value file rotates";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-provision.service";
-      };
-    };
-
-    systemd.paths.windmill-superadmin-rotate = {
-      wantedBy = ["multi-user.target"];
-      pathConfig.PathChanged = watchPaths [cfg.superadminSecretFile];
-    };
-    systemd.services.windmill-superadmin-rotate = {
-      description = "Restart Windmill after the superadmin secret rotates";
+    systemd.services.windmill-rotate = {
+      description = "Re-run Windmill provisioning, or restart Windmill, after a secret file rotates";
       serviceConfig = {
         Type = "oneshot";
         LoadCredential = ["${superadminCredential}:${cfg.superadminSecretFile}"];
-        # Only a real secret change restarts the server; an agenix generation
-        # switch that leaves the content alone is skipped (exit 1 = unmet).
-        ExecCondition = "${exe} changed --secret-file %d/${superadminCredential} --stamp /run/windmill-provision/superadmin.sha";
-        ExecStart = "${config.systemd.package}/bin/systemctl restart windmill-server.service";
+        # `changed` exits 0 on a real superadmin change and 1 when it is
+        # unchanged (an agenix switch that leaves its content alone); anything
+        # else is an error and fails the unit.
+        ExecStart = pkgs.writeShellScript "windmill-rotate" ''
+          set -u
+          status=0
+          ${exe} changed --secret-file "$CREDENTIALS_DIRECTORY/${superadminCredential}" --stamp /run/windmill-provision/superadmin.sha || status=$?
+          case "$status" in
+            0) exec ${config.systemd.package}/bin/systemctl restart windmill-server.service ;;
+            1) exec ${config.systemd.package}/bin/systemctl restart windmill-provision.service ;;
+            *) exit "$status" ;;
+          esac
+        '';
       };
     };
   };
