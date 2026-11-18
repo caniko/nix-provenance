@@ -265,6 +265,10 @@ impl Windmill {
     /// runnable, so a queued or failed job is a failed declaration, not a
     /// no-op: the source already matches on the next run, and would otherwise
     /// be skipped while the path keeps executing the previous version.
+    ///
+    /// The job's logs are not copied here: journald would keep a dependency
+    /// installer's output (and anything it echoes) forever, so the error names
+    /// the job id instead.
     pub fn wait_runnable(
         &self,
         bearer: &str,
@@ -275,12 +279,15 @@ impl Windmill {
         let deadline = Instant::now() + timeout;
         loop {
             let status = self.deployment_status(bearer, ws, hash)?;
-            if let Some(logs) = status
+            if status
                 .lock_error_logs
                 .as_deref()
-                .filter(|logs| !logs.trim().is_empty())
+                .is_some_and(|logs| !logs.trim().is_empty())
             {
-                bail!("lock generation failed for script version {hash}: {logs}");
+                bail!(
+                    "lock generation failed for script version {hash}; the dependency job {} has its logs",
+                    status.job_id.as_deref().unwrap_or("<unknown>")
+                );
             }
             if status.lock.is_some() {
                 return Ok(());

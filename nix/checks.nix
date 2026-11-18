@@ -1074,6 +1074,10 @@ in
         test ${lib.escapeShellArg (json (lock.serviceConfig.LoadCredential or []))} = '[]'
         printf '%s' ${lib.escapeShellArg (json svc.requires)} | grep -q windmill-lock-default-admin.service
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q windmill-lock-default-admin.service
+        # Deploys are serial, so the start timeout is the per-script budget times
+        # the declared script count (2 in the fixture) plus startup headroom.
+        printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.TimeoutStartSec)} | grep -q '^"1200s"$'
+        printf '%s' ${lib.escapeShellArg svc.serviceConfig.ExecStart} | grep -q -- '--deploy-timeout 300'
         # The rotation check reads the secret as a credential, not from its path.
         printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
         printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--secret-file %d/superadmin'
@@ -1167,6 +1171,12 @@ in
         test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n.service
+        # Deactivation is its own unit, ordered before the credential-loading one,
+        # and holds only the owner password.
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.services.n8n-deactivate.serviceConfig.LoadCredential)} | grep -q '^\["owner-password:/run/agenix/n8n-owner"\]$'
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.services.n8n-deactivate.serviceConfig.ExecStart)} | grep -q ' deactivate '
+        printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n-deactivate.service
+        printf '%s' ${lib.escapeShellArg (json svc.requires)} | grep -q n8n-deactivate.service
         # The rotation check reads the password as a credential, not from its path.
         printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'
         printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--password-file %d/owner-password'

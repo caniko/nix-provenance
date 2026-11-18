@@ -27,6 +27,11 @@
 
   notRuntime = f: !(lib.hasPrefix "/" f) || lib.hasPrefix builtins.storeDir f;
   secretFiles = [cfg.superadminSecretFile] ++ map (u: toString u.passwordFile) (lib.attrValues cfg.users);
+  scriptCount = builtins.foldl' (total: w: total + lib.length (lib.attrNames w.scripts)) 0 (lib.attrValues cfg.workspaces);
+  # One deploy can wait a whole dependency-job budget, and the deploys are
+  # serial; the rest is server readiness, logins, variables and tokens.
+  headroomSeconds = 600;
+  startTimeoutSeconds = scriptCount * cfg.deployTimeoutSeconds + headroomSeconds;
 
   # Length-prefixed so (studio, f/a/b) and (studio-f, a/b) never share an id.
   variableCredential = ws: path:
@@ -109,6 +114,18 @@ in {
       description = "Loopback URL the reconciler uses to reach windmill-server.";
     };
 
+    deployTimeoutSeconds = mkOption {
+      type = types.ints.positive;
+      default = 300;
+      description = ''
+        Bound on waiting for one deployed version's lock generation job. Scripts
+        are deployed serially, so the reconcile unit's `TimeoutStartSec` is
+        derived from this budget times the number of declared scripts plus
+        startup headroom; raise it on a slow worker pool instead of editing the
+        unit.
+      '';
+    };
+
     workspaces = mkOption {
       default = {};
       description = "Workspaces to ensure, keyed by workspace id (`[a-z0-9_-]+`). The open-source server allows two besides `admins`.";
@@ -165,6 +182,12 @@ in {
                     the runs and the lock job to a worker that listens for it. A
                     new version does not inherit its parent's tag, so leaving
                     this null keeps the deployed tag and declaring one changes it.
+
+                    Windmill also reads a `// tag <name>` badge from the top of a
+                    script's source and applies it over the tag sent with the
+                    deploy, so a source that disagrees with this declaration is
+                    refused before it is deployed; the tag Windmill stored is
+                    verified on read-back.
                   '';
                 };
               };
@@ -414,10 +437,11 @@ in {
           ["${superadminCredential}:${cfg.superadminSecretFile}"]
           ++ pw.userPasswordCredentials "windmill-provision" cfg.users
           ++ variableCredentials;
-        ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir ${stateDir}/markers --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql";
-        # A deploy waits (bounded) for its dependency job's lock: the service's
-        # default start timeout would kill it before that.
-        TimeoutStartSec = "15min";
+        ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir ${stateDir}/markers --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql --deploy-timeout ${toString cfg.deployTimeoutSeconds}";
+        # One serial deploy waits (bounded) for its dependency job's lock: the
+        # start timeout must cover every declared script's budget plus startup,
+        # not one fixed number that a growing declaration can outgrow.
+        TimeoutStartSec = "${toString startTimeoutSeconds}s";
       };
     };
 

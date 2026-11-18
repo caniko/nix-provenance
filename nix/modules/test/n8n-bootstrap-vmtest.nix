@@ -192,6 +192,13 @@ in
       };
       # Deactivation: the workflow stays, but stops serving its webhook.
       specialisation.workflowoff.configuration.services.n8n.provision.workflows.fixture-workflow.active = lib.mkForce false;
+      # Deactivation with a credential file that does not exist: systemd
+      # resolves the main unit's LoadCredential before ExecStart, so only the
+      # owner-only pre-pass can take the webhook down.
+      specialisation.workflowoffbroken.configuration.services.n8n.provision = {
+        workflows.fixture-workflow.active = lib.mkForce false;
+        credentials.studio-webhook.dataFiles.value = lib.mkForce "/var/lib/fixture/absent-token";
+      };
       system.stateVersion = "25.11";
     };
 
@@ -296,6 +303,32 @@ in
               assert word not in journal, journal
           assert login_code("Fixture-owner-pw-1") == "200"
 
+      with subtest("a settings key set in n8n is reset instead of re-PATCHed forever"):
+          machine.succeed(
+              f"curl -sf -c /tmp/jar5 -X POST {base}/rest/login -H 'content-type: application/json' "
+              "-d '{\"emailOrLdapLoginId\":\"can@example.test\",\"password\":\"Fixture-owner-pw-1\"}'"
+          )
+          # n8n merges a PATCH into the stored settings, so an operator's key
+          # survives every write unless the declaration resets it.
+          machine.succeed(
+              f"curl -sf -b /tmp/jar5 -X PATCH {base}/rest/workflows/{workflow_id} "
+              "-H 'content-type: application/json' -d '{\"settings\":{\"timezone\":\"Europe/Berlin\"}}'"
+          )
+          machine.succeed("systemctl restart n8n-provision.service")
+          inv = machine.succeed("systemctl show -p InvocationID --value n8n-provision.service").strip()
+          journal = machine.succeed(f"journalctl -o cat _SYSTEMD_INVOCATION_ID={inv}")
+          assert "workflow fixture-workflow: updated" in journal, journal
+          stored = machine.succeed(
+              f"curl -sf -b /tmp/jar5 {base}/rest/workflows/{workflow_id} "
+              "| jq -r '(.data // .).settings.timezone // \"\"'"
+          ).strip()
+          assert stored == "", stored
+          # Converged: the next run writes nothing at all.
+          machine.succeed("systemctl restart n8n-provision.service")
+          inv = machine.succeed("systemctl show -p InvocationID --value n8n-provision.service").strip()
+          journal = machine.succeed(f"journalctl -o cat _SYSTEMD_INVOCATION_ID={inv}")
+          assert "updated" not in journal, journal
+
       with subtest("a rotated credential file is re-applied by the path unit"):
           machine.succeed("printf 'rotated-webhook-token' > /var/lib/fixture/webhook")
           machine.wait_until_succeeds(
@@ -316,8 +349,10 @@ in
           assert hook("Bearer rotated-webhook-token") == "200", hook("Bearer rotated-webhook-token")
           machine.succeed(f"{system}/specialisation/workflowoff/bin/switch-to-configuration test")
           machine.wait_for_unit("n8n-provision.service")
+          # The owner-only pre-pass alone unpublishes the workflow, before the
+          # unit that loads the field credentials writes anything.
           machine.wait_until_succeeds(
-              "journalctl -u n8n-provision.service -o cat | grep -q 'workflow fixture-workflow: deactivated'"
+              "journalctl -u n8n-deactivate.service -o cat | grep -q 'workflow fixture-workflow: deactivated'"
           )
           # The webhook path is unregistered (404), not merely rejecting tokens,
           # and the declared workflow id itself is inactive.
@@ -341,5 +376,37 @@ in
           )
           out = machine.succeed(f"curl -sf -b /tmp/jar2 {base}/rest/credentials")
           assert "studio-webhook" not in out, out
+
+      with subtest("a broken field credential cannot keep a deactivated webhook serving"):
+          # Declared again first, so the webhook is live when the broken state
+          # lands: otherwise a 404 would prove nothing.
+          machine.succeed(f"{system}/bin/switch-to-configuration test")
+          machine.wait_for_unit("n8n-provision.service")
+          machine.wait_until_succeeds(
+              "test \"$(curl -s -o /dev/null -w '%{http_code}' -X POST "
+              f"{base}/webhook/fleetix-hub-fixture -H 'Authorization: Bearer rotated-webhook-token')\" = 200"
+          )
+          before = machine.succeed(
+              "systemctl show -p InvocationID --value n8n-deactivate.service"
+          ).strip()
+          # `active = false` plus a credential file that does not exist: the unit
+          # that loads it never reaches ExecStart, so only the owner-only
+          # pre-pass can unpublish the webhook.
+          machine.execute(f"{system}/specialisation/workflowoffbroken/bin/switch-to-configuration test")
+          machine.wait_until_succeeds(
+              f"test \"$(systemctl show -p InvocationID --value n8n-deactivate.service)\" != \"{before}\""
+          )
+          inv = machine.succeed(
+              "systemctl show -p InvocationID --value n8n-deactivate.service"
+          ).strip()
+          journal = machine.succeed(f"journalctl -o cat _SYSTEMD_INVOCATION_ID={inv}")
+          assert "workflow fixture-workflow: deactivated" in journal, journal
+          assert hook("Bearer rotated-webhook-token") == "404", hook("Bearer rotated-webhook-token")
+          assert machine.succeed("systemctl is-failed n8n-provision.service").strip() == "failed"
+          # Leave the declared state in place. The unit is failed, so restart it
+          # explicitly instead of relying on the switch to start it.
+          machine.succeed(f"{system}/bin/switch-to-configuration test")
+          machine.succeed("systemctl restart n8n-provision.service")
+          machine.wait_for_unit("n8n-provision.service")
     '';
   }

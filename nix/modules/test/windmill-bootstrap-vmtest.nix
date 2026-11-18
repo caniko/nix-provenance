@@ -31,6 +31,8 @@ pkgs.testers.nixosTest {
       else ''export async function main() { return "${version}"; }'';
     scriptV1 = pkgs.writeText "fixture-script" (scriptCode "v1");
     scriptV2 = pkgs.writeText "fixture-script" (scriptCode "v2");
+    # A source badge Windmill 1.839.0 applies over the tag sent with the deploy.
+    scriptV3 = pkgs.writeText "fixture-script-tagged" "// tag other\n${scriptCode "v3"}";
     studio = {
       name = "Studio";
       scripts."f/fixture/hello" = {
@@ -114,6 +116,9 @@ pkgs.testers.nixosTest {
     };
     # Changed script content: a new version is deployed, the path stays.
     specialisation.scriptv2.configuration.services.windmill.provision.workspaces.studio.scripts."f/fixture/hello".contentFile = lib.mkForce "${scriptV2}";
+    # A source that declares its own `// tag` badge must not silently deploy a
+    # version the declaration does not describe.
+    specialisation.tagconflict.configuration.services.windmill.provision.workspaces.studio.scripts."f/fixture/hello".contentFile = lib.mkForce "${scriptV3}";
     # Variable secrecy flip forces an update of the same path.
     specialisation.variablepublic.configuration.services.windmill.provision.workspaces.studio.variables."f/fixture/hub_token".isSecret = lib.mkForce false;
     # Declared-token spec change (token rebound to a second workspace).
@@ -229,7 +234,7 @@ pkgs.testers.nixosTest {
         assert script_hash() == script_before
 
     base = machine.succeed("readlink -f /run/current-system").strip()
-    spec = {n: machine.succeed(f"readlink -f /run/current-system/specialisation/{n}").strip() for n in ("scriptv2", "variablepublic", "rebound", "demoted", "emailchanged", "pruned")}
+    spec = {n: machine.succeed(f"readlink -f /run/current-system/specialisation/{n}").strip() for n in ("scriptv2", "tagconflict", "variablepublic", "rebound", "demoted", "emailchanged", "pruned")}
     tok = "/var/lib/windmill-provision/tokens"
 
     def read_token(name):
@@ -271,6 +276,24 @@ pkgs.testers.nixosTest {
       then ""
       else scriptTag
     }"
+
+    with subtest("a source tag badge that conflicts with the declaration is refused"):
+        before = script_hash()
+        # Windmill applies the badge over the deployed tag, so the declaration
+        # cannot win: the run fails before deploying anything.
+        machine.execute(f"{spec['tagconflict']}/bin/switch-to-configuration test")
+        machine.wait_until_succeeds("systemctl is-failed windmill-provision.service")
+        machine.succeed(
+            "journalctl -u windmill-provision.service -o cat | grep -q 'declares `// tag other`'"
+        )
+        assert script_hash() == before, "a conflicting source tag deployed a version"
+        # Leave the declared version in place. The unit is failed, so restart it
+        # explicitly instead of relying on the switch to start it.
+        machine.succeed(f"{base}/bin/switch-to-configuration test")
+        machine.succeed("systemctl restart windmill-provision.service")
+        machine.wait_for_unit("windmill-provision.service")
+        assert "v1" in script_field(".content"), script_field(".content")
+        assert script_hash() == before
 
     with subtest("flipping a variable's secrecy updates it in place"):
         switch(spec["variablepublic"])

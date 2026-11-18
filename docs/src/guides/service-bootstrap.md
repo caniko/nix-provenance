@@ -64,12 +64,19 @@ services.windmill = {
   Windmill's version history stays one entry per real change. `tag` (for
   example `hub`) routes runs and the lock job to a worker pool that listens for
   it; leaving it null keeps the deployed tag, because a new version does not
-  inherit its parent's. A deploy then waits (bounded; the reconcile
-  `--deploy-timeout` defaults to 300s) for the dependency job to write the
-  version's lock: a version without a lock is not runnable, so a queued or
-  failed lock job fails the run instead of matching the source on the next run
-  and reporting success. The `schema`, `lock`, dependencies and permissions are
-  Windmill's.
+  inherit its parent's. Windmill 1.839.0 also applies a `// tag <name>` badge
+  from the top of the script source over the tag sent with the deploy, so a
+  source badge that disagrees with the declaration is refused before the
+  version is deployed, and the stored tag is read back and compared (a version
+  with the wrong tag would deploy "successfully" and then run nowhere). A
+  deploy then waits (bounded; `deployTimeoutSeconds`, 300 by default) for the
+  dependency job to write the version's lock: a version without a lock is not
+  runnable, so a queued or failed lock job fails the run instead of matching the
+  source on the next run and reporting success. The failure names the job id
+  instead of copying the job's logs into the journal. The reconcile unit's
+  `TimeoutStartSec` is derived from the declared script count times that budget
+  plus startup headroom, because deploys are serial. The `schema`, `lock`,
+  dependencies and permissions are Windmill's.
 - Variables are upserted by full path. `valueFile` is a runtime secret
   (`config.age.secrets.<name>.path`), loaded as a systemd credential; the value
   is read at run time, sent to Windmill, and never enters the store, the state
@@ -154,30 +161,52 @@ services.n8n = {
   secret) and the prefix stays visible in the declaration.
 - Workflows are imported by the declared name (the file's own `name`, `id` and
   `active` are ignored) from an export's `nodes`, `connections`, `settings` and
-  `meta`. Before writing, every node credential reference is rewritten from its
-  JSON name to the provisioned credential's id: `credentials."<name in the
-  JSON>" = "<declared credential>"`, and a reference with no entry must itself
-  be a declared credential name. The node's credential type must match the
-  declared credential's `type`, so a postgres node cannot be handed a Header
-  Auth credential.
+  `meta`. The export is copied into the Nix store, so it must be sanitized: a
+  credential reference or an n8n expression (`=...`) carries a secret, never a
+  literal. The reconciler refuses an export whose `Authorization`,
+  `apiKey`/`api-key` or `password` value is a literal. Before writing, every
+  node credential reference is rewritten from its JSON name to the provisioned
+  credential's id: `credentials."<name in the JSON>" = "<declared credential>"`,
+  and a reference with no entry must itself be a declared credential name. The
+  node's credential type must match the declared credential's `type`, so a
+  postgres node cannot be handed a Header Auth credential.
 - A node that calls another workflow (`n8n-nodes-base.executeWorkflow`) names it
-  in `parameters.workflowId.value`, as the studio-pipeline exports do. n8n
-  generates workflow ids and validates that reference by id when the caller is
-  published, so declared workflows are imported in dependency order and the
-  reference is rewritten to the live id. A cycle between declared workflows is
-  an error, and so is a reference to a workflow that is neither declared nor
-  already present in n8n (for example a leftover id from another instance).
+  in `parameters.workflowId.value`, as the studio-pipeline exports do. The
+  dependency edges use n8n's own predicate: a disabled node is skipped, only the
+  `database` source (the default) counts, and a `=` value is evaluated at run
+  time. n8n generates workflow ids and validates that reference by id when the
+  caller is published, so declared workflows are imported in dependency order
+  and the reference is rewritten to the live id. A cycle between declared
+  workflows is an error, and so is a reference to a workflow that is neither
+  declared nor already present in n8n (for example a leftover id from another
+  instance). A reference may name a workflow by its id instead of its name.
+- n8n allows two workflows with one name. One lookup resolves names for
+  reconciliation, deactivation and reference binding alike: a name that matches
+  several live workflows (or several live credentials, for credentials) fails
+  and names the ids instead of picking one. Deactivation is the exception that
+  cannot be ambiguous: every workflow carrying a deactivated declaration's name
+  is deactivated, since leaving one serving is exactly the failure the flag
+  prevents.
 - Idempotency comes from the live copy, not a marker: the reconciler reads the
   workflow back and writes only when a managed field differs. Nodes are compared
   field for field (only the ids n8n generates and the `webhookId` it mints are
   ignored) and connections exactly, so a UI edit that adds `disabled` to a node
   or drops a connection is drift and is put back, without a redeclaration. An
-  unchanged declaration writes nothing. The activation converges separately:
+  unchanged declaration writes nothing. Settings are compared key by key,
+  because n8n merges a PATCH into the stored object: the declaration's keys must
+  hold their values, and a key set in n8n that the declaration does not name is
+  reset through n8n's own `"DEFAULT"` token (its `removeDefaultValues` drops the
+  key). A settings key n8n cannot reset that way (for example
+  `executionTimeout`) is reported once and excluded, so it cannot cause a
+  rewrite on every run. The activation converges separately:
   `active = true` (default) publishes the version just written, `active = false`
-  deactivates a running workflow. A declared `active = false` is applied before
-  credentials and content are reconciled, so a failing replacement export never
-  leaves the old webhook serving. Deactivation is the only removal: a workflow
-  dropped from the declaration is left in n8n.
+  deactivates a running workflow. A declared `active = false` is applied by
+  `n8n-deactivate.service` — a oneshot that loads only the owner password and
+  runs before the unit that loads the field credentials — so a missing
+  credential file, which makes systemd refuse to start that unit, or a corrupt
+  credential registry cannot leave the old webhook serving. The main unit
+  repeats the deactivation for a workflow reactivated out of band. Deactivation
+  is the only removal: a workflow dropped from the declaration is left in n8n.
 
 ## Known limits
 
@@ -212,10 +241,15 @@ services.n8n = {
   and triggers it already has; the tenant writes path, content, language,
   summary and `tag` (when declared). A script that must run on a tagged worker
   pool needs that worker listening for the tag (`WORKER_TAGS`).
-- n8n workflows are matched by their globally unique name. Renaming a workflow
-  in n8n while it stays declared imports a second one under the declared name;
-  the renamed copy is left in place. A workflow dropped from the declaration is
-  left in n8n untouched — not deactivated and never deleted.
+- n8n workflows are matched by their name, which n8n does not require to be
+  unique: a declared name that matches several live workflows fails the run
+  (naming their ids) until one is renamed or deleted. Renaming a workflow in n8n
+  while it stays declared imports a second one under the declared name; the
+  renamed copy is left in place. A workflow dropped from the declaration is left
+  in n8n untouched — not deactivated and never deleted.
+- n8n settings the declaration cannot reset (a key n8n's own `"DEFAULT"` reset
+  does not cover, such as `executionTimeout`) stay as set in n8n and are logged
+  once per run; declare them to manage them.
 - n8n credentials referenced by a declared workflow must be provisioned in the
   same declaration; a workflow whose reference resolves to nothing fails the
   run instead of importing a workflow that cannot execute.

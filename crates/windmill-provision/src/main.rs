@@ -346,6 +346,17 @@ fn reconcile(
                 .as_deref()
                 .or(deployed_tag)
                 .filter(|tag| !tag.is_empty());
+            // Windmill 1.839.0 applies a `// tag <name>` badge from the source
+            // over the tag sent with the deploy, so a source that disagrees with
+            // the declaration would deploy a version the declaration does not
+            // describe. Refuse it before deploying.
+            if let Some(source) = source_tag(&content) {
+                anyhow::ensure!(
+                    Some(source) == tag,
+                    "script {ws}/{path}: the source declares `// tag {source}`, not the declared tag {}: remove the annotation or declare the same tag",
+                    tag.unwrap_or("")
+                );
+            }
             if script_unchanged(deployed.as_ref(), &script.language, &content, tag) {
                 // The version is deployed but not necessarily runnable: its
                 // dependency job may still be queued, or may have failed.
@@ -369,6 +380,18 @@ fn reconcile(
                 },
             )?;
             wm.wait_runnable(&superadmin, ws, &hash, Duration::from_secs(deploy_timeout))?;
+            // Read the stored tag back: a version with the wrong tag is unrunnable
+            // (no worker pool serves it) while the deploy itself succeeded, so a
+            // mismatch is a failed declaration, not a cosmetic difference.
+            let stored = wm
+                .script(&superadmin, ws, path)?
+                .with_context(|| format!("script {ws}/{path}: vanished after deploying {hash}"))?;
+            anyhow::ensure!(
+                stored.tag.as_deref().filter(|tag| !tag.is_empty()) == tag,
+                "script {ws}/{path}: Windmill stored tag {:?}, not the declared {:?}",
+                stored.tag.as_deref().unwrap_or(""),
+                tag.unwrap_or("")
+            );
             eprintln!("script {ws}/{path}: deployed");
         }
         for (path, variable) in &spec.variables {
@@ -463,6 +486,41 @@ fn reconcile(
         eprintln!("token {label}: minted");
     }
     Ok(())
+}
+
+/// The tag a script's source declares with Windmill's `// tag <name>` badge.
+///
+/// Windmill 1.839.0 parses the leading comment block of a version's source and
+/// applies the `tag` badge over the tag sent with the deploy (its
+/// `parse_pipeline_annotations` sets `ns.tag`). `//`, `#` and `--` open a
+/// comment depending on the language; the badge is `tag` followed by its value.
+fn source_tag(content: &str) -> Option<&str> {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // The annotation lives in the leading comment block: stop at the first
+        // line that is not a comment.
+        let Some(body) = ["//", "#", "--"]
+            .iter()
+            .find_map(|marker| line.strip_prefix(marker))
+        else {
+            break;
+        };
+        let Some(rest) = body.trim_start().strip_prefix("tag") else {
+            continue;
+        };
+        // A keyword must be followed by whitespace: `tags` is a plain comment.
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let tag = rest.trim();
+        if !tag.is_empty() {
+            return Some(tag);
+        }
+    }
+    None
 }
 
 /// True when the latest deployed version already holds exactly this code and
@@ -739,6 +797,21 @@ mod tests {
             fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
             0o700
         );
+    }
+
+    #[test]
+    fn a_source_tag_badge_is_read_from_the_leading_comment_block() {
+        assert_eq!(source_tag("// tag hub\ncode"), Some("hub"));
+        assert_eq!(source_tag("\n// summary\n// tag hub\ncode"), Some("hub"));
+        assert_eq!(source_tag("# tag  hub \ncode"), Some("hub"));
+        assert_eq!(source_tag("-- tag hub\nselect 1"), Some("hub"));
+        // The badge does not apply past the comment block, and unrelated
+        // comments are not tags.
+        assert_eq!(source_tag("code\n// tag hub"), None);
+        assert_eq!(source_tag("// taga hub"), None);
+        assert_eq!(source_tag("// tags are useful"), None);
+        assert_eq!(source_tag("// tag"), None);
+        assert_eq!(source_tag("let x = 1;"), None);
     }
 
     #[test]

@@ -191,12 +191,25 @@ in {
               n8n workflow JSON export (`nodes`, `connections`, optional
               `settings` and `meta`). A path literal is interpolated, so it
               stays in the closure and editing it changes the restart trigger.
+
+              The export is copied into the Nix store, which is readable by every
+              process and kept in every generation: it must be sanitized. A
+              credential belongs in a declared `credentials` entry and is
+              referenced from a node, and a value that must be computed uses an
+              n8n expression (`=...`). The reconciler refuses an export whose
+              `Authorization`, `apiKey`/`api-key` or `password` value is a
+              literal.
             '';
           };
           active = mkOption {
             type = types.bool;
             default = true;
-            description = "Activate (publish) the imported workflow after writing it.";
+            description = ''
+              Activate (publish) the imported workflow after writing it. A
+              workflow declared inactive is deactivated by a separate unit that
+              loads only the owner password, before the credentials are loaded,
+              so a broken credential file cannot keep its webhook serving.
+            '';
           };
           credentials = mkOption {
             type = types.attrsOf types.str;
@@ -274,10 +287,34 @@ in {
       serviceConfig.EnvironmentFile = lib.mkAfter ["-${envFile}"];
     };
 
-    systemd.services.n8n-provision = {
-      description = "Declaratively provision n8n credentials and workflows";
+    # Deactivation runs in its own unit that loads only the owner password.
+    # systemd resolves a unit's whole LoadCredential= before ExecStart, so
+    # loading the field credentials here would let one missing credential file
+    # (or a corrupt credential registry) keep a webhook the declaration switched
+    # off serving.
+    systemd.services.n8n-deactivate = {
+      description = "Deactivate n8n workflows declared active = false";
       after = ["n8n.service"];
       requires = ["n8n.service"];
+      partOf = ["n8n.service"];
+      wantedBy = ["multi-user.target"];
+      restartTriggers = [stateFile];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        UMask = "0077";
+        LoadCredential = ["${ownerCredential}:${cfg.owner.passwordFile}"];
+        ExecStart = "${exe} deactivate --state ${stateFile} --credential-dir %d --ready-timeout 600";
+        TimeoutStartSec = "15min";
+      };
+    };
+
+    systemd.services.n8n-provision = {
+      description = "Declaratively provision n8n credentials and workflows";
+      # Fail closed: no workflow is written or activated unless the deactivating
+      # pre-pass confirmed the declarations it had to unpublish.
+      after = ["n8n.service" "n8n-deactivate.service"];
+      requires = ["n8n.service" "n8n-deactivate.service"];
       partOf = ["n8n.service"];
       wantedBy = ["multi-user.target"];
       restartTriggers = [stateFile];

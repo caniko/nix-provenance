@@ -4,6 +4,11 @@
 
 ### Added
 
+- `services.windmill.provision.deployTimeoutSeconds` is the bound on one
+  deployed version's lock generation job. Scripts deploy serially, so the
+  reconcile unit's `TimeoutStartSec` is that budget times the number of declared
+  scripts plus startup headroom instead of a fixed 15 minutes a growing
+  declaration can outgrow.
 - `services.n8n.provision.dataFilePrefixes` builds a credential field from
   a raw token file and a runtime prefix (`Bearer ` plus an age-decrypted
   token), so a Header Auth credential can hold `Bearer <token>` without the
@@ -42,6 +47,32 @@
 
 ### Fixed
 
+- n8n deactivates a workflow declared `active = false` in
+  `n8n-deactivate.service`, a oneshot that loads only the owner password and
+  runs before the unit that loads the field credentials. systemd resolves a
+  unit's whole `LoadCredential=` before its first step, so a missing credential
+  file (or a corrupt credential registry) used to keep the webhook serving
+  because the reconciling unit could not start at all. The main unit now orders
+  after and requires the pre-pass, and a duplicate workflow name is refused by
+  one shared name lookup instead of being picked first for deactivation and last
+  for reference binding (all live copies of a deactivated name are deactivated).
+- n8n workflow settings converge: n8n merges a PATCH into the stored settings,
+  so a key an operator added (a `timezone`, say) survived every write and was
+  re-PATCHed forever. The update sends n8n's own `"DEFAULT"` reset token for
+  every resettable key the declaration leaves out, settings are compared key by
+  key, and a key n8n cannot reset is reported once and excluded. The dependency
+  order of `executeWorkflow` nodes now uses n8n's predicate: a disabled node,
+  a `localFile`/`url`/`parameter` source, an empty id or an `=` expression is
+  not a reference.
+- n8n and Windmill provisioning no longer copy sensitive detail into journald or
+  the store: a failed Windmill lock job is reported by version hash and job id
+  (its logs stay in the job), and an n8n export that carries a literal
+  `Authorization`, `apiKey`/`api-key` or `password` value fails the run, because
+  exports are copied into the Nix store. The module and guide say exports must
+  be sanitized.
+- Windmill scripts declare a worker tag that a `// tag <name>` badge in the
+  source would silently override on 1.839.0: a conflicting badge is refused
+  before the deploy, and the stored tag is verified on read-back.
 - Windmill and n8n provisioning state files now interpolate `contentFile` and
   workflow `file` path literals instead of `toString`-ing them: the string keeps
   its store context, so the file is in the closure and editing it changes the
