@@ -1069,6 +1069,16 @@ in
         test ${lib.escapeShellArg (json (failed storeVariable.config))} != '[]'
         test ${lib.escapeShellArg (json (failed badScriptPath.config))} != '[]'
         test ${lib.escapeShellArg (json (failed badVariablePath.config))} != '[]'
+        # The dispatcher directory is reserved, through aliases and `..` too.
+        ${lib.concatMapStrings (p: "test ${lib.escapeShellArg (json (failed (ext {services.windmill.provision.users.can.passwordFile = lib.mkForce p;}).config))} != '[]'\n") ["/run/windmill-rotate/dispatch/can" "/run/windmill-rotate/dispatch/pending" "/var/run/windmill-rotate/dispatch/can" "/run//windmill-rotate/./dispatch/can" "/run/agenix/../windmill-rotate/dispatch/can"]}
+        test ${lib.escapeShellArg (json (failed
+          (ext {
+            services.windmill.provision.tokens.t = {
+              user = "can";
+              path = "/run/windmill-rotate/dispatch/pending";
+            };
+          }).config))} != '[]'
+        test ${lib.escapeShellArg (json (failed (ext {services.windmill.provision.users.can.passwordFile = lib.mkForce "/run/windmill-rotate/can";}).config))} = '[]'
         # Rotation watch covers the secret and its parent dir (agenix symlink swap).
         printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg svc.serviceConfig.Type} = oneshot

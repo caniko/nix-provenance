@@ -17,6 +17,18 @@
   # is watched as a parent (agenix swaps), and deleting an entry one level
   # below it does not wake that watch, so the marker sits in a subdirectory.
   rotateDir = "/run/windmill-rotate/dispatch";
+  # Lexical normal form for the reservation check: drop empty and `.`
+  # components and fold /var/run into /run (a symlink to it on NixOS).
+  normalPath = p: let
+    joined = "/" + lib.concatStringsSep "/" (lib.filter (c: c != "" && c != ".") (lib.splitString "/" (toString p)));
+  in
+    if joined == "/var/run" || lib.hasPrefix "/var/run/" joined
+    then "/run" + lib.removePrefix "/var/run" joined
+    else joined;
+  inDispatch = p: let
+    n = normalPath p;
+  in
+    lib.elem ".." (lib.splitString "/" (toString p)) || n == rotateDir || lib.hasPrefix "${rotateDir}/" n;
   superadminCredential = "superadmin";
   lockOrder = lib.optional cfg.disableDefaultAdmin "windmill-lock-default-admin.service";
 
@@ -391,6 +403,13 @@ in {
       {
         assertion = !(lib.any notRuntime variableFiles);
         message = "services.windmill.provision.workspaces.*.variables.*.valueFile must be an absolute runtime path outside ${builtins.storeDir}: the value is a secret.";
+      }
+      {
+        # The rotation dispatcher owns this directory: an input there would make
+        # its own marker removal look like a rotation, and a file at the marker
+        # path would be deleted as one. `..` is refused rather than resolved.
+        assertion = !(lib.any inDispatch (secretFiles ++ variableFiles ++ map (t: t.path) (lib.attrValues cfg.tokens)));
+        message = "services.windmill.provision: secret files, variable value files and token paths must not be in ${rotateDir} (reserved for rotation state) or contain `..`.";
       }
     ];
 
