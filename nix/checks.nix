@@ -303,33 +303,36 @@ in
     # The Antigravity token reaches each profile as a private copy, never through argv.
     antigravity-google-auth-eval = let
       tokenFile = "/tmp/nix-provenance-antigravity-google-token";
-      evaluated = lib.evalModules {
-        modules = [
-          ({lib, ...}: {
-            options.systemd.user.services = lib.mkOption {
-              type = lib.types.attrsOf lib.types.anything;
-              default = {};
-            };
-            options.systemd.user.paths = lib.mkOption {
-              type = lib.types.attrsOf lib.types.anything;
-              default = {};
-            };
-            options.assertions = lib.mkOption {
-              type = lib.types.listOf lib.types.anything;
-              default = [];
-            };
-          })
-          (import ./modules/home/antigravity.nix {inherit self;})
-          {
-            nix-provenance.antigravity.googleAuth = {
-              enable = true;
-              inherit tokenFile;
-              profileDirectories = ["/tmp/nix-provenance-antigravity-a" "/tmp/nix-provenance-antigravity-b"];
-            };
-          }
-        ];
-        specialArgs = {inherit pkgs;};
-      };
+      evaluate = profileDirectories:
+        lib.evalModules {
+          modules = [
+            ({lib, ...}: {
+              options.systemd.user.services = lib.mkOption {
+                type = lib.types.attrsOf lib.types.anything;
+                default = {};
+              };
+              options.systemd.user.paths = lib.mkOption {
+                type = lib.types.attrsOf lib.types.anything;
+                default = {};
+              };
+              options.assertions = lib.mkOption {
+                type = lib.types.listOf lib.types.anything;
+                default = [];
+              };
+            })
+            (import ./modules/home/antigravity.nix {inherit self;})
+            {
+              nix-provenance.antigravity.googleAuth = {
+                enable = true;
+                inherit tokenFile profileDirectories;
+              };
+            }
+          ];
+          specialArgs = {inherit pkgs;};
+        };
+      evaluated = evaluate ["/tmp/nix-provenance-antigravity-a" "/tmp/nix-provenance-antigravity-b"];
+      # One profile, as T3 uses: its script must pass shellcheck too.
+      single = evaluate ["/tmp/nix-provenance-antigravity-a"];
       service = evaluated.config.systemd.user.services.nix-provenance-antigravity-google-auth;
       path = evaluated.config.systemd.user.paths.nix-provenance-antigravity-google-auth;
     in
@@ -339,6 +342,7 @@ in
       assert path.Path.PathChanged == tokenFile;
       assert !(builtins.elem "agenix.service" (path.Unit.After or []));
         runCommand "antigravity-google-auth-eval" {} ''
+          test -x ${single.config.systemd.user.services.nix-provenance-antigravity-google-auth.Service.ExecStart}
           exec_start=${service.Service.ExecStart}
           if grep -Fq 'test-refresh-token' "$exec_start"; then
             echo "antigravity: token leaked into the generated command" >&2
