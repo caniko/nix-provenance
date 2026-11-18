@@ -4,6 +4,7 @@
 
 ### Added
 
+- Google Drive device authorization and rclone configuration export; only rclone refreshes Google grants. Download the OAuth client JSON from Google Cloud Console Credentials, pass it to `authorize --client-file`, and delete it after enrollment.
 - `services.windmill.provision.deployTimeoutSeconds` is the bound on one
   deployed version's lock generation job. Scripts deploy serially, so the
   reconcile unit's `TimeoutStartSec` is that budget times the number of declared

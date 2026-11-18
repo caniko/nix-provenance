@@ -2,8 +2,44 @@
 
 `provenance-oauth` authorizes a provider once for a Linux host and local user.
 Compatible applications obtain access credentials through supported plugin or
-command interfaces. The current profile is `openai/chatgpt`, using ChatGPT device
-authorization and the provider's native Codex/Responses protocol.
+command interfaces. The supported profiles are `openai/chatgpt` and
+`google/drive-file`.
+
+## Google Drive and rclone
+
+Enable the Drive API in Google Cloud, configure the OAuth consent screen and
+publish it **In production** (external apps in Testing normally receive refresh
+tokens expiring after seven days). Create an OAuth client of type **TVs and
+Limited Input devices**. Google may require verification depending on the app.
+Declare `services.provenance.oauth.users.root.providers.google` with profile
+`drive-file`, an agenix `enrollmentFile`, and recovery recipients as below.
+Download the OAuth client JSON from Google Cloud Console **Credentials**. Keep
+it private and enroll from the fleet checkout using the resolved paths described
+below:
+
+```sh
+"$helper" --config "$manifest" authorize atlas google --user root \
+  --profile drive-file --client-file "$client_json" --secret "$secret" \
+  --pending-directory "$pending"
+```
+
+Authorize the displayed device code. Only a fresh authorization (the first
+run, or `--reauth`) opens the client JSON; a retry of the same pending
+transaction still takes the flag but does not read the file. Delete the file
+after enrollment; the helper leaves it in place. Deploy and initialize the enrollment
+as described below.
+For a root backup service, render its private runtime rclone configuration with:
+
+```sh
+umask 077
+provenance-oauth --config /etc/provenance/oauth/root-google.json rclone-config --remote gdrive > "$RUNTIME_DIRECTORY/rclone.conf"
+```
+
+Point rclone at that file. It contains both client credentials and refresh
+token; keep it private and ephemeral. Only rclone refreshes Google grants;
+the helper never refreshes them and `access` is not supported for Google.
+The `drive.file` scope only grants access to files created or explicitly shared
+with this app, not arbitrary pre-existing Drive files.
 
 ## Ownership and lifecycle
 
@@ -13,20 +49,26 @@ operator owns host selection, agenix declarations/rekeying, deployment, and
 verification on the selected host.
 
 A short-lived CLI process locks the per-user state directory for each access.
-This keeps one refresh owner without introducing a network broker or patching
+For OpenAI this keeps one refresh owner without introducing a network broker or patching
 applications. Stock OpenCode and OMP continue to own model catalogs, inference,
 and their normal request protocols.
 
 The state directory is `/var/lib/provenance-oauth-USER-PROVIDER`, owned by the
 declared user with mode `0700`; state and lock files have mode `0600`. This is
 isolation between local users. Applications running as the same UID are trusted
-and can read that user's files. The adapter interface returns only access tokens,
-account IDs, and expiry times; it does not give applications refresh ownership.
+and can read that user's files. OpenAI adapters return only access tokens,
+account IDs, and expiry times. The Google rclone config includes a refresh token
+and client credentials so rclone can refresh independently.
 
 An agenix enrollment is a bootstrap artifact, not the current token store:
 
 - A newer enrollment generation replaces live state. Older generations cannot
   replace it; reusing a generation with different contents is rejected.
+The refresh and checkpoint guarantees below apply to OpenAI, whose refresh
+tokens rotate. Google refresh tokens do not rotate and rclone refreshes them
+outside the store, so a Google checkpoint holds the enrolled grant, which stays
+valid until it is revoked.
+
 - Refresh intent is durably recorded in live state and `checkpoint.age` before
   contacting the provider. A failed checkpoint before dispatch is retryable if
   the intent can be cleared. A crash or uncertain network outcome requires a
@@ -154,8 +196,10 @@ until expiry; local removal does not revoke already issued provider tokens.
 ## Removal and recovery
 
 Run `provenance-oauth --config MANIFEST remove` as the declared local user to
-stop new access requests and persist a tombstone. Provider-wide revocation is a
-separate provider account operation. Reauthorization uses a newer enrollment.
+stop new access requests and persist a tombstone. For Google, removal stops new
+`rclone-config` exports only: a config already rendered by a running consumer
+keeps refreshing until the grant is revoked in the Google account. Provider-wide
+revocation is a separate provider account operation. Reauthorization uses a newer enrollment.
 
 Back up the **current** `checkpoint.age` outside the host. A copy of the original
 agenix enrollment cannot recover rotated credentials. For missing live state,

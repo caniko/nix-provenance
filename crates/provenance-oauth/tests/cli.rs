@@ -2,6 +2,48 @@ use provenance_oauth::{Config, Enrollment, Grant, Secret, Target, state::atomic_
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 #[test]
+fn authorize_checks_client_file_for_provider_before_resuming() {
+    let dir = tempfile::tempdir().unwrap();
+    for (provider, profile, flag) in [("google", "drive-file", false), ("openai", "chatgpt", true)]
+    {
+        let config = Config {
+            version: 1,
+            target: Target {
+                host: "host".into(),
+                user: "user".into(),
+                provider: provider.into(),
+                profile: profile.into(),
+                account: "default".into(),
+            },
+            state_directory: dir.path().join("state"),
+            recovery_recipients: vec![age::x25519::Identity::generate().to_public().to_string()],
+        };
+        let path = dir.path().join("config.json");
+        atomic_write(&path, &serde_json::to_vec(&config).unwrap()).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_provenance-oauth"));
+        command.arg("--config").arg(&path).args([
+            "authorize",
+            "host",
+            provider,
+            "--user",
+            "user",
+            "--profile",
+            profile,
+            "--secret",
+            "secret",
+            "--pending-directory",
+            "pending",
+        ]);
+        if flag {
+            command.args(["--client-file", "client.json"]);
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("--client-file"));
+    }
+}
+
+#[test]
 fn agenix_handoff_is_resumable_and_contains_only_paths_in_argv() {
     let dir = tempfile::tempdir().unwrap();
     let pending = dir.path().join("pending");
@@ -41,6 +83,7 @@ fn agenix_handoff_is_resumable_and_contains_only_paths_in_argv() {
             refresh_token: Secret("private-refresh-fixture".into()),
             expires_at: 1000,
             account_id: "account".into(),
+            client: None,
         },
     };
     atomic_write(
@@ -170,4 +213,100 @@ fn agenix_handoff_is_resumable_and_contains_only_paths_in_argv() {
         serde_json::from_slice::<serde_json::Value>(&repeated.stdout).unwrap()["stage"],
         "finalized"
     );
+}
+
+#[test]
+fn expired_google_export_and_removal_do_not_refresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = Target {
+        host: fs::read_to_string("/proc/sys/kernel/hostname")
+            .unwrap()
+            .trim()
+            .into(),
+        user: String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .into(),
+        provider: "google".into(),
+        profile: "drive-file".into(),
+        account: "default".into(),
+    };
+    let config = Config {
+        version: 1,
+        target: target.clone(),
+        state_directory: dir.path().join("state"),
+        recovery_recipients: vec![age::x25519::Identity::generate().to_public().to_string()],
+    };
+    let enrollment = Enrollment {
+        version: 1,
+        target,
+        generation: 1,
+        grant: Grant {
+            access_token: Secret("expired".into()),
+            refresh_token: Secret("refresh".into()),
+            expires_at: 1,
+            account_id: "id".into(),
+            client: Some(provenance_oauth::OAuthClient {
+                client_id: "client".into(),
+                client_secret: Secret("secret".into()),
+            }),
+        },
+    };
+    let config_file = dir.path().join("config.json");
+    let enrollment_file = dir.path().join("enrollment.json");
+    atomic_write(&config_file, &serde_json::to_vec(&config).unwrap()).unwrap();
+    atomic_write(&enrollment_file, &serde_json::to_vec(&enrollment).unwrap()).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_provenance-oauth"))
+            .arg("--config")
+            .arg(&config_file)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let path = enrollment_file.to_str().unwrap();
+    assert!(
+        run(&["apply", "--enrollment", path, "--initialize"])
+            .status
+            .success()
+    );
+    let before = fs::read(config.state_directory.join("state.json")).unwrap();
+    {
+        let store = provenance_oauth::state::Store::lock(&config).unwrap();
+        assert!(
+            store
+                .access(
+                    || panic!("clock must not run"),
+                    |_| panic!("must not refresh")
+                )
+                .is_err()
+        );
+    }
+    assert_eq!(
+        before,
+        fs::read(config.state_directory.join("state.json")).unwrap()
+    );
+    let exported = run(&["rclone-config", "--remote", "gdrive"]);
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    assert!(String::from_utf8_lossy(&exported.stdout).contains("[gdrive]"));
+    assert_eq!(
+        before,
+        fs::read(config.state_directory.join("state.json")).unwrap()
+    );
+    let access = run(&["access"]);
+    assert!(!access.status.success());
+    assert!(String::from_utf8_lossy(&access.stderr).contains("refreshed by their rclone consumer"));
+    assert_eq!(
+        before,
+        fs::read(config.state_directory.join("state.json")).unwrap()
+    );
+    assert!(run(&["remove"]).status.success());
+    let _ = run(&["apply", "--enrollment", path]);
+    let removed = run(&["rclone-config", "--remote", "gdrive"]);
+    assert!(!removed.status.success());
+    assert!(removed.stdout.is_empty());
 }

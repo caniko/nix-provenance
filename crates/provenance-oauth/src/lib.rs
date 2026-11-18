@@ -1,7 +1,8 @@
 //! OAuth lifecycle owned by nix-provenance. Consumer responses contain access
-//! credentials only; all refreshes use the same durable, locked state.
+//! credentials only for OpenAI; Google refreshes are owned by rclone.
 
 pub mod age_file;
+pub mod google;
 pub mod openai;
 pub mod state;
 
@@ -43,7 +44,10 @@ impl Target {
             );
         }
         ensure!(
-            self.provider == "openai" && self.profile == "chatgpt",
+            matches!(
+                (self.provider.as_str(), self.profile.as_str()),
+                ("openai", "chatgpt") | ("google", "drive-file")
+            ),
             "unsupported OAuth profile"
         );
         Ok(())
@@ -84,6 +88,31 @@ pub struct Grant {
     pub refresh_token: Secret,
     pub expires_at: u64,
     pub account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<OAuthClient>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OAuthClient {
+    pub client_id: String,
+    pub client_secret: Secret,
+}
+
+impl OAuthClient {
+    pub fn validate(&self) -> Result<()> {
+        for value in [&self.client_id, &self.client_secret.0] {
+            ensure!(
+                !value.is_empty()
+                    && value.len() <= 256
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)),
+                "invalid Google client credentials"
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Grant {
@@ -100,6 +129,15 @@ impl Grant {
             "OAuth grant is missing a valid account ID"
         );
         Ok(())
+    }
+
+    pub fn validate_for(&self, target: &Target) -> Result<()> {
+        self.validate()?;
+        match (&*target.provider, &self.client) {
+            ("openai", None) => Ok(()),
+            ("google", Some(client)) => client.validate(),
+            _ => anyhow::bail!("OAuth client credentials do not match provider"),
+        }
     }
 }
 
@@ -124,7 +162,7 @@ impl Enrollment {
             &self.target == target,
             "enrollment belongs to another host, user or profile"
         );
-        self.grant.validate()
+        self.grant.validate_for(target)
     }
 }
 

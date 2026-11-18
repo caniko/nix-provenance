@@ -42,6 +42,7 @@ fn enrollment(config: &Config, generation: u64) -> Enrollment {
             refresh_token: Secret("initial-refresh".into()),
             expires_at: 1,
             account_id: "chatgpt-account".into(),
+            client: None,
         },
     }
 }
@@ -53,6 +54,7 @@ fn rotate(grant: &Grant) -> anyhow::Result<Grant> {
         refresh_token: Secret("rotated-refresh".into()),
         expires_at: 9_000_000,
         account_id: grant.account_id.clone(),
+        client: None,
     })
 }
 
