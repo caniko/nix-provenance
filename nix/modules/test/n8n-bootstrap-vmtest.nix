@@ -355,6 +355,19 @@ in
       with subtest("deactivating the workflow unregisters its webhook"):
           # The rotated token is the one the workflow now uses: prove it serves.
           assert hook("Bearer rotated-webhook-token") == "200", hook("Bearer rotated-webhook-token")
+          # The retry timer must not be able to start the units a switch just
+          # stopped: a tick in the stop→start window starts them from the old
+          # generation, they stay active (exited), the switch's own start is a
+          # no-op, and a newly declared `active = false` never lands. A
+          # one-second repeating period makes that window impossible to miss.
+          machine.succeed("mkdir -p /run/systemd/system/n8n-provision-retry.timer.d")
+          machine.succeed(
+              "printf '[Timer]\\nOnActiveSec=\\nOnUnitInactiveSec=\\nOnUnitActiveSec=1\\n' "
+              "> /run/systemd/system/n8n-provision-retry.timer.d/fast.conf"
+          )
+          machine.succeed("systemctl daemon-reload")
+          machine.succeed("systemctl restart n8n-provision-retry.timer")
+          machine.sleep(2)
           machine.succeed(f"{system}/specialisation/workflowoff/bin/switch-to-configuration test")
           machine.wait_for_unit("n8n-provision.service")
           # The owner-only pre-pass alone unpublishes the workflow, before the
@@ -374,6 +387,23 @@ in
               "| jq -r '.data[] | select(.name == \"fixture-workflow\") | [.id, .active] | @tsv'"
           ).strip()
           assert row == f"{workflow_id}\tfalse", row
+          # Back to the shipped period for the rest of the run.
+          machine.succeed("rm -rf /run/systemd/system/n8n-provision-retry.timer.d")
+          machine.succeed("systemctl daemon-reload")
+          machine.succeed("systemctl restart n8n-provision-retry.timer")
+
+      with subtest("stopping provisioning stops the timer instead of restarting the pair"):
+          machine.succeed("systemctl stop n8n-provision.service")
+          assert (
+              machine.succeed("systemctl show -p ActiveState --value n8n-provision-retry.timer").strip()
+              == "inactive"
+          ), "the retry timer must not outlive the unit it retries"
+          machine.succeed("systemctl start n8n-provision.service")
+          machine.wait_for_unit("n8n-provision.service")
+          assert (
+              machine.succeed("systemctl show -p ActiveState --value n8n-provision-retry.timer").strip()
+              == "active"
+          ), "the retry timer must be pulled in by the unit it retries"
 
       with subtest("removing a credential declaration deletes it from n8n"):
           machine.succeed(f"{system}/specialisation/nocreds/bin/switch-to-configuration test")

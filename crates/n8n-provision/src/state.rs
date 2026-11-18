@@ -11,11 +11,6 @@ use serde::Deserialize;
 pub struct State {
     pub url: String,
     pub owner: Owner,
-    /// The instance default n8n drops from a saved workflow's `executionTimeout`
-    /// (`EXECUTIONS_TIMEOUT`, `-1` when unset). Absent from an older state: the
-    /// value is then compared as written.
-    #[serde(default)]
-    pub execution_timeout: Option<i64>,
     #[serde(default)]
     pub credentials: BTreeMap<String, Credential>,
     #[serde(default)]

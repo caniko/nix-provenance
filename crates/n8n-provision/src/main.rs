@@ -437,6 +437,17 @@ fn reconcile_workflows(
     }
     let mut index = WorkflowIndex::new(&n8n.list_workflows()?);
     let mut declared = read_declared(state)?;
+    // n8n's effective `executionTimeout`, but only when a declaration names one:
+    // it is what tells a declared default apart from a live override.
+    let default_timeout = if declared.iter().any(|workflow| {
+        workflow.payload["settings"]
+            .get("executionTimeout")
+            .is_some()
+    }) {
+        n8n.execution_timeout_default()?
+    } else {
+        -1
+    };
     for position in import_order(&declared)? {
         let declared = &mut declared[position];
         let name = declared.name.clone();
@@ -445,7 +456,14 @@ fn reconcile_workflows(
         bind_executed_workflows(&mut payload, &name, &index)?;
         bind_credentials(&mut payload["nodes"], &workflow.credentials, provisioned)
             .with_context(|| format!("workflow {name}"))?;
-        let id = converge_workflow(n8n, &name, workflow.active, &payload, &index)?;
+        let id = converge_workflow(
+            n8n,
+            &name,
+            workflow.active,
+            &payload,
+            &index,
+            default_timeout,
+        )?;
         index.insert(&id, &name);
     }
     Ok(())
@@ -458,6 +476,7 @@ fn converge_workflow(
     active: bool,
     payload: &Value,
     live: &WorkflowIndex,
+    default_timeout: i64,
 ) -> Result<String> {
     let mut created = false;
     let (id, version, was_active, active_version) = match live.unique_id(name)? {
@@ -481,7 +500,7 @@ fn converge_workflow(
                     );
                 }
             }
-            if matches_declaration(payload, &stored) {
+            if matches_declaration(payload, &stored, default_timeout) {
                 (id.to_owned(), version, was_active, active_version)
             } else {
                 // A PATCH merges `settings`: send n8n's reset token for every
@@ -533,7 +552,7 @@ fn read_declared(state: &State) -> Result<Vec<DeclaredWorkflow>> {
                 .with_context(|| format!("parsing workflow file {}", workflow.file.display()))?;
             Ok(DeclaredWorkflow {
                 name: name.clone(),
-                payload: workflow_payload(name, &file, state.execution_timeout)
+                payload: workflow_payload(name, &file)
                     .with_context(|| format!("workflow file {}", workflow.file.display()))?,
             })
         })
@@ -743,7 +762,7 @@ fn bind_executed_workflows(payload: &mut Value, caller: &str, index: &WorkflowIn
 
 /// The import payload: the managed fields of a workflow export, renamed to the
 /// declared name. `active`, `id` and `pinData` are never taken from the file.
-fn workflow_payload(name: &str, file: &Value, default_timeout: Option<i64>) -> Result<Value> {
+fn workflow_payload(name: &str, file: &Value) -> Result<Value> {
     // The export is copied into the Nix store: a literal credential in it would
     // be world-readable and kept forever, so refuse it before importing.
     if let Some(key) = literal_secret(file) {
@@ -763,7 +782,7 @@ fn workflow_payload(name: &str, file: &Value, default_timeout: Option<i64>) -> R
     if let Some(settings) = file.get("settings")
         && !settings.is_null()
     {
-        payload["settings"] = settings_payload(settings, default_timeout)?;
+        payload["settings"] = settings_payload(settings)?;
     }
     if let Some(meta) = file.get("meta")
         && !meta.is_null()
@@ -793,21 +812,16 @@ const RESETTABLE_SETTINGS: [&str; 6] = [
 /// declared as n8n's own reset token means "default", exactly as the n8n UI
 /// records it, so it is dropped: n8n never stores that value.
 ///
-/// `executionTimeout` is dropped when it names the instance default: n8n's
-/// `removeDefaultValues` deletes it on every save, so the live copy never holds
-/// it and a comparison against the declaration would PATCH on every run.
-fn settings_payload(declared: &Value, default_timeout: Option<i64>) -> Result<Value> {
+/// A declared `executionTimeout` is sent as written, even when it names the
+/// instance default: n8n deletes such a value on every update
+/// (`removeDefaultValues`), so sending it is what resets a live override back to
+/// the default.
+fn settings_payload(declared: &Value) -> Result<Value> {
     let declared = declared.as_object().context("settings must be an object")?;
     Ok(Value::Object(
         declared
             .iter()
-            .filter(|(key, value)| {
-                if value.as_str() == Some(SETTINGS_RESET) {
-                    return false;
-                }
-                !(key.as_str() == "executionTimeout"
-                    && default_timeout.is_some_and(|default| value.as_i64() == Some(default)))
-            })
+            .filter(|(_, value)| value.as_str() != Some(SETTINGS_RESET))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
     ))
@@ -852,7 +866,12 @@ fn is_resettable(key: &str) -> bool {
 /// reset at all (`executionTimeout` and friends), which are reported instead. A
 /// live key the declaration omits that *can* be reset is drift: the next PATCH
 /// resets it.
-fn settings_match(desired: &Value, live: &Value) -> bool {
+///
+/// `default_timeout` is n8n's effective `executionTimeout` (its `/rest/settings`
+/// value): n8n deletes a saved timeout equal to it, so an absent live key *is* a
+/// declared value that names the default. Any other stored timeout is drift, and
+/// the PATCH resets it by sending the declared default back.
+fn settings_match(desired: &Value, live: &Value, default_timeout: i64) -> bool {
     let Some(desired) = desired.as_object() else {
         return false;
     };
@@ -860,10 +879,19 @@ fn settings_match(desired: &Value, live: &Value) -> bool {
     desired
         .iter()
         .filter(|(_, value)| !value.is_null())
-        .all(|(key, value)| live.get(key.as_str()).is_some_and(|live| *live == value))
+        .all(|(key, value)| match live.get(key.as_str()) {
+            Some(live) => *live == value,
+            None => is_default_timeout(key, value, default_timeout),
+        })
         && live
             .keys()
             .all(|key| desired.contains_key(*key) || !is_resettable(key))
+}
+
+/// True when a declared key is the instance's default `executionTimeout`: the
+/// value n8n deletes on update, so an absent live key is not drift.
+fn is_default_timeout(key: &str, value: &Value, default_timeout: i64) -> bool {
+    key == "executionTimeout" && value.as_i64() == Some(default_timeout)
 }
 
 /// Live settings keys the declaration neither names nor can reset: a PATCH
@@ -976,7 +1004,7 @@ fn bind_credentials(
 /// same connections, settings and metadata. Anything extra in the live copy is
 /// drift too — a `disabled` a UI edit added to a node, an edited connection —
 /// while a workflow n8n left alone matches.
-fn matches_declaration(desired: &Value, live: &Value) -> bool {
+fn matches_declaration(desired: &Value, live: &Value, default_timeout: i64) -> bool {
     let (Some(desired), Some(live)) = (desired.as_object(), live.as_object()) else {
         return false;
     };
@@ -986,7 +1014,7 @@ fn matches_declaration(desired: &Value, live: &Value) -> bool {
             "nodes" => live.is_some_and(|live| nodes(value) == nodes(live)),
             // Settings are merged on write and reset per key, so they are
             // compared against n8n's own reset semantics.
-            "settings" => live.is_some_and(|live| settings_match(value, live)),
+            "settings" => live.is_some_and(|live| settings_match(value, live, default_timeout)),
             _ => live == Some(value),
         }
     })
@@ -1100,7 +1128,7 @@ mod tests {
             "active": true,
             "id": "not-ours",
         });
-        let payload = workflow_payload("fleetix-hub-claim", &file, None).unwrap();
+        let payload = workflow_payload("fleetix-hub-claim", &file).unwrap();
         assert_eq!(payload["name"], "fleetix-hub-claim");
         assert_eq!(payload["nodes"], file["nodes"]);
         assert_eq!(payload["connections"], file["connections"]);
@@ -1111,8 +1139,8 @@ mod tests {
         // The file's activation state and id never decide n8n's.
         assert!(payload.get("active").is_none());
         assert!(payload.get("id").is_none());
-        assert!(workflow_payload("x", &json!({"connections": {}}), None).is_err());
-        assert!(workflow_payload("x", &json!({"nodes": []}), None).is_err());
+        assert!(workflow_payload("x", &json!({"connections": {}})).is_err());
+        assert!(workflow_payload("x", &json!({"nodes": []})).is_err());
     }
 
     #[test]
@@ -1125,14 +1153,13 @@ mod tests {
                 {"name": "Authorization", "value": "Bearer abc123"},
             ]}}}]),
         );
-        let err = workflow_payload("w", &literal, None).unwrap_err();
+        let err = workflow_payload("w", &literal).unwrap_err();
         assert!(err.to_string().contains("authorization"), "{err}");
         // A direct key is caught too.
         assert!(
             workflow_payload(
                 "w",
                 &payload(json!([{"parameters": {"password": "hunter2"}}])),
-                None
             )
             .is_err()
         );
@@ -1148,8 +1175,26 @@ mod tests {
                 {"name": "offset", "value": "0"},
             ]}}}])),
         ] {
-            workflow_payload("w", &ok, None).unwrap();
+            workflow_payload("w", &ok).unwrap();
         }
+    }
+
+    #[test]
+    fn a_non_string_header_name_is_not_a_credential_pair() {
+        // A header parameter whose `name` is not a string is not a name this
+        // check recognises, so it is skipped like any other key instead of
+        // failing the run (or, in Nix, the evaluation).
+        let payload = json!({"nodes": [{"parameters": {"headerParameters": {"parameters": [
+            {"name": {"__rl": true, "value": "c1"}, "value": "Bearer abc123"},
+            {"name": ["Authorization"], "value": "Bearer abc123"},
+        ]}}}], "connections": {}});
+        assert_eq!(literal_secret(&payload), None);
+        workflow_payload("w", &payload).unwrap();
+        // The string form right beside them is still caught.
+        let literal = json!({"nodes": [{"parameters": {"headerParameters": {"parameters": [
+            {"name": "Authorization", "value": "Bearer abc123"},
+        ]}}}], "connections": {}});
+        assert_eq!(literal_secret(&literal).as_deref(), Some("authorization"));
     }
 
     #[test]
@@ -1182,41 +1227,63 @@ mod tests {
     #[test]
     fn a_declared_default_execution_timeout_is_not_drift() {
         // n8n 2.39.6 deletes an executionTimeout equal to the instance default
-        // (`removeDefaultValues`), so the live copy never holds it: comparing the
-        // declaration as written would PATCH on every run.
+        // (`removeDefaultValues`), so the live copy does not hold it: an absent
+        // key IS the declared default, and comparing it as written would PATCH
+        // on every run.
         let declared = json!({"executionOrder": "v1", "executionTimeout": -1});
-        let normalized = settings_payload(&declared, Some(-1)).unwrap();
-        assert_eq!(normalized, json!({"executionOrder": "v1"}));
-        // Read back: the stored settings without the default are the declaration,
-        // and no update reintroduces the key.
+        let payload = settings_payload(&declared).unwrap();
+        // The key travels as declared: that is what resets a live override.
+        assert_eq!(payload, declared);
         assert!(settings_match(
-            &normalized,
-            &json!({"executionOrder": "v1"})
+            &payload,
+            &json!({"executionOrder": "v1"}),
+            -1
         ));
-        assert!(
-            settings_with_resets(&normalized)
-                .get("executionTimeout")
-                .is_none()
-        );
-        // A value that is not the default is a declaration n8n stores.
+        // A value that is not the default is compared as written.
+        assert!(!settings_match(
+            &declared,
+            &json!({"executionOrder": "v1"}),
+            60
+        ));
+        // A live key that is not the declaration is drift, and the PATCH that
+        // follows sends the declared default so n8n deletes the override.
+        assert!(!settings_match(
+            &declared,
+            &json!({"executionOrder": "v1", "executionTimeout": 120}),
+            -1
+        ));
         assert_eq!(
-            settings_payload(&declared, Some(30)).unwrap(),
-            declared,
-            "a non-default timeout must survive normalisation"
+            settings_with_resets(&declared)["executionTimeout"],
+            json!(-1)
         );
-        // Unknown default (a state rendered before this key existed): compare as
-        // written rather than guessing.
-        assert_eq!(settings_payload(&declared, None).unwrap(), declared);
-        // The create payload drops it too, so the first write already matches the
-        // updates and a create followed by an update writes nothing.
+        // The create payload keeps it too: n8n stores a declared timeout on
+        // create, so the live copy is the declaration as written.
         let payload = workflow_payload(
             "w",
             &json!({"nodes": [], "connections": {},
                    "settings": {"executionOrder": "v1", "executionTimeout": -1}}),
-            Some(-1),
         )
         .unwrap();
-        assert_eq!(payload["settings"], json!({"executionOrder": "v1"}));
+        assert_eq!(payload["settings"], declared);
+    }
+
+    #[test]
+    fn a_declared_default_resets_a_stored_timeout_override() {
+        // The reported failure: a workflow stored `executionTimeout: 120` (set in
+        // n8n) against a declaration that names the instance default (60). The
+        // stored override is drift, and the PATCH sends 60, which n8n deletes on
+        // save, so the next read is an absent key that matches the declaration.
+        let declared = json!({"executionTimeout": 60});
+        let stored = json!({"executionTimeout": 120});
+        assert!(!settings_match(&declared, &stored, 60));
+        let update = settings_with_resets(&declared);
+        assert_eq!(update["executionTimeout"], json!(60));
+        assert!(settings_match(&declared, &json!({}), 60));
+        // An absent live key only matches a declared default, never another value.
+        assert!(!settings_match(&declared, &json!({}), 120));
+        // The same drift is not reported as an unmanaged key: the declaration
+        // names it.
+        assert!(unmanaged_settings(&declared, &stored).is_empty());
     }
 
     #[test]
@@ -1226,7 +1293,8 @@ mod tests {
         // because the declaration is the whole of the managed settings.
         assert!(!settings_match(
             &declared,
-            &json!({"executionOrder": "v1", "timezone": "Europe/Berlin"})
+            &json!({"executionOrder": "v1", "timezone": "Europe/Berlin"}),
+            -1
         ));
         // The PATCH that put it back resets the key n8n deletes on "DEFAULT";
         // the deployed copy then holds only the declared key and matches, which
@@ -1238,15 +1306,21 @@ mod tests {
         // A null stored key is an absent one.
         assert!(settings_match(
             &declared,
-            &json!({"executionOrder": "v1", "timezone": null})
+            &json!({"executionOrder": "v1", "timezone": null}),
+            -1
         ));
         // A declared value must still be there.
-        assert!(!settings_match(&declared, &json!({"executionOrder": "v0"})));
-        assert!(!settings_match(&declared, &json!({})));
+        assert!(!settings_match(
+            &declared,
+            &json!({"executionOrder": "v0"}),
+            -1
+        ));
+        assert!(!settings_match(&declared, &json!({}), -1));
         // A key n8n cannot reset is excluded (and reported), not retried.
         assert!(settings_match(
             &declared,
-            &json!({"executionOrder": "v1", "executionTimeout": 30})
+            &json!({"executionOrder": "v1", "executionTimeout": 30}),
+            60
         ));
         assert_eq!(
             unmanaged_settings(
@@ -1257,19 +1331,23 @@ mod tests {
         );
         // A declared key that n8n cannot reset is written and compared normally.
         let declared = json!({"executionTimeout": 30});
-        assert!(settings_match(&declared, &json!({"executionTimeout": 30})));
-        assert!(!settings_match(&declared, &json!({"executionTimeout": 60})));
+        assert!(settings_match(
+            &declared,
+            &json!({"executionTimeout": 30}),
+            60
+        ));
+        assert!(!settings_match(
+            &declared,
+            &json!({"executionTimeout": 60}),
+            60
+        ));
         // Settings that are not an object are a declaration error.
-        assert!(settings_payload(&json!("nope"), None).is_err());
+        assert!(settings_payload(&json!("nope")).is_err());
         // An export that recorded n8n's own "default" choice (the value its UI
         // writes) means "no key": it is dropped, not compared against a value
         // n8n never stores.
         assert_eq!(
-            settings_payload(
-                &json!({"executionOrder": "v1", "timezone": SETTINGS_RESET}),
-                None
-            )
-            .unwrap(),
+            settings_payload(&json!({"executionOrder": "v1", "timezone": SETTINGS_RESET})).unwrap(),
             json!({"executionOrder": "v1"})
         );
         // An empty declaration still resets every resettable key.
@@ -1375,23 +1453,23 @@ mod tests {
             "connections": {"Webhook": {"main": [[]]}},
             "settings": {"executionOrder": "v1"},
         });
-        assert!(matches_declaration(&desired, &live));
+        assert!(matches_declaration(&desired, &live, -1));
         // A managed change (position, node count, settings, connections) is drift.
         let moved = json!({
             "nodes": [{"name": "Webhook", "type": "webhook", "position": [10, 0]}],
         });
-        assert!(!matches_declaration(&moved, &live));
+        assert!(!matches_declaration(&moved, &live, -1));
         let extra_node = json!({
             "nodes": [
                 {"name": "Webhook", "type": "webhook", "position": [0, 0]},
                 {"name": "Extra", "type": "noop", "position": [0, 0]},
             ],
         });
-        assert!(!matches_declaration(&extra_node, &live));
+        assert!(!matches_declaration(&extra_node, &live, -1));
         let other_order = json!({"settings": {"executionOrder": "v0"}});
-        assert!(!matches_declaration(&other_order, &live));
+        assert!(!matches_declaration(&other_order, &live, -1));
         let dropped_connection = json!({"connections": {}});
-        assert!(!matches_declaration(&dropped_connection, &live));
+        assert!(!matches_declaration(&dropped_connection, &live, -1));
         // A field a UI edit added to a node is drift, not an extra to ignore.
         let disabled = json!({
             "nodes": [{
@@ -1399,12 +1477,12 @@ mod tests {
                 "position": [0, 0], "webhookId": "hook-1", "disabled": true,
             }],
         });
-        assert!(!matches_declaration(&live, &disabled));
+        assert!(!matches_declaration(&live, &disabled, -1));
         // An extra resettable settings key is drift: the update resets it, so a
         // comparison that ignored it would PATCH forever.
         let extra_setting = json!({"settings": {"executionOrder": "v1", "timezone": "UTC"}});
-        assert!(!matches_declaration(&live, &extra_setting));
-        assert!(!matches_declaration(&extra_setting, &live));
+        assert!(!matches_declaration(&live, &extra_setting, -1));
+        assert!(!matches_declaration(&extra_setting, &live, -1));
     }
 
     #[test]

@@ -52,28 +52,39 @@
   unit runs, so `Restart=` on either oneshot never sees it and the pair stayed
   down until someone started it by hand. `n8n-provision-retry.timer` re-runs the
   pair while provisioning is not active — a start job pulls the failed pre-pass
-  in with it — and goes idle once it is. `Requires=`/`After=` still make the
-  pre-pass fail-closed.
+  in with it — and goes idle once it is. The oneshots pull the timer in with
+  `Wants=` and it is `PartOf=` them and `n8n.service`, so it stops whenever they
+  do: enabled on its own it ticked in the stop→start window of a NixOS switch,
+  started the units still loaded from the old generation, left them
+  `active (exited)` so the switch's own start did nothing, and held a newly
+  declared `active = false` (or an explicit stop of n8n) off. `Requires=`/
+  `After=` still make the pre-pass fail-closed, and the pre-pass, its state file
+  and the timer are wired only when a workflow is declared, so a host pinning an
+  older `provisionPackage` without the `deactivate` subcommand still starts.
 - `n8n-deactivate` reads its own state file, which holds only the URL, the
   owner and the names declared inactive. A declaration the reconciler rejects
   (a credential name over n8n's 128-character limit, a missing field credential)
   used to make the pre-pass exit before contacting n8n, leaving the webhook it
   should unpublish serving.
 - An n8n workflow export that declares `executionTimeout` equal to the instance
-  default (`EXECUTIONS_TIMEOUT`, `-1` when unset) no longer PATCHes on every
-  run: n8n 2.39.6 deletes that value on every save (`removeDefaultValues`), so
-  the declaration is normalised against the instance default before it is
-  compared or sent.
+  default no longer PATCHes on every run, and declaring that default now resets
+  a stored override: n8n 2.39.6 deletes a saved timeout equal to its
+  `EXECUTIONS_TIMEOUT` (`removeDefaultValues`), so the reconciler reads that
+  default from n8n's own `/rest/settings` when a declaration names one. An
+  absent live key matches a declared default, a different stored value is drift
+  and the PATCH sends the declared default back. The module no longer mirrors
+  the default from `EXECUTIONS_TIMEOUT` (`lib.toInt` broke on `"060"` and
+  ignored `EXECUTIONS_TIMEOUT_FILE`), and the state schema is unchanged again.
 - The Windmill `// tag` badge check no longer treats prose as a badge:
   Windmill 1.839.0 ignores a value with whitespace or over 50 bytes
   (`// tag this for review`) and keeps scanning for the first valid one, and the
   check mirrors it.
-- An n8n export's literal-credential check now also runs at evaluation for a
-  `file` path literal, so a literal `Authorization`/`apiKey`/`password` fails the
-  build with the workflow name and field instead of reaching the Nix store
-  first. Only path literals are checked that early; the runtime check still
-  covers derivation outputs and plain strings, which cannot be read without
-  IFD.
+- The n8n module's evaluation-time literal-credential lint is gone: Nix has
+  already copied the flake source before it evaluates that check, so it could
+  never keep a value out of the store and broke evaluation on a non-string
+  header `name`. The reconciler's runtime check is the deployment guard, and the
+  option text and guide now say exports must be sanitized before they enter the
+  flake source.
 - The `executeWorkflow` dependency predicate reads only `parameters.source`:
   n8n never consults the locator's `mode`, so a `mode: "url"` locator with a
   `database` source is a local id it validates, and is now treated as one
@@ -110,9 +121,11 @@
   units' restart trigger. A deploy also waits (bounded) for the version's lock
   job and fails on a failed or still-queued job, instead of treating an
   unrunnable version as deployed and skipping it next run. The modules omit
-  `scripts`, `variables`, `workflows` and `data_file_prefixes` when empty, so a
-  host pinning an older provisioner still parses the state. `windmill-provision`
-  now has a start timeout that covers that wait.
+  `scripts`, `variables`, `workflows` and `data_file_prefixes` when empty, gate
+  n8n's `deactivate` unit, its state file and the retry timer on a declared
+  workflow, and pass `--deploy-timeout` only when a script is declared, so a
+  host pinning an older provisioner still starts and parses the state.
+  `windmill-provision` now has a start timeout that covers that wait.
 - n8n workflow reconciliation deactivates every existing workflow declared
   `active = false` before credentials and content, so a failing replacement
   export or credential write cannot leave the old webhook serving. Workflows

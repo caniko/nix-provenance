@@ -69,8 +69,9 @@ services.windmill = {
   source badge that disagrees with the declaration is refused before the
   version is deployed, and the stored tag is read back and compared (a version
   with the wrong tag would deploy "successfully" and then run nowhere). A
-  deploy then waits (bounded; `deployTimeoutSeconds`, 300 by default) for the
-  dependency job to write the version's lock: a version without a lock is not
+  deploy then waits (bounded; `deployTimeoutSeconds`, 300 by default, passed
+  only when a script is declared) for the dependency job to write the version's
+  lock: a version without a lock is not
   runnable, so a queued or failed lock job fails the run instead of matching the
   source on the next run and reporting success. The failure names the job id
   instead of copying the job's logs into the journal. The reconcile unit's
@@ -161,19 +162,19 @@ services.n8n = {
   secret) and the prefix stays visible in the declaration.
 - Workflows are imported by the declared name (the file's own `name`, `id` and
   `active` are ignored) from an export's `nodes`, `connections`, `settings` and
-  `meta`. The export is copied into the Nix store, so it must be sanitized: a
-  credential reference or an n8n expression (`=...`) carries a secret, never a
-  literal. A path literal is also read at evaluation, so an export holding a
-  literal `Authorization`, `apiKey`/`api-key` or `password` value fails the
-  build with the workflow name and field: the file never reaches the store.
-  Only path literals are checked that early — a derivation output or a plain
-  string cannot be read at evaluation without IFD, and for those the reconciler
-  refuses the export at run time, when it is already in the store. Before
-  writing, every node credential reference is rewritten from its JSON name to
-  the provisioned credential's id: `credentials."<name in the JSON>" = "<declared credential>"`,
-  and a reference with no entry must itself be a declared credential name. The
-  node's credential type must match the declared credential's `type`, so a
-  postgres node cannot be handed a Header Auth credential.
+  `meta`. The export is copied into the Nix store, which every process can read
+  and every generation keeps, so it must be sanitized **before it enters the
+  flake source**: a credential reference or an n8n expression (`=...`) carries a
+  secret, never a literal. Nix has already copied the source by the time this
+  module evaluates, so nothing here can keep a literal out of the store; the
+  reconciler refuses an export holding a literal `Authorization`,
+  `apiKey`/`api-key` or `password` value at run time, which only stops the
+  deployment, not the copy. Before writing, every node credential reference is
+  rewritten from its JSON name to the provisioned credential's id:
+  `credentials."<name in the JSON>" = "<declared credential>"`, and a reference
+  with no entry must itself be a declared credential name. The node's credential
+  type must match the declared credential's `type`, so a postgres node cannot be
+  handed a Header Auth credential.
 - A node that calls another workflow (`n8n-nodes-base.executeWorkflow`) names it
   in `parameters.workflowId.value`, as the studio-pipeline exports do. The
   dependency edges use n8n's own predicate: a disabled node is skipped, only the
@@ -203,12 +204,15 @@ services.n8n = {
   because n8n merges a PATCH into the stored object: the declaration's keys must
   hold their values, and a key set in n8n that the declaration does not name is
   reset through n8n's own `"DEFAULT"` token (its `removeDefaultValues` drops the
-  key). An `executionTimeout` that names the instance default is dropped from
-  the comparison, because n8n deletes that value on every save; a declared
-  timeout that differs from the default is written and compared normally. Any
-  other settings key n8n cannot reset (and does not delete) is reported once and
-  excluded, so it cannot cause a rewrite on every run. The activation converges
-  separately:
+  key). `executionTimeout` is the exception n8n treats differently: it deletes a
+  saved timeout equal to the instance default, so the reconciler reads that
+  default from n8n's own `/rest/settings` when a declaration names a timeout. An
+  absent live key then matches a declared default, a different stored value is
+  drift, and the PATCH sends the declared default back, which resets it. A
+  declaration that never names `executionTimeout` leaves the stored value alone.
+  Any other settings key n8n cannot reset (and does not delete) is reported once
+  and excluded, so it cannot cause a rewrite on every run. The activation
+  converges separately:
   `active = true` (default) publishes the version just written, `active = false`
   deactivates a running workflow. A declared `active = false` is applied by
   `n8n-deactivate.service` — a oneshot that loads only the owner password and
@@ -226,7 +230,14 @@ services.n8n = {
   `n8n-provision-retry.timer` therefore re-runs the pair once a minute while
   provisioning is not active (a start job pulls the failed pre-pass in with it),
   and goes idle as soon as it is. A declaration that is genuinely broken stays
-  failed between ticks and keeps re-reporting why.
+  failed between ticks and keeps re-reporting why. The oneshots pull the timer
+  in with `Wants=`, and it is `PartOf=` them and `n8n.service`, so it stops
+  whenever they do: a timer enabled on its own would tick in the stop→start
+  window of a NixOS switch, start the units still loaded from the old
+  generation, leave them `active (exited)` so the switch's own start is a no-op,
+  and hold a newly declared `active = false` (or an explicit stop of n8n) off.
+  It is wired only when a workflow is declared, so a host pinning an older
+  `provisionPackage` without the `deactivate` subcommand still starts.
 
 ## Known limits
 
@@ -267,9 +278,9 @@ services.n8n = {
   while it stays declared imports a second one under the declared name; the
   renamed copy is left in place. A workflow dropped from the declaration is left
   in n8n untouched — not deactivated and never deleted.
-- n8n settings the declaration cannot reset (a key n8n's own `"DEFAULT"` reset
-  does not cover, such as `executionTimeout`) stay as set in n8n and are logged
-  once per run; declare them to manage them.
+- A settings key the declaration does not name and n8n's own `"DEFAULT"` reset
+  does not cover (an `executionTimeout` set in the n8n UI, say) stays as set in
+  n8n and is logged once per run; declare it to manage it.
 - n8n credentials referenced by a declared workflow must be provisioned in the
   same declaration; a workflow whose reference resolves to nothing fails the
   run instead of importing a workflow that cannot execute.

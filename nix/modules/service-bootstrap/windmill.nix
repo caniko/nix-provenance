@@ -437,7 +437,9 @@ in {
           ["${superadminCredential}:${cfg.superadminSecretFile}"]
           ++ pw.userPasswordCredentials "windmill-provision" cfg.users
           ++ variableCredentials;
-        ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir ${stateDir}/markers --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql --deploy-timeout ${toString cfg.deployTimeoutSeconds}";
+        # A declaration with no scripts never waits on a deploy, and an older
+        # `provisionPackage` has no `--deploy-timeout` flag to accept.
+        ExecStart = "${exe} reconcile --state ${stateFile} --credential-dir %d --marker-dir ${stateDir}/markers --runuser ${pkgs.util-linux}/bin/runuser --psql ${config.services.postgresql.package}/bin/psql${lib.optionalString (scriptCount > 0) " --deploy-timeout ${toString cfg.deployTimeoutSeconds}"}";
         # One serial deploy waits (bounded) for its dependency job's lock: the
         # start timeout must cover every declared script's budget plus startup,
         # not one fixed number that a growing declaration can outgrow.

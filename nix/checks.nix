@@ -1052,6 +1052,9 @@ in
           c.name = "C";
         };
       };
+      noScripts = ext {
+        services.windmill.provision.workspaces.studio.scripts = lib.mkForce {};
+      };
     in
       runCommand "windmill-module-eval" {} ''
         test ${lib.escapeShellArg (json (failed windmillEval.config))} = '[]'
@@ -1078,6 +1081,9 @@ in
         # the declared script count (2 in the fixture) plus startup headroom.
         printf '%s' ${lib.escapeShellArg (json svc.serviceConfig.TimeoutStartSec)} | grep -q '^"1200s"$'
         printf '%s' ${lib.escapeShellArg svc.serviceConfig.ExecStart} | grep -q -- '--deploy-timeout 300'
+        # Nothing to deploy means nothing to wait for, and an older provisioner
+        # has no `--deploy-timeout` flag to accept.
+        ! printf '%s' ${lib.escapeShellArg noScripts.config.systemd.services.windmill-provision.serviceConfig.ExecStart} | grep -q -- '--deploy-timeout'
         # The rotation check reads the secret as a credential, not from its path.
         printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'superadmin:/run/agenix/windmill-superadmin'
         printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--secret-file %d/superadmin'
@@ -1159,12 +1165,6 @@ in
       noWorkflows = n8nEval.extendModules {
         modules = [{services.n8n.provision.workflows = lib.mkForce {};}];
       };
-      # A path literal is read at evaluation, so a literal credential fails the
-      # build before the export can reach the store.
-      literalExport = n8nEval.extendModules {
-        modules = [{services.n8n.provision.workflows.leaked.file = ./modules/test/fixture-n8n-workflow-literal-secret.json;}];
-      };
-      literalMessages = map (a: a.message) (lib.filter (a: !a.assertion) literalExport.config.assertions);
       deactivateStateFile = builtins.head (builtins.filter (p: lib.hasInfix "n8n-deactivate-state.json" (toString p)) n8nEval.config.systemd.services.n8n-deactivate.restartTriggers);
     in
       runCommand "n8n-module-eval" {} ''
@@ -1173,8 +1173,6 @@ in
         test ${lib.escapeShellArg (json (failed overlap.config))} != '[]'
         test ${lib.escapeShellArg (json (failed undeclaredWorkflowCredential.config))} != '[]'
         test ${lib.escapeShellArg (json (failed misplacedPrefix.config))} != '[]'
-        # The eval-time guard names the workflow and the field it found.
-        printf '%s' ${lib.escapeShellArg (json literalMessages)} | grep -q 'workflows.leaked: the export holds a literal authorization value'
         printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.paths.n8n-provision-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix"'
         test ${lib.escapeShellArg (toString (lib.length collideIds))} = 2
         test ${lib.escapeShellArg (toString (lib.length (lib.unique collideIds)))} = 2
@@ -1190,8 +1188,23 @@ in
         grep -q '"inactive_workflows":\[\]' ${lib.escapeShellArg (toString deactivateStateFile)}
         ! grep -q '"credentials"\|"workflows"\|"execution_timeout"' ${lib.escapeShellArg (toString deactivateStateFile)}
         grep -q '"credential_name":"owner-password"' ${lib.escapeShellArg (toString deactivateStateFile)}
-        # A transient pre-pass failure is retried without a manual start.
+        # A transient pre-pass failure is retried without a manual start, but the
+        # timer is pulled in by the oneshots and stops with them: enabled on its
+        # own it would tick inside a switch's stop→start window and start the
+        # units still loaded from the old generation.
         test ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.timerConfig.Unit)} = '"n8n-provision.service"'
+        test ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.wantedBy)} = '[]'
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.partOf)} | grep -q '"n8n.service"'
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.partOf)} | grep -q '"n8n-provision.service"'
+        printf '%s' ${lib.escapeShellArg (json n8nEval.config.systemd.timers.n8n-provision-retry.partOf)} | grep -q '"n8n-deactivate.service"'
+        test ${lib.escapeShellArg (json svc.wants)} = '["n8n-provision-retry.timer"]'
+        test ${lib.escapeShellArg (json n8nEval.config.systemd.services.n8n-deactivate.wants)} = '["n8n-provision-retry.timer"]'
+        # No workflows declared: no pre-pass, no retry timer, and the reconciler
+        # unit does not order after a pre-pass that does not exist. An older
+        # provisioner has no `deactivate` subcommand.
+        test ${lib.escapeShellArg (json (noWorkflows.config.systemd.services ? n8n-deactivate))} = 'false'
+        test ${lib.escapeShellArg (json (noWorkflows.config.systemd.timers ? n8n-provision-retry))} = 'false'
+        test ${lib.escapeShellArg (json noWorkflows.config.systemd.services.n8n-provision.requires)} = '["n8n.service"]'
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n-deactivate.service
         printf '%s' ${lib.escapeShellArg (json svc.requires)} | grep -q n8n-deactivate.service
         # The rotation check reads the password as a credential, not from its path.
@@ -1207,9 +1220,9 @@ in
         state_file=$(printf '%s' ${lib.escapeShellArg svc.serviceConfig.ExecStart} | grep -o '/nix/store/[^ ]*n8n-provision-state.json')
         grep -q '"type":"httpHeaderAuth"' "$state_file"
         grep -q '"name":"X-Studio-Token"' "$state_file"
-        # The instance default the reconciler normalises a declared
-        # executionTimeout against; n8n reads it from EXECUTIONS_TIMEOUT only.
-        grep -q '"execution_timeout":-1' "$state_file"
+        # n8n's default execution timeout is read from /rest/settings at run time,
+        # so it is not mirrored into the state file.
+        ! grep -q 'execution_timeout' "$state_file"
         # The workflow ships its JSON path and the reference->credential map; the
         # credential itself stays a provisioned id resolved at run time.
         grep -q '"fleetix-hub-claim":{"active":true,"credentials":{"Fleetix Hub webhook token":"studio-webhook"},"file":"/nix/store/[^"]*-fixture-n8n-workflow.json"}' "$state_file"

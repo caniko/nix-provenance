@@ -137,6 +137,18 @@ impl N8n {
         Ok(workflow_index(body))
     }
 
+    /// n8n's effective default `executionTimeout` (its `EXECUTIONS_TIMEOUT`, `-1`
+    /// when unset), the value it deletes from a saved workflow's settings. Its
+    /// own default stands in when the instance reports no figure.
+    pub fn execution_timeout_default(&self) -> Result<i64> {
+        let resp = self
+            .http
+            .get(format!("{}/rest/settings", self.base))
+            .send()?;
+        let body: Value = provenance_core::http::json_ok(resp, "settings")?;
+        Ok(unwrap_data(body)["executionTimeout"].as_i64().unwrap_or(-1))
+    }
+
     /// One workflow with its nodes, connections, settings, `active` flag and
     /// `versionId`.
     pub fn workflow(&self, id: &str) -> Result<Value> {
