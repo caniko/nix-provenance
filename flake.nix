@@ -263,6 +263,7 @@
         fj = import ./nix/modules/home/fj.nix {inherit self;};
         stalwart-oauth-bootstrap = import ./nix/modules/home/stalwart-oauth-bootstrap.nix {inherit self;};
         github = import ./nix/modules/home/github.nix {inherit self;};
+        antigravity = import ./nix/modules/home/antigravity.nix {inherit self;};
       };
 
       # Crossbow consumers build this package on Atlas and select it through
