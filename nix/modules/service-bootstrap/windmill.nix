@@ -475,7 +475,9 @@ in {
     systemd.paths.windmill-rotate = {
       wantedBy = ["multi-user.target"];
       pathConfig = {
-        PathChanged = watchPaths ([cfg.superadminSecretFile] ++ map (u: u.passwordFile) (lib.attrValues cfg.users) ++ variableFiles);
+        # The marker directory is never watched as a parent: the dispatcher
+        # deleting its own marker would otherwise re-mark forever.
+        PathChanged = lib.filter (p: p != rotateDir) (watchPaths ([cfg.superadminSecretFile] ++ map (u: u.passwordFile) (lib.attrValues cfg.users) ++ variableFiles));
         Unit = "windmill-rotate-mark.service";
       };
     };
