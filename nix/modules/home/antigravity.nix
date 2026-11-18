@@ -34,7 +34,9 @@ _: {
         echo "antigravity: $token is not an agy Google token file" >&2
         exit 1
       }
-      for profile in ${lib.escapeShellArgs cfg.profileDirectories}; do
+      # An array: a one-word literal list fails shellcheck (SC2043).
+      profiles=(${lib.escapeShellArgs cfg.profileDirectories})
+      for profile in "''${profiles[@]}"; do
         target="$profile/antigravity-acp/acp_token.json"
         install -d -m 700 "$profile/antigravity-acp"
         cmp -s "$token" "$target" && continue
