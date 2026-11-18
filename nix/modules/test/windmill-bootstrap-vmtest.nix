@@ -385,5 +385,16 @@ pkgs.testers.nixosTest {
         )
         machine.wait_for_unit("windmill-provision.service")
         machine.fail("journalctl -b --no-pager | grep -q 'windmill-provision.service: Start request repeated too quickly'")
+
+    with subtest("a superadmin rotation during a running reconcile is not lost"):
+        # A password change starts a pass; the superadmin write lands while that
+        # pass still runs, so its path event would be dropped without the marker.
+        machine.succeed("printf 'mid-can-password' > /var/lib/fixture/can")
+        machine.succeed("printf 'mid-superadmin-secret' > /var/lib/fixture/superadmin")
+        machine.wait_until_succeeds(
+            f"curl -sf -H 'Authorization: Bearer mid-superadmin-secret' {api}/users/whoami"
+        )
+        machine.wait_until_succeeds("! test -e /run/windmill-rotate/pending")
+        machine.wait_for_unit("windmill-provision.service")
   '';
 }

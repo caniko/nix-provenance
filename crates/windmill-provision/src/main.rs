@@ -41,8 +41,8 @@ enum Command {
         #[arg(long)]
         stamp: PathBuf,
     },
-    /// Exit 0 only when the secret differs from the digest recorded at the last
-    /// start (ExecCondition of the rotation restart; exit 1 skips it).
+    /// Exit 0 when the secret differs from the digest recorded at the last
+    /// start, 1 when it is unchanged, 2 when the comparison failed.
     Changed {
         #[arg(long)]
         secret_file: PathBuf,
@@ -91,11 +91,17 @@ fn main() -> Result<()> {
             out,
             stamp,
         } => write_env(&secret_file, &out, &stamp),
+        // 0 = changed, 1 = unchanged, 2 = the comparison failed: a caller must
+        // not read an unreadable or empty secret as "unchanged".
         Command::Changed { secret_file, stamp } => {
-            if provenance_core::stamp::secret_unchanged(&secret_file, &stamp)? {
-                std::process::exit(1);
+            match provenance_core::stamp::secret_unchanged(&secret_file, &stamp) {
+                Ok(true) => std::process::exit(1),
+                Ok(false) => Ok(()),
+                Err(err) => {
+                    eprintln!("error: {err:#}");
+                    std::process::exit(2);
+                }
             }
-            Ok(())
         }
         Command::LockDefaultAdmin {
             state,
