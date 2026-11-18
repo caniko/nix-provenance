@@ -13,7 +13,10 @@
 
   stateDir = "/var/lib/windmill-provision";
   envFile = "/run/windmill-provision/env";
-  rotateDir = "/run/windmill-rotate";
+  # Dispatcher state only, never a credential input: a credential directory
+  # is watched as a parent (agenix swaps), and deleting an entry one level
+  # below it does not wake that watch, so the marker sits in a subdirectory.
+  rotateDir = "/run/windmill-rotate/dispatch";
   superadminCredential = "superadmin";
   lockOrder = lib.optional cfg.disableDefaultAdmin "windmill-lock-default-admin.service";
 
@@ -471,13 +474,11 @@ in {
     # anything else restarts provisioning. `systemctl` blocks until each job
     # finishes. Bursts of writes are normal, so none of these units has a start
     # limit; the path units keep systemd's own trigger limit.
-    systemd.tmpfiles.rules = ["d ${rotateDir} 0700 root root -"];
+    systemd.tmpfiles.rules = ["d ${dirOf rotateDir} 0700 root root -" "d ${rotateDir} 0700 root root -"];
     systemd.paths.windmill-rotate = {
       wantedBy = ["multi-user.target"];
       pathConfig = {
-        # The marker directory is never watched as a parent: the dispatcher
-        # deleting its own marker would otherwise re-mark forever.
-        PathChanged = lib.filter (p: p != rotateDir) (watchPaths ([cfg.superadminSecretFile] ++ map (u: u.passwordFile) (lib.attrValues cfg.users) ++ variableFiles));
+        PathChanged = watchPaths ([cfg.superadminSecretFile] ++ map (u: u.passwordFile) (lib.attrValues cfg.users) ++ variableFiles);
         Unit = "windmill-rotate-mark.service";
       };
     };

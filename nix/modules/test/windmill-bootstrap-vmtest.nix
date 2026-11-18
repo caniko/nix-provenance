@@ -402,13 +402,13 @@ pkgs.testers.nixosTest {
         machine.wait_until_succeeds(
             f"curl -sf -H 'Authorization: Bearer mid-superadmin-secret' {api}/users/whoami", timeout=180
         )
-        machine.wait_until_succeeds("! test -e /run/windmill-rotate/pending")
+        machine.wait_until_succeeds("! test -e /run/windmill-rotate/dispatch/pending")
         machine.wait_for_unit("windmill-provision.service")
 
     with subtest("a burst of writes keeps every watcher armed"):
         for i in range(8):
             machine.succeed(f"printf 'burst-{i}' > /var/lib/fixture/can && sleep 0.25")
-        machine.wait_until_succeeds("! test -e /run/windmill-rotate/pending")
+        machine.wait_until_succeeds("! test -e /run/windmill-rotate/dispatch/pending")
         for unit in ["windmill-rotate.path", "windmill-rotate-pending.path"]:
             machine.succeed(f"systemctl is-active {unit}")
         machine.succeed("printf 'after-burst-password' > /var/lib/fixture/can")

@@ -1119,10 +1119,13 @@ in
         # One watcher for every input: separate ones restart the oneshot over each other.
         test ${lib.escapeShellArg (json (lib.filter (n: lib.hasPrefix "windmill-" n && lib.hasSuffix "rotate" n) (lib.attrNames windmillEval.config.systemd.paths)))} = '["windmill-rotate"]'
         printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.services.windmill-rotate-pass.after)} | grep -q windmill-provision.service
-        # A credential kept in the marker directory is watched, the directory is not.
-        rotate_watch=${lib.escapeShellArg (json (ext {services.windmill.provision.users.can.passwordFile = lib.mkForce "/run/windmill-rotate/can";}).config.systemd.paths.windmill-rotate.pathConfig.PathChanged)}
-        printf '%s' "$rotate_watch" | grep -q '"/run/windmill-rotate/can"'
-        ! printf '%s' "$rotate_watch" | grep -q '"/run/windmill-rotate"'
+        # The marker lives one level below every watched directory, even when a
+        # credential sits in /run/windmill-rotate (its parent stays watched).
+        ${assert (let
+          watch = (ext {services.windmill.provision.users.can.passwordFile = lib.mkForce "/run/windmill-rotate/can";}).config.systemd.paths.windmill-rotate.pathConfig.PathChanged;
+          marker = windmillEval.config.systemd.paths.windmill-rotate-pending.pathConfig.PathExists;
+        in
+          lib.elem "/run/windmill-rotate" watch && !(lib.elem (dirOf marker) watch)); ""}
         # The dispatcher loads no credential; a missing file fails only one pass.
         test ${lib.escapeShellArg (json (windmillEval.config.systemd.services.windmill-rotate.serviceConfig.LoadCredential or null))} = null
         ${lib.concatMapStrings (u: "test ${lib.escapeShellArg (toString windmillEval.config.systemd.services.${u}.unitConfig.StartLimitIntervalSec)} = 0\n") ["windmill-rotate-mark" "windmill-rotate" "windmill-rotate-pass" "windmill-provision"]}
