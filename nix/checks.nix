@@ -1005,7 +1005,7 @@ in
       server = windmillEval.config.systemd.services.windmill-server;
       svc = windmillEval.config.systemd.services.windmill-provision;
       lock = windmillEval.config.systemd.services.windmill-lock-default-admin;
-      rotate = windmillEval.config.systemd.services.windmill-rotate;
+      rotate = windmillEval.config.systemd.services.windmill-rotate-pass;
       json = builtins.toJSON;
       failed = c: lib.filter (m: lib.hasPrefix "services.windmill.provision" m) (map (a: a.message) (lib.filter (a: !a.assertion) c.assertions));
       ext = m: windmillEval.extendModules {modules = [m];};
@@ -1118,6 +1118,10 @@ in
         printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.paths.windmill-rotate.pathConfig.PathChanged)} | grep -q '"/run/agenix/windmill-hub-token"'
         # One watcher for every input: separate ones restart the oneshot over each other.
         test ${lib.escapeShellArg (json (lib.filter (n: lib.hasPrefix "windmill-" n && lib.hasSuffix "rotate" n) (lib.attrNames windmillEval.config.systemd.paths)))} = '["windmill-rotate"]'
+        printf '%s' ${lib.escapeShellArg (json windmillEval.config.systemd.services.windmill-rotate-pass.after)} | grep -q windmill-provision.service
+        # The dispatcher loads no credential; a missing file fails only one pass.
+        test ${lib.escapeShellArg (json (windmillEval.config.systemd.services.windmill-rotate.serviceConfig.LoadCredential or null))} = null
+        ${lib.concatMapStrings (u: "test ${lib.escapeShellArg (toString windmillEval.config.systemd.services.${u}.unitConfig.StartLimitIntervalSec)} = 0\n") ["windmill-rotate-mark" "windmill-rotate" "windmill-rotate-pass" "windmill-provision"]}
         touch $out
       '';
 

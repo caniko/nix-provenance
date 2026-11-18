@@ -428,6 +428,10 @@ in {
       partOf = ["windmill-server.service"];
       wantedBy = ["multi-user.target"];
       restartTriggers = [stateFile];
+      # Only events start it (boot, switches, the rotation dispatcher; it has no
+      # Restart=), so a burst of rotations must not trip systemd's start limit
+      # and leave the last secret unapplied.
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -456,12 +460,17 @@ in {
     #
     # Capture is split from work: systemd drops a path event that arrives while
     # the triggered unit still runs, so the watcher only drops a pending marker
-    # (instant, watches re-armed at once) and a PathExists unit starts the
-    # worker, which clears the marker before each pass and loops until none is
-    # left. A real superadmin change restarts the server (its env file is
-    # rendered at start) and then starts provisioning explicitly, since PartOf
-    # restarts an active oneshot but not a failed one; anything else restarts
-    # provisioning. `systemctl` blocks until each job finishes.
+    # (instant, watches re-armed at once). A PathExists unit starts a
+    # credential-free dispatcher that consumes the marker and runs one pass per
+    # marker it finds; each pass is its own oneshot, so it loads the superadmin
+    # credential fresh (a rotation that lands mid-pass is compared on the next
+    # pass, not against a stale copy) and a briefly missing file fails only that
+    # pass, never the watchers. A real superadmin change restarts the server
+    # (its env file is rendered at start) and then starts provisioning
+    # explicitly, since PartOf restarts an active oneshot but not a failed one;
+    # anything else restarts provisioning. `systemctl` blocks until each job
+    # finishes. Bursts of writes are normal, so none of these units has a start
+    # limit; the path units keep systemd's own trigger limit.
     systemd.tmpfiles.rules = ["d ${rotateDir} 0700 root root -"];
     systemd.paths.windmill-rotate = {
       wantedBy = ["multi-user.target"];
@@ -472,6 +481,7 @@ in {
     };
     systemd.services.windmill-rotate-mark = {
       description = "Record a pending Windmill secret rotation";
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${pkgs.coreutils}/bin/touch ${rotateDir}/pending";
@@ -485,26 +495,45 @@ in {
       };
     };
     systemd.services.windmill-rotate = {
+      description = "Dispatch pending Windmill secret rotations";
+      unitConfig.StartLimitIntervalSec = 0;
+      serviceConfig = {
+        Type = "oneshot";
+        # A failed pass is logged by its own unit; the next write retries.
+        ExecStart = pkgs.writeShellScript "windmill-rotate" ''
+          set -u
+          while [ -e ${rotateDir}/pending ]; do
+            # Debounce: let a burst of writes (one agenix switch) settle so it
+            # costs one pass, not one per file.
+            ${pkgs.coreutils}/bin/sleep 1
+            ${pkgs.coreutils}/bin/rm -f ${rotateDir}/pending
+            ${config.systemd.package}/bin/systemctl start windmill-rotate-pass.service || true
+          done
+        '';
+      };
+    };
+    systemd.services.windmill-rotate-pass = {
       description = "Re-run Windmill provisioning, or restart Windmill, after a secret file rotates";
+      # Boot writes the inputs too: a pass queued while the first provisioning
+      # run is still starting waits for it instead of killing it mid-run.
+      after = ["windmill-server.service" "windmill-provision.service"];
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         LoadCredential = ["${superadminCredential}:${cfg.superadminSecretFile}"];
         # `changed` exits 0 on a real superadmin change, 1 when it is unchanged
         # (an agenix switch that leaves its content alone) and 2 when the
-        # comparison failed, which fails the unit without touching the services.
-        ExecStart = pkgs.writeShellScript "windmill-rotate" ''
+        # comparison failed, which fails the pass without touching the services.
+        ExecStart = pkgs.writeShellScript "windmill-rotate-pass" ''
           set -u
           systemctl=${config.systemd.package}/bin/systemctl
-          while [ -e ${rotateDir}/pending ]; do
-            rm -f ${rotateDir}/pending
-            status=0
-            ${exe} changed --secret-file "$CREDENTIALS_DIRECTORY/${superadminCredential}" --stamp /run/windmill-provision/superadmin.sha || status=$?
-            case "$status" in
-              0) $systemctl restart windmill-server.service && $systemctl start windmill-provision.service ;;
-              1) $systemctl restart windmill-provision.service ;;
-              *) exit "$status" ;;
-            esac
-          done
+          status=0
+          ${exe} changed --secret-file "$CREDENTIALS_DIRECTORY/${superadminCredential}" --stamp /run/windmill-provision/superadmin.sha || status=$?
+          case "$status" in
+            0) $systemctl restart windmill-server.service && exec $systemctl start windmill-provision.service ;;
+            1) exec $systemctl restart windmill-provision.service ;;
+            *) exit "$status" ;;
+          esac
         '';
       };
     };

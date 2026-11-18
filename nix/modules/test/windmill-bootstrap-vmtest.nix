@@ -387,14 +387,34 @@ pkgs.testers.nixosTest {
         machine.fail("journalctl -b --no-pager | grep -q 'windmill-provision.service: Start request repeated too quickly'")
 
     with subtest("a superadmin rotation during a running reconcile is not lost"):
-        # A password change starts a pass; the superadmin write lands while that
-        # pass still runs, so its path event would be dropped without the marker.
+        # Hold the password-triggered pass in provisioning so the superadmin
+        # write provably lands mid-pass; it must be compared on a fresh pass.
+        machine.succeed(
+            "mkdir -p /run/systemd/system/windmill-provision.service.d"
+            " && printf '[Service]\\nExecStartPre=/run/current-system/sw/bin/sleep 8\\n'"
+            " > /run/systemd/system/windmill-provision.service.d/hold.conf"
+            " && systemctl daemon-reload"
+        )
         machine.succeed("printf 'mid-can-password' > /var/lib/fixture/can")
+        machine.wait_until_succeeds("systemctl show -p ActiveState --value windmill-rotate-pass.service | grep -qx activating")
         machine.succeed("printf 'mid-superadmin-secret' > /var/lib/fixture/superadmin")
+        machine.succeed("rm /run/systemd/system/windmill-provision.service.d/hold.conf && systemctl daemon-reload")
         machine.wait_until_succeeds(
-            f"curl -sf -H 'Authorization: Bearer mid-superadmin-secret' {api}/users/whoami"
+            f"curl -sf -H 'Authorization: Bearer mid-superadmin-secret' {api}/users/whoami", timeout=180
         )
         machine.wait_until_succeeds("! test -e /run/windmill-rotate/pending")
         machine.wait_for_unit("windmill-provision.service")
+
+    with subtest("a burst of writes keeps every watcher armed"):
+        for i in range(8):
+            machine.succeed(f"printf 'burst-{i}' > /var/lib/fixture/can && sleep 0.25")
+        machine.wait_until_succeeds("! test -e /run/windmill-rotate/pending")
+        for unit in ["windmill-rotate.path", "windmill-rotate-pending.path"]:
+            machine.succeed(f"systemctl is-active {unit}")
+        machine.succeed("printf 'after-burst-password' > /var/lib/fixture/can")
+        machine.wait_until_succeeds(
+            f"curl -sf -X POST {api}/auth/login -H 'content-type: application/json' "
+            "-d '{\"email\":\"can@example.test\",\"password\":\"after-burst-password\"}'"
+        )
   '';
 }
