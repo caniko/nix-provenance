@@ -46,7 +46,7 @@ a bounded localhost HTTP fixture. It covers request/authentication policy,
 missing invitations, missing/drifted pinned aliases, unsuitable state,
 invitation errors, logout on failure and legacy admin-room behavior.
 
-The separate `checks.x86_64-linux.tuwunel-private-rooms-vmtest` boots a
+The separate `nixosTests.x86_64-linux.tuwunel-private-rooms-vmtest` boots a
 disposable Tuwunel instance through the actual NixOS provisioner unit. Synthetic
 credentials are test-only. The server fixture checks initial encryption before
 the first human invitation, both owners' isolated rooms, Can's join, repeated
@@ -60,12 +60,11 @@ Qualify these exact outputs on the producer's hosted PR:
 - `.#checks.x86_64-linux.tuwunel-provision-test`
 - `.#checks.x86_64-linux.tuwunel-provision-clippy`
 - `.#checks.x86_64-linux.tuwunel-module-eval`
-- `.#checks.x86_64-linux.tuwunel-private-rooms-vmtest`
+- `.#nixosTests.x86_64-linux.tuwunel-private-rooms-vmtest`
 
 Those installables are declared in `[ci].nix_builds` in `simit.toml`, retaining
-per-crate CI. The committed workflows were generated using native Simit 0.19.0
-at `d76c7ce0e34c0e3fa90ab0fe6010f190f49aba50` (merged PR #30), through the
-generator checkout's approved direnv environment. The matrix policy is:
+per-crate CI. Use Simit `4c6841cce19327927ea8a8f6e856276dd5c878f0`
+to regenerate the primary workflows. The matrix policy is:
 
 ```toml
 [ci.nix_build]
@@ -84,8 +83,8 @@ Generate and verify through a clean Simit checkout at that revision. Replace
 repository:
 
 ```sh
-direnv exec /path/to/simit cargo run --manifest-path /path/to/simit/Cargo.toml -- init ci --workspace
-direnv exec /path/to/simit cargo run --manifest-path /path/to/simit/Cargo.toml -- init ci --workspace --check --diff
+direnv exec /path/to/simit cargo run --manifest-path /path/to/simit/Cargo.toml -- init ci --workspace --primary-only
+direnv exec /path/to/simit cargo run --manifest-path /path/to/simit/Cargo.toml -- init ci --workspace --primary-only --check --diff
 ```
 
 Use `--workspace`: package-only generation reconciles the managed workflow

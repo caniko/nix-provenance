@@ -162,12 +162,30 @@
         inherit packages;
 
         checks = import ./nix/checks.nix {
-          inherit pkgs nixpkgs nixpkgs-windmill craneLib src self system;
+          inherit pkgs nixpkgs craneLib src self system;
           inherit lib;
           inherit packages;
           inherit (crates) args cargoArtifacts;
           inherit identityCrossPackageSet;
           docs = docsPackage;
+        };
+
+        # Build VM tests only through the KVM-enabled Simit matrix, not `nix flake check`.
+        nixosTests = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          stalwart016-vmtest = import ./nix/modules/test/stalwart016-vmtest.nix {inherit pkgs self;};
+          stalwart016-proxy-vmtest = import ./nix/modules/test/stalwart016-proxy-vmtest.nix {inherit pkgs self;};
+          tuwunel-private-rooms-vmtest = import ./nix/modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};
+          n8n-bootstrap-vmtest = import ./nix/modules/test/n8n-bootstrap-vmtest.nix {inherit pkgs self;};
+          windmill-bootstrap-vmtest = import ./nix/modules/test/windmill-bootstrap-vmtest.nix {inherit pkgs self;};
+          # Test Atlas's Windmill 1.839.0 too, including a tagged worker that locks the Bun script.
+          windmill-bootstrap-atlas-vmtest = import ./nix/modules/test/windmill-bootstrap-vmtest.nix {
+            inherit pkgs self;
+            windmillPackage = (import nixpkgs-windmill {inherit system;}).windmill;
+            scriptLanguage = "bun";
+            scriptTag = "hub";
+            runWorker = true;
+            nameSuffix = "-atlas";
+          };
         };
 
         devShells.default = harbor-rs.lib.mkDevShell {
