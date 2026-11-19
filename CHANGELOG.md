@@ -52,6 +52,9 @@
 
 ### Fixed
 
+- Keep GitHub's shared `nix flake check` from running KVM tests alongside crate
+  builds. The same VM tests now run in the Nix matrix and can be built locally
+  via `.#nixosTests.x86_64-linux.<test>`.
 - n8n provisioning retries a transient failure on its own: a failed
   `Requires=` dependency makes systemd cancel the reconciling job before the
   unit runs, so `Restart=` on either oneshot never sees it and the pair stayed
