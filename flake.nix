@@ -9,7 +9,7 @@
     # default nixpkgs because the tenant writes Windmill's `password` table.
     nixpkgs-windmill.url = "github:NixOS/nixpkgs/02c087f3fe673c9e317f206a627cb6b910336dbe";
     harbor-rs = {
-      url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=ed89d0b13fc61dd1b2217bf4bba97f32cec27ba7";
+      url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=3017b628b3a0603c2ebf7347a46951e8457ad414";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # rust-overlay and crane are re-exported by harbor-rs; follow them through.
