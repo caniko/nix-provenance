@@ -303,7 +303,18 @@ in
     # The Antigravity token reaches each profile as a private copy, never through argv.
     antigravity-google-auth-eval = let
       tokenFile = "/tmp/nix-provenance-antigravity-google-token";
-      evaluate = profileDirectories:
+      stateDirectory = "/tmp/nix-provenance-antigravity-state";
+      fakeHelper = pkgs.writeShellScriptBin "provenance-oauth" ''
+        set -eu
+        test "$#" = 3 && test "$1" = --config && test "$2" = /etc/provenance/oauth/user-google.json && test "$3" = agy-token || exit 1
+        exec ${lib.getExe' pkgs.coreutils "cat"} ${stateDirectory}/state.json
+      '';
+      google = {
+        configFile = "/etc/provenance/oauth/user-google.json";
+        package = fakeHelper;
+        inherit stateDirectory;
+      };
+      evaluate = profileDirectories: tokenFile: enrollment:
         lib.evalModules {
           modules = [
             ({lib, ...}: {
@@ -319,6 +330,10 @@ in
                 type = lib.types.listOf lib.types.anything;
                 default = [];
               };
+              options.nix-provenance.oauth.accounts = lib.mkOption {
+                type = lib.types.attrs;
+                default = {};
+              };
             })
             (import ./modules/home/antigravity.nix {inherit self;})
             {
@@ -327,12 +342,17 @@ in
                 inherit tokenFile profileDirectories;
               };
             }
+            (lib.optionalAttrs (enrollment != null) {nix-provenance.oauth.accounts.google = enrollment;})
           ];
           specialArgs = {inherit pkgs;};
         };
-      evaluated = evaluate ["/tmp/nix-provenance-antigravity-a" "/tmp/nix-provenance-antigravity-b"];
+      profiles = ["/tmp/nix-provenance-antigravity-a" "/tmp/nix-provenance-antigravity-b"];
+      evaluated = evaluate profiles tokenFile null;
       # One profile, as T3 uses: its script must pass shellcheck too.
-      single = evaluate ["/tmp/nix-provenance-antigravity-a"];
+      single = evaluate [(builtins.head profiles)] tokenFile null;
+      enrolled = evaluate profiles null google;
+      enrollmentService = enrolled.config.systemd.user.services.nix-provenance-antigravity-google-auth;
+      enrollmentPath = enrolled.config.systemd.user.paths.nix-provenance-antigravity-google-auth;
       service = evaluated.config.systemd.user.services.nix-provenance-antigravity-google-auth;
       path = evaluated.config.systemd.user.paths.nix-provenance-antigravity-google-auth;
     in
@@ -341,6 +361,11 @@ in
       assert builtins.elem "agenix.service" service.Unit.After;
       assert path.Path.PathChanged == tokenFile;
       assert !(builtins.elem "agenix.service" (path.Unit.After or []));
+      assert lib.all (entry: entry.assertion) enrolled.config.assertions;
+      assert enrollmentService.Unit.ConditionPathExists == "${stateDirectory}/state.json";
+      assert enrollmentPath.Path.PathChanged == "${stateDirectory}/state.json";
+      assert !(lib.all (entry: entry.assertion) (evaluate profiles tokenFile google).config.assertions);
+      assert !(lib.all (entry: entry.assertion) (evaluate profiles null null).config.assertions);
         runCommand "antigravity-google-auth-eval" {} ''
           test -x ${single.config.systemd.user.services.nix-provenance-antigravity-google-auth.Service.ExecStart}
           exec_start=${service.Service.ExecStart}
@@ -364,11 +389,28 @@ in
           cmp -s ${lib.escapeShellArg tokenFile} "$b"
           test "$(stat -c %a "$a")" = 600
           test "$(stat -c %a "$(dirname "$a")")" = 700
-          # An unchanged token keeps agy's own copy in place.
-          inode=$(stat -c %i "$a")
-          "$exec_start"
-          test "$(stat -c %i "$a")" = "$inode"
-          touch $out
+           # agy can rewrite its private copy without changing the source.
+           printf '{"client_id":"id","client_secret":"secret","refresh_token":"test-refresh-token","access_token":"agy-fixture"}' > "$a"
+           inode=$(stat -c %i "$a")
+           "$exec_start"
+           test "$(stat -c %i "$a")" = "$inode"
+           grep -q 'agy-fixture' "$a"
+
+           enroll=${enrollmentService.Service.ExecStart}
+           mkdir -p ${stateDirectory}
+           printf '{"client_id":"id","client_secret":"secret","refresh_token":"store-fixture"}' > ${stateDirectory}/state.json
+           "$enroll"
+           cmp -s ${stateDirectory}/state.json "$a"
+           cmp -s ${stateDirectory}/state.json "$b"
+           test "$(stat -c %a "$a")" = 600
+           printf '{"client_id":"id","client_secret":"secret","refresh_token":"store-fixture","access_token":"agy-store-fixture"}' > "$a"
+           "$enroll"
+           grep -q 'agy-store-fixture' "$a"
+           # A stale grant saved back by a running agy is repaired on the next run.
+           printf '{"client_id":"id","client_secret":"secret","refresh_token":"stale"}' > "$a"
+           "$enroll"
+           cmp -s ${stateDirectory}/state.json "$a"
+           touch $out
         '';
 
     # Lint each crate against its isolated deps.
@@ -407,10 +449,16 @@ in
     oauth-module-eval = let
       svc = oauthEval.config.systemd.services.provenance-oauth-alice-openai;
       initial = oauthEval.config.systemd.services.provenance-oauth-alice-openai-initialize;
+      bindings = oauthEval.config.home-manager.users;
     in
       assert svc.serviceConfig.User == "alice";
       assert oauthEval.config.systemd.services.provenance-oauth-root-google.serviceConfig.User == "root";
       assert oauthEval.config.services.provenance.oauth.users.root.providers.google.profile == "drive-file";
+      assert lib.all (entry: entry.assertion || !(lib.hasPrefix "provenance OAuth:" entry.message)) oauthEval.config.assertions;
+      assert oauthEval.config.systemd.services.provenance-oauth-alice-google.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-google"];
+      assert !(bindings ? root);
+      assert bindings.alice.nix-provenance.oauth.accounts.google.configFile == oauthEval.config.services.provenance.oauth.manifests.alice.google;
+      assert bindings.alice.nix-provenance.oauth.accounts.google.stateDirectory == "/var/lib/provenance-oauth-alice-google";
       assert svc.serviceConfig.StateDirectoryMode == "0700";
       assert svc.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-openai"];
       assert !(lib.hasInfix "--initialize" svc.serviceConfig.ExecStart);

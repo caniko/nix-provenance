@@ -4,7 +4,11 @@
 
 ### Added
 
-- Google Drive device authorization and rclone configuration export; only rclone refreshes Google grants. Download the OAuth client JSON from Google Cloud Console Credentials, pass it to `authorize --client-file`, and delete it after enrollment.
+- Google Drive device authorization and rclone configuration export; rclone refreshes the Drive grant. Download the OAuth client JSON from Google Cloud Console Credentials, pass it to `authorize --client-file`, and delete it after enrollment.
+- `google/antigravity` enrolls agy's existing Google sign-in with
+  `authorize --token-file` and exports it with `agy-token`. Home Manager can
+  install profile copies from this enrollment instead of a legacy `tokenFile`,
+  leaving agy's rewritten copies alone until the source changes.
 - `services.windmill.provision.deployTimeoutSeconds` is the bound on one
   deployed version's lock generation job. Scripts deploy serially, so the
   reconcile unit's `TimeoutStartSec` is that budget times the number of declared

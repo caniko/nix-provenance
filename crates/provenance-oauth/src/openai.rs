@@ -187,6 +187,8 @@ fn into_grant(tokens: Tokens, previous: Option<&Grant>, now: u64) -> Result<Gran
         expires_at,
         account_id,
         client: None,
+        project_id: None,
+        scopes: None,
     };
     grant.validate()?;
     Ok(grant)
@@ -215,6 +217,8 @@ mod tests {
             expires_at: 123,
             account_id: "account".into(),
             client: None,
+            project_id: None,
+            scopes: None,
         };
         let tokens = Tokens {
             access_token: Secret("next-access-secret".into()),
@@ -237,6 +241,8 @@ mod tests {
             expires_at: 123,
             account_id: "account".into(),
             client: None,
+            project_id: None,
+            scopes: None,
         };
         let tokens = || Tokens {
             access_token: Secret("next".into()),

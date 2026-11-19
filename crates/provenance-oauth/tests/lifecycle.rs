@@ -43,6 +43,8 @@ fn enrollment(config: &Config, generation: u64) -> Enrollment {
             expires_at: 1,
             account_id: "chatgpt-account".into(),
             client: None,
+            project_id: None,
+            scopes: None,
         },
     }
 }
@@ -55,6 +57,8 @@ fn rotate(grant: &Grant) -> anyhow::Result<Grant> {
         expires_at: 9_000_000,
         account_id: grant.account_id.clone(),
         client: None,
+        project_id: None,
+        scopes: None,
     })
 }
 

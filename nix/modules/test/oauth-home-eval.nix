@@ -3,7 +3,7 @@
   self,
 }: let
   inherit (pkgs) lib;
-  evaluate = declared: enabled:
+  evaluate = declared: enabled: accounts:
     lib.evalModules {
       specialArgs = {inherit pkgs;};
       modules = [
@@ -28,13 +28,19 @@
                 };
               };
             };
-          config.nix-provenance.oauth.accounts.openai.configFile = "/etc/provenance/oauth/alice-openai.json";
+          config.nix-provenance.oauth = {inherit accounts;};
         })
       ];
     };
-  enabled = (evaluate true true).config;
-  disabled = (evaluate true false).config;
-  absent = (evaluate false false).config;
+  openai.openai.configFile = "/etc/provenance/oauth/alice-openai.json";
+  google.google = {
+    configFile = "/etc/provenance/oauth/alice-google.json";
+    stateDirectory = "/var/lib/provenance-oauth-alice-google";
+  };
+  enabled = (evaluate true true (openai // google)).config;
+  googleOnly = (evaluate true true google).config;
+  disabled = (evaluate true false openai).config;
+  absent = (evaluate false false openai).config;
   plugins = enabled.nix-provenance.oauth.opencodePlugins;
   extension = enabled.home.file.".omp/agent/extensions/provenance-oauth.ts".text;
 in
@@ -45,6 +51,9 @@ in
   assert lib.hasInfix "/bin/provenance-oauth" (builtins.head plugins).options.command;
   assert lib.hasInfix "omp.mjs" extension;
   assert lib.hasInfix "/etc/provenance/oauth/alice-openai.json" extension;
+  assert lib.all (item: item.assertion) googleOnly.assertions;
+  assert googleOnly.programs.opencode.settings.plugins == [];
+  assert googleOnly.home.file == {};
   assert disabled.nix-provenance.oauth.opencodePlugins == [];
   assert disabled.home.file == {};
   assert absent.nix-provenance.oauth.opencodePlugins == [];
