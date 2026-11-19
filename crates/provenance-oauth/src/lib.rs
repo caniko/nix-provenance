@@ -1,19 +1,25 @@
 //! OAuth lifecycle owned by nix-provenance. Consumer responses contain access
-//! credentials only for OpenAI; Google refreshes are owned by rclone.
+//! credentials only for OpenAI; Google consumers refresh their own grants.
 
 pub mod age_file;
 pub mod google;
 pub mod openai;
 pub mod state;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf, time::SystemTime};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-#[derive(Clone, Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Default, Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
 #[serde(transparent)]
 pub struct Secret(pub String);
+
+impl Secret {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -32,6 +38,14 @@ pub struct Target {
 }
 
 impl Target {
+    pub fn google_refresh_owner_message(&self) -> &'static str {
+        if self.profile == "antigravity" {
+            "google/antigravity grants are refreshed by agy"
+        } else {
+            "google grants are refreshed by their rclone consumer"
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         for value in [&self.host, &self.user, &self.account] {
             ensure!(
@@ -46,7 +60,7 @@ impl Target {
         ensure!(
             matches!(
                 (self.provider.as_str(), self.profile.as_str()),
-                ("openai", "chatgpt") | ("google", "drive-file")
+                ("openai", "chatgpt") | ("google", "drive-file" | "antigravity")
             ),
             "unsupported OAuth profile"
         );
@@ -84,12 +98,19 @@ impl Config {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Grant {
+    // Antigravity grants export only refresh credentials.
+    #[serde(default, skip_serializing_if = "Secret::is_empty")]
     pub access_token: Secret,
     pub refresh_token: Secret,
+    #[serde(default)]
     pub expires_at: u64,
     pub account_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<OAuthClient>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -103,16 +124,20 @@ impl OAuthClient {
     pub fn validate(&self) -> Result<()> {
         for value in [&self.client_id, &self.client_secret.0] {
             ensure!(
-                !value.is_empty()
-                    && value.len() <= 256
-                    && value
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)),
+                valid_google_credential(value, b"-_."),
                 "invalid Google client credentials"
             );
         }
         Ok(())
     }
+}
+
+fn valid_google_credential(value: &str, punctuation: &[u8]) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || punctuation.contains(&b))
 }
 
 impl Grant {
@@ -122,6 +147,10 @@ impl Grant {
             "OAuth grant is missing tokens"
         );
         ensure!(self.expires_at > 0, "OAuth grant is missing expiry");
+        self.validate_account_id()
+    }
+
+    fn validate_account_id(&self) -> Result<()> {
         ensure!(
             !self.account_id.is_empty()
                 && self.account_id.len() <= 256
@@ -131,7 +160,46 @@ impl Grant {
         Ok(())
     }
 
+    fn validate_antigravity_credentials(&self) -> Result<()> {
+        let client = self
+            .client
+            .as_ref()
+            .context("Google grant is missing client credentials")?;
+        client.validate()?;
+        ensure!(
+            client.client_id.ends_with(".apps.googleusercontent.com"),
+            "invalid Antigravity client ID"
+        );
+        // Google refresh tokens may use a `1//` prefix.
+        ensure!(
+            valid_google_credential(&self.refresh_token.0, b"-_./"),
+            "invalid Antigravity refresh token"
+        );
+        ensure!(
+            self.scopes.as_ref().is_some_and(|scopes| {
+                scopes
+                    .iter()
+                    .any(|scope| scope == "https://www.googleapis.com/auth/cloud-platform")
+            }),
+            "Antigravity token requires the cloud-platform scope"
+        );
+        Ok(())
+    }
+
     pub fn validate_for(&self, target: &Target) -> Result<()> {
+        if target.provider == "google" && target.profile == "antigravity" {
+            self.validate_antigravity_credentials()?;
+            self.validate_account_id()?;
+            ensure!(
+                self.access_token.is_empty() && self.expires_at == 0,
+                "Antigravity grant must not store an access token"
+            );
+            ensure!(
+                target.account == "default" || target.account == self.account_id,
+                "Antigravity Google account does not match the manifest account"
+            );
+            return Ok(());
+        }
         self.validate()?;
         match (&*target.provider, &self.client) {
             ("openai", None) => Ok(()),

@@ -84,6 +84,8 @@ fn agenix_handoff_is_resumable_and_contains_only_paths_in_argv() {
             expires_at: 1000,
             account_id: "account".into(),
             client: None,
+            project_id: None,
+            scopes: None,
         },
     };
     atomic_write(
@@ -250,6 +252,8 @@ fn expired_google_export_and_removal_do_not_refresh() {
                 client_id: "client".into(),
                 client_secret: Secret("secret".into()),
             }),
+            project_id: None,
+            scopes: None,
         },
     };
     let config_file = dir.path().join("config.json");

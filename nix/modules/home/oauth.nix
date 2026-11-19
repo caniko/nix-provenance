@@ -9,12 +9,13 @@
   adapter = self.packages.${pkgs.stdenv.hostPlatform.system}.oauth-adapters;
   openCodeEnabled = lib.attrByPath ["programs" "opencode" "enable"] false config;
   ompEnabled = lib.attrByPath ["programs" "omp" "enable"] false config;
+  openaiAccounts = lib.filterAttrs (provider: _: provider == "openai") cfg.accounts;
   bindings =
     lib.mapAttrsToList (_: value: {
       command = lib.getExe value.package;
       configFile = toString value.configFile;
     })
-    cfg.accounts;
+    openaiAccounts;
 in {
   options.nix-provenance.oauth = {
     accounts = lib.mkOption {
@@ -30,6 +31,11 @@ in {
             default = self.packages.${pkgs.stdenv.hostPlatform.system}.provenance-oauth;
             description = "OAuth access helper.";
           };
+          stateDirectory = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Runtime state directory from the Google Antigravity manifest, used to watch for enrollment changes.";
+          };
         };
       });
       description = "OAuth manifests supplied by the NixOS host module, or explicitly for standalone Home Manager.";
@@ -44,8 +50,8 @@ in {
     {
       assertions = [
         {
-          assertion = builtins.attrNames cfg.accounts == [] || builtins.attrNames cfg.accounts == ["openai"];
-          message = "provenance OAuth currently supports one openai/chatgpt account per local user.";
+          assertion = lib.all (provider: builtins.elem provider ["openai" "google"]) (builtins.attrNames cfg.accounts);
+          message = "provenance OAuth Home Manager bindings support openai/chatgpt and google/antigravity.";
         }
       ];
       nix-provenance.oauth.opencodePlugins = lib.optionals openCodeEnabled (map (binding: {
@@ -53,8 +59,8 @@ in {
           options = binding;
         })
         bindings);
-      home.packages = map (value: value.package) (builtins.attrValues cfg.accounts);
-      home.file = lib.optionalAttrs (ompEnabled && cfg.accounts != {}) {
+      home.packages = map (value: value.package) (builtins.attrValues openaiAccounts);
+      home.file = lib.optionalAttrs (ompEnabled && openaiAccounts != {}) {
         ".omp/agent/extensions/provenance-oauth.ts".text = ''
           import { install } from ${builtins.toJSON "${adapter}/share/provenance-oauth/omp.mjs"};
           export default function (pi) {

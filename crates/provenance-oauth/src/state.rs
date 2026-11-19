@@ -214,7 +214,8 @@ impl<'a> Store<'a> {
     ) -> Result<Access> {
         ensure!(
             self.config.target.provider == "openai",
-            "google grants are refreshed by their rclone consumer"
+            "{}",
+            self.config.target.google_refresh_owner_message()
         );
         let now = clock()?;
         let mut state = self.load()?;
@@ -286,11 +287,13 @@ impl<'a> Store<'a> {
             } else {
                 "enrolled"
             },
-            expires_at: state.grant.map(|grant| grant.expires_at),
+            expires_at: state
+                .grant
+                .and_then(|grant| (grant.expires_at > 0).then_some(grant.expires_at)),
         })?)
     }
 
-    /// The full Google grant for its rclone consumer. OpenAI refresh tokens
+    /// The full Google grant for rclone or agy. OpenAI refresh tokens
     /// never leave the store; they are only used through `access`.
     pub fn grant(&self) -> Result<Grant> {
         ensure!(

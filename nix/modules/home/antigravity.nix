@@ -1,7 +1,7 @@
-# Register an Antigravity Google sign-in from a shared agy token file, so each
+# Register an Antigravity Google sign-in from a shared grant, so each
 # profile starts signed in without a browser. agy refreshes its own access
 # tokens from this file and rewrites it on every launch, so each profile gets a
-# private writable copy; the agenix source stays the single grant.
+# private writable copy.
 _: {
   config,
   lib,
@@ -10,6 +10,9 @@ _: {
 }: let
   inherit (lib) mkEnableOption mkIf mkOption types;
   cfg = config.nix-provenance.antigravity.googleAuth;
+  account = config.nix-provenance.oauth.accounts.google or null;
+  stateDirectory = account.stateDirectory or null;
+  stateFile = "${toString stateDirectory}/state.json";
   unitName = "nix-provenance-antigravity-google-auth";
   # Runtime paths only: the token never enters the store, and `${XDG_RUNTIME_DIR}`
   # expands at run time as it does for the fj tokens.
@@ -27,21 +30,42 @@ _: {
     name = unitName;
     runtimeInputs = [pkgs.coreutils pkgs.diffutils pkgs.jq];
     text = ''
-      token=${shellPath (toString cfg.tokenFile)}
+      umask 077
+      work=$(mktemp -d)
+      staged=
+      trap 'if [ -n "$staged" ]; then rm -f -- "$staged"; fi; rm -f -- "$work/token" "$work/source"; rmdir -- "$work"' EXIT
+      token="$work/token"
+      ${
+        if account != null
+        then ''${lib.getExe account.package} --config ${lib.escapeShellArg (toString account.configFile)} agy-token > "$token"''
+        else ''cat -- ${shellPath (toString cfg.tokenFile)} > "$token"''
+      }
       # A token without a refresh grant would leave agy asking for a browser.
       jq -e 'type == "object" and all(.client_id, .client_secret, .refresh_token; type == "string" and length > 0)' \
-        "$token" >/dev/null || {
-        echo "antigravity: $token is not an agy Google token file" >&2
+        "$token" >/dev/null 2>&1 || {
+        echo "antigravity: source is not an agy Google token file" >&2
         exit 1
       }
+      sha256sum < "$token" > "$work/source"
       # An array: a one-word literal list fails shellcheck (SC2043).
       profiles=(${lib.escapeShellArgs cfg.profileDirectories})
       for profile in "''${profiles[@]}"; do
-        target="$profile/antigravity-acp/acp_token.json"
-        install -d -m 700 "$profile/antigravity-acp"
-        cmp -s "$token" "$target" && continue
-        install -m 600 "$token" "$target.tmp"
-        mv -f "$target.tmp" "$target"
+        dir="$profile/antigravity-acp"
+        target="$dir/acp_token.json"
+        marker="$dir/.provenance-token-source"
+        install -d -m 700 "$dir"
+        # Compare the source to the last install, not to agy's rewritten copy.
+        if [ -f "$target" ] && cmp -s "$work/source" "$marker"; then
+          continue
+        fi
+        staged=$(mktemp "$dir/.provenance-token.XXXXXXXX")
+        if ! cmp -s "$token" "$target"; then
+          install -m 600 "$token" "$staged"
+          mv -fT -- "$staged" "$target"
+        fi
+        install -m 600 "$work/source" "$staged"
+        mv -fT -- "$staged" "$marker"
+        staged=
       done
     '';
   };
@@ -52,7 +76,7 @@ in {
     tokenFile = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "Runtime agenix path holding agy's acp_token.json from one Google sign-in (client_id, client_secret, refresh_token, project_id). Its contents never enter Nix.";
+      description = "Legacy runtime agenix path holding agy's acp_token.json. Use instead of a google/antigravity enrollment, never alongside one. Its contents never enter Nix.";
     };
 
     profileDirectories = mkOption {
@@ -65,8 +89,16 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.tokenFile != null && literalPath cfg.tokenFile;
+        assertion = (cfg.tokenFile != null) != (account != null);
+        message = "nix-provenance.antigravity.googleAuth requires exactly one source: tokenFile or a google/antigravity enrollment.";
+      }
+      {
+        assertion = cfg.tokenFile == null || literalPath cfg.tokenFile;
         message = "nix-provenance.antigravity.googleAuth.tokenFile must be a literal runtime path outside the Nix store.";
+      }
+      {
+        assertion = account == null || (stateDirectory != null && lib.hasPrefix "/" stateDirectory && literalPath stateDirectory);
+        message = "The google/antigravity enrollment needs an absolute runtime stateDirectory outside the Nix store.";
       }
       {
         assertion = cfg.profileDirectories != [] && lib.all literalPath cfg.profileDirectories;
@@ -74,11 +106,20 @@ in {
       }
     ];
     systemd.user.services.${unitName} = {
-      Unit = {
-        Description = "Register the shared Antigravity Google sign-in";
-        Wants = ["agenix.service"];
-        After = ["agenix.service"];
-      };
+      Unit =
+        {
+          Description = "Register the shared Antigravity Google sign-in";
+        }
+        // (
+          if account != null
+          then {
+            ConditionPathExists = stateFile;
+          }
+          else {
+            Wants = ["agenix.service"];
+            After = ["agenix.service"];
+          }
+        );
       Service = {
         Type = "oneshot";
         ExecStart = lib.getExe script;
@@ -87,7 +128,10 @@ in {
     };
     systemd.user.paths.${unitName} = {
       Unit.Description = "Watch the shared Antigravity Google token";
-      Path.PathChanged = builtins.replaceStrings [runtimePrefix] ["%t"] (toString cfg.tokenFile);
+      Path.PathChanged =
+        if account != null
+        then stateFile
+        else builtins.replaceStrings [runtimePrefix] ["%t"] (toString cfg.tokenFile);
       Install.WantedBy = ["default.target"];
     };
   };

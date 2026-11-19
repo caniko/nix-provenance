@@ -2,10 +2,17 @@
 
 `provenance-oauth` authorizes a provider once for a Linux host and local user.
 Compatible applications obtain access credentials through supported plugin or
-command interfaces. The supported profiles are `openai/chatgpt` and
-`google/drive-file`.
+command interfaces. The supported profiles are `openai/chatgpt`,
+`google/drive-file`, and `google/antigravity`.
 
-## Google Drive and rclone
+## Google profiles
+
+Drive and Antigravity use separate grants. Antigravity's installed-app client
+cannot carry a Drive scope, and it does not support the Drive device flow.
+The NixOS module declares one Google profile per local user; for example, use
+`drive-file` for the `root` backup service and `antigravity` for your desktop user.
+
+### Drive and rclone
 
 Enable the Drive API in Google Cloud, configure the OAuth consent screen and
 publish it **In production** (external apps in Testing normally receive refresh
@@ -36,10 +43,42 @@ provenance-oauth --config /etc/provenance/oauth/root-google.json rclone-config -
 ```
 
 Point rclone at that file. It contains both client credentials and refresh
-token; keep it private and ephemeral. Only rclone refreshes Google grants;
-the helper never refreshes them and `access` is not supported for Google.
+token; keep it private and ephemeral. rclone refreshes the Drive grant itself.
+The helper's `access` command is OpenAI-only.
 The `drive.file` scope only grants access to files created or explicitly shared
 with this app, not arbitrary pre-existing Drive files.
+
+### Antigravity and agy
+
+Sign in through agy's browser flow once. Use the resulting
+`antigravity-acp/acp_token.json` under that agy profile's `GEMINI_HOME` as a
+private input. Declare `services.provenance.oauth.users.can.providers.google`
+with `profile = "antigravity"`, a runtime agenix `enrollmentFile`, and recovery
+recipients. Enroll from the fleet checkout:
+
+```sh
+"$helper" --config "$manifest" authorize atlas google --user can \
+  --profile antigravity --token-file "$agy_token" --secret "$secret" \
+  --pending-directory "$pending"
+```
+
+The helper checks the `cloud-platform` scope and uses a one-time token exchange
+to look up the Google account. It stores the refresh grant, not the access
+token. To pin a specific Google account, set the manifest's `account` to the
+expected Google subject (`sub`) and pass the same value as `--account`. As with
+Drive, resuming an existing pending transaction does not reread the input file.
+
+Deploy and initialize with `provenance-oauth-can-google-initialize.service` as
+described below. In Home Manager, import `homeModules.antigravity` and enable
+`nix-provenance.antigravity.googleAuth` with the desired `profileDirectories`.
+Integrated Home Manager receives the enrollment binding automatically. For
+standalone Home Manager, also import `homeModules.oauth` and set
+`nix-provenance.oauth.accounts.google.{configFile,package,stateDirectory}` to
+the public manifest, helper, and the state directory from the manifest.
+Unset the legacy `googleAuth.tokenFile` when switching to the enrollment; the
+installer accepts exactly one source. It calls `agy-token` at runtime and only
+replaces the private, mode-0600 profile copies when the source changes or a copy
+is missing. agy refreshes and rewrites its own copies independently.
 
 ## Ownership and lifecycle
 
@@ -57,15 +96,15 @@ The state directory is `/var/lib/provenance-oauth-USER-PROVIDER`, owned by the
 declared user with mode `0700`; state and lock files have mode `0600`. This is
 isolation between local users. Applications running as the same UID are trusted
 and can read that user's files. OpenAI adapters return only access tokens,
-account IDs, and expiry times. The Google rclone config includes a refresh token
-and client credentials so rclone can refresh independently.
+account IDs, and expiry times. The Google exports include a refresh token and
+client credentials so rclone and agy can refresh independently.
 
 An agenix enrollment is a bootstrap artifact, not the current token store:
 
 - A newer enrollment generation replaces live state. Older generations cannot
   replace it; reusing a generation with different contents is rejected.
 The refresh and checkpoint guarantees below apply to OpenAI, whose refresh
-tokens rotate. Google refresh tokens do not rotate and rclone refreshes them
+tokens rotate. Google refresh tokens do not rotate and consumers refresh them
 outside the store, so a Google checkpoint holds the enrolled grant, which stays
 valid until it is revoked.
 
@@ -197,9 +236,9 @@ until expiry; local removal does not revoke already issued provider tokens.
 
 Run `provenance-oauth --config MANIFEST remove` as the declared local user to
 stop new access requests and persist a tombstone. For Google, removal stops new
-`rclone-config` exports only: a config already rendered by a running consumer
-keeps refreshing until the grant is revoked in the Google account. Provider-wide
-revocation is a separate provider account operation. Reauthorization uses a newer enrollment.
+`rclone-config` or `agy-token` exports only. A consumer can keep refreshing with
+a copy already on disk until the grant is revoked in the Google account. Remove
+those private copies separately if needed. Reauthorization uses a newer enrollment.
 
 Back up the **current** `checkpoint.age` outside the host. A copy of the original
 agenix enrollment cannot recover rotated credentials. For missing live state,

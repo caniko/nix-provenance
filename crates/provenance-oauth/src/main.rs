@@ -1,8 +1,11 @@
 use anyhow::{Context, Result, ensure};
-use clap::{Parser, Subcommand};
+use clap::{
+    Parser, Subcommand,
+    builder::{PathBufValueParser, TypedValueParser},
+};
 use provenance_oauth::{
     Config, Enrollment, OAuthClient, Secret, Target,
-    google::Google,
+    google::{Google, write_agy_token},
     now,
     openai::OpenAi,
     state::{Store, atomic_write, read_json},
@@ -48,6 +51,9 @@ enum Action {
         /// Google OAuth client JSON downloaded from Cloud Console.
         #[arg(long)]
         client_file: Option<PathBuf>,
+        /// Antigravity acp_token.json from agy's browser sign-in.
+        #[arg(long, value_parser = PathBufValueParser::new().map(Box::new))]
+        token_file: Option<Box<PathBuf>>,
         /// Private operator-side transaction directory. Retries reuse enrollment.
         #[arg(long)]
         pending_directory: PathBuf,
@@ -86,6 +92,8 @@ enum Action {
         #[arg(long)]
         remote: String,
     },
+    /// Emit agy's Antigravity token JSON to a pipe.
+    AgyToken,
     /// Inspect enrollment metadata; never prints token values.
     Status,
     /// Revoke local consumption while retaining the generation tombstone.
@@ -156,6 +164,7 @@ fn run(cli: Cli) -> Result<()> {
         account,
         secret,
         client_file,
+        token_file,
         pending_directory,
         reauth,
         agenix,
@@ -173,10 +182,25 @@ fn run(cli: Cli) -> Result<()> {
                 },
             "requested target does not match the evaluated manifest"
         );
-        ensure!(
-            (config.target.provider == "google") == client_file.is_some(),
-            "--client-file is required for google and rejected for openai"
-        );
+        if config.target.profile == "antigravity" {
+            ensure!(
+                client_file.is_none(),
+                "--client-file is rejected for google/antigravity"
+            );
+            ensure!(
+                token_file.is_some(),
+                "--token-file is required for google/antigravity"
+            );
+        } else {
+            ensure!(
+                token_file.is_none(),
+                "--token-file is rejected outside google/antigravity"
+            );
+            ensure!(
+                (config.target.provider == "google") == client_file.is_some(),
+                "--client-file is required for google and rejected for openai"
+            );
+        }
         let pending_config = Config {
             state_directory: pending_directory,
             ..config.clone()
@@ -223,6 +247,13 @@ fn run(cli: Cli) -> Result<()> {
             };
             let grant = match config.target.provider.as_str() {
                 "openai" => OpenAi::new()?.authorize(prompt)?,
+                "google" if config.target.profile == "antigravity" => {
+                    let bytes = read_google_file(
+                        token_file.as_deref().context("missing --token-file")?,
+                        "Antigravity token",
+                    )?;
+                    Google::new()?.authorize_antigravity(&bytes, &config.target)?
+                }
                 "google" => {
                     let credentials =
                         read_client_file(client_file.as_deref().context("missing --client-file")?)?;
@@ -289,7 +320,13 @@ fn run(cli: Cli) -> Result<()> {
     // Refused before the lock: a Google access call must not create or wait on state.
     ensure!(
         !matches!(cli.command, Action::Access { .. }) || config.target.provider == "openai",
-        "google grants are refreshed by their rclone consumer"
+        "{}",
+        config.target.google_refresh_owner_message()
+    );
+    ensure!(
+        !matches!(cli.command, Action::AgyToken)
+            || (config.target.provider == "google" && config.target.profile == "antigravity"),
+        "agy-token requires google/antigravity"
     );
     let store = Store::lock(&config)?;
     match cli.command {
@@ -329,6 +366,15 @@ fn run(cli: Cli) -> Result<()> {
             let output = Zeroizing::new(rclone_config(&remote, &grant)?);
             std::io::stdout().lock().write_all(output.as_bytes())?;
         }
+        Action::AgyToken => {
+            ensure!(
+                !std::io::stdout().is_terminal(),
+                "Antigravity credentials must be consumed through a pipe"
+            );
+            let mut stdout = std::io::stdout().lock();
+            write_agy_token(store.grant()?, &mut stdout)?;
+            writeln!(stdout)?;
+        }
         Action::Status => println!("{}", store.status()?),
         Action::Remove => {
             store.remove()?;
@@ -343,23 +389,25 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn read_client_file(path: &Path) -> Result<OAuthClient> {
+fn read_google_file(path: &Path, kind: &str) -> Result<Zeroizing<Vec<u8>>> {
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(path)
-        .context("cannot open Google client file")?;
+        .with_context(|| format!("cannot open {kind} file"))?;
     let metadata = file.metadata()?;
     ensure!(
         metadata.is_file() && metadata.len() <= 64 * 1024,
-        "Google client file must be a bounded regular file"
+        "{kind} file must be a bounded regular file"
     );
     let mut bytes = Zeroizing::new(Vec::new());
     file.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= 64 * 1024,
-        "Google client file exceeds size limit"
-    );
+    ensure!(bytes.len() <= 64 * 1024, "{kind} file exceeds size limit");
+    Ok(bytes)
+}
+
+fn read_client_file(path: &Path) -> Result<OAuthClient> {
+    let bytes = read_google_file(path, "Google client")?;
     let document: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow::anyhow!("invalid Google client JSON"))?;
     let root = document.as_object().context("invalid Google client JSON")?;
@@ -510,6 +558,8 @@ mod tests {
                 client_id: "id".into(),
                 client_secret: Secret("secret".into()),
             }),
+            project_id: None,
+            scopes: None,
         };
         assert_eq!(
             rclone_config("gdrive", &grant).unwrap(),

@@ -14,6 +14,7 @@
   entries = lib.concatLists (lib.mapAttrsToList (user: value:
     lib.mapAttrsToList (provider: settings: let
       name = "provenance-oauth-${user}-${provider}";
+      stateDirectory = "/var/lib/${name}";
       manifest = pkgs.writeText "${name}.json" (builtins.toJSON {
         version = 1;
         target = {
@@ -21,11 +22,11 @@
           inherit user provider;
           inherit (settings) profile account;
         };
-        stateDirectory = "/var/lib/${name}";
+        inherit stateDirectory;
         inherit (settings) recoveryRecipients;
       });
     in {
-      inherit user provider settings name manifest;
+      inherit user provider settings name manifest stateDirectory;
     })
     value.providers)
   cfg.users);
@@ -42,7 +43,7 @@
     # First enrollment is explicit. A missing state file must never cause the
     # boot unit to replay a potentially rotated enrollment grant.
     unitConfig = lib.optionalAttrs (!initialize) {
-      ConditionPathExists = "/var/lib/${entry.name}/state.json";
+      ConditionPathExists = "${entry.stateDirectory}/state.json";
     };
     path = [pkgs.coreutils];
     serviceConfig = {
@@ -87,14 +88,14 @@ in {
           type = types.attrsOf (types.submodule {
             options = {
               profile = mkOption {
-                type = types.enum ["chatgpt" "drive-file"];
+                type = types.enum ["chatgpt" "drive-file" "antigravity"];
                 default = "chatgpt";
                 description = "Compatible provider authorization profile.";
               };
               account = mkOption {
                 type = types.str;
                 default = "default";
-                description = "Host-local enrollment account alias.";
+                description = "Host-local enrollment account alias. For google/antigravity, either default or the expected Google account subject.";
               };
               enrollmentFile = mkOption {
                 type = types.str;
@@ -127,7 +128,7 @@ in {
       assertions =
         lib.concatMap (entry: [
           {
-            assertion = (entry.provider == "openai" && entry.settings.profile == "chatgpt") || (entry.provider == "google" && entry.settings.profile == "drive-file");
+            assertion = (entry.provider == "openai" && entry.settings.profile == "chatgpt") || (entry.provider == "google" && builtins.elem entry.settings.profile ["drive-file" "antigravity"]);
             message = "provenance OAuth: unsupported provider/profile pair '${entry.provider}/${entry.settings.profile}'.";
           }
           {
@@ -162,12 +163,14 @@ in {
       home-manager.sharedModules = [(import ./home/oauth.nix {inherit self;})];
       home-manager.users = lib.foldl' (result: entry:
         lib.recursiveUpdate result {
-          ${entry.user}.nix-provenance.oauth.accounts.${entry.provider} = {
-            configFile = entry.manifest;
-            package = helper;
-          };
+          ${entry.user}.nix-provenance.oauth.accounts.${entry.provider} =
+            {
+              configFile = entry.manifest;
+              package = helper;
+            }
+            // lib.optionalAttrs (entry.provider == "google") {inherit (entry) stateDirectory;};
         }) {}
-      (lib.filter (entry: entry.provider == "openai") entries);
+      (lib.filter (entry: entry.provider == "openai" || (entry.provider == "google" && entry.settings.profile == "antigravity")) entries);
     })
   ];
 }
