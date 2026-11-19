@@ -5,7 +5,6 @@
   pkgs,
   lib,
   nixpkgs,
-  nixpkgs-windmill,
   craneLib,
   src,
   self,
@@ -48,30 +47,11 @@
   forgejoGeneratedEval = evalSystem ./modules/test/forgejo-generated-eval.nix;
   stalwartEval = evalSystem ./modules/test/stalwart-eval.nix;
   stalwart016Eval = evalSystem ./modules/test/stalwart016-eval.nix;
-  stalwart016VmTest = import ./modules/test/stalwart016-vmtest.nix {inherit pkgs self system;};
   adapterEval = evalSystem ./modules/test/adapter-eval.nix;
   kanidmCredentialsEval = evalSystem ./modules/test/kanidm-credentials-eval.nix;
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
-  tuwunelPrivateRoomsVmTest = import ./modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};
   windmillEval = evalSystem ./modules/test/windmill-provision-eval.nix;
-  windmillBootstrapVmTest = import ./modules/test/windmill-bootstrap-vmtest.nix {inherit pkgs self;};
-  # Same test against the windmill Canix/Atlas runs (1.839.0).
-  windmillBootstrapVmTestAtlas = let
-    atlasPkgs = import nixpkgs-windmill {inherit system;};
-  in
-    import ./modules/test/windmill-bootstrap-vmtest.nix {
-      inherit pkgs self;
-      windmillPackage = atlasPkgs.windmill;
-      # 1.839.0 can deploy the Bun language the consumer uses.
-      scriptLanguage = "bun";
-      # The hub's procedures declare `tag: hub`, and a bun version is only
-      # runnable once its dependency job wrote the lock: run a tagged worker.
-      scriptTag = "hub";
-      runWorker = true;
-      nameSuffix = "-atlas";
-    };
   n8nEval = evalSystem ./modules/test/n8n-provision-eval.nix;
-  n8nBootstrapVmTest = import ./modules/test/n8n-bootstrap-vmtest.nix {inherit pkgs self;};
   wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
   identityCliEval = evalSystem ./modules/test/identity-cli-eval.nix;
   stalwartOauthBootstrapPasswordFile = "\${XDG_RUNTIME_DIR}/agenix/stalwart_account_can";
@@ -986,10 +966,8 @@ in
           touch $out
         '';
 
-    stalwart016-vmtest = stalwart016VmTest;
     stalwart016-proxy-eval = import ./modules/test/stalwart016-proxy-eval.nix {inherit pkgs self;};
     stalwart016-peer-eval = import ./modules/test/stalwart016-peer-eval.nix {inherit pkgs self;};
-    stalwart016-proxy-vmtest = import ./modules/test/stalwart016-proxy-vmtest.nix {inherit pkgs self;};
 
     wireguard-status-module-eval = let
       exporter = wireguardStatusEval.config.services.prometheus.exporters.wireguard;
@@ -1048,12 +1026,6 @@ in
         grep -q '/var/lib/kanidm-credentials/stalwart-ldap.token' "$script"
         touch $out
       '';
-
-    tuwunel-private-rooms-vmtest = tuwunelPrivateRoomsVmTest;
-
-    windmill-bootstrap-vmtest = windmillBootstrapVmTest;
-    windmill-bootstrap-atlas-vmtest = windmillBootstrapVmTestAtlas;
-    n8n-bootstrap-vmtest = n8nBootstrapVmTest;
 
     windmill-module-eval = let
       server = windmillEval.config.systemd.services.windmill-server;

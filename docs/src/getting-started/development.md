@@ -36,7 +36,7 @@ flake:
 
 ```sh
 nix build .#checks.x86_64-linux.stalwart-module-eval
-nix build .#checks.x86_64-linux.stalwart016-vmtest
+nix build .#nixosTests.x86_64-linux.stalwart016-vmtest
 nix build .#packages.x86_64-linux.stalwart016-provision
 ```
 
@@ -45,6 +45,10 @@ rejects legacy 0.15 TOML-era keys. `stalwart016-vmtest` boots the 0.16 JSON
 bootstrap service, applies migration and listener registry documents through
 `stalwart-cli`, verifies ports 25/587/993, and checks that registry provisioning
 can rerun without replaying one-time migration inputs.
+
+`nix flake check` builds the non-VM checks. Run VM tests on a KVM-enabled
+Linux host using the exact `nixosTests` installables listed in `simit.toml`.
+The generated `Nix installable builds` workflow runs all of them with one build at a time.
 
 ## Local docs preview
 
