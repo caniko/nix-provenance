@@ -82,7 +82,10 @@ from the source, it is missing, or it is not a private mode-0600 file. agy
 refreshes and rewrites its own copies independently. An agy session still
 running across an Apply or Restore can save the old grant back: stop those agy
 sessions, run `systemctl --user start nix-provenance-antigravity-google-auth`,
-then relaunch them.
+then relaunch them. The enrollment wins over a fresh sign-in inside agy: after
+signing in again there, re-enroll from that copy with `authorize --reauth
+--token-file`. Removing the enrollment stops new exports only; each installed
+copy keeps refreshing until it is deleted or the grant is revoked at Google.
 
 ## Ownership and lifecycle
 

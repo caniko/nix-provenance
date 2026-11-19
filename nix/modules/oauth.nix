@@ -160,7 +160,7 @@ in {
       entries);
     }
     (lib.optionalAttrs hasHomeManager {
-      home-manager.sharedModules = [(import ./home/oauth.nix {inherit self;})];
+      home-manager.sharedModules = [self.homeModules.oauth];
       home-manager.users = lib.foldl' (result: entry:
         lib.recursiveUpdate result {
           ${entry.user}.nix-provenance.oauth.accounts.${entry.provider} =

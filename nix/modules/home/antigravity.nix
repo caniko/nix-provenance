@@ -31,13 +31,20 @@ _: {
     runtimeInputs = [pkgs.coreutils pkgs.jq];
     text = ''
       umask 077
-      work=$(mktemp -d)
+      work=$(mktemp -d -p "''${XDG_RUNTIME_DIR:-''${TMPDIR:-/tmp}}")
       staged=
       trap 'if [ -n "$staged" ]; then rm -f -- "$staged"; fi; rm -f -- "$work/token"; rmdir -- "$work"' EXIT
       token="$work/token"
       ${
         if account != null
-        then ''${lib.getExe account.package} --config ${lib.escapeShellArg (toString account.configFile)} agy-token > "$token"''
+        then let
+          helper = "${lib.getExe account.package} --config ${lib.escapeShellArg (toString account.configFile)}";
+        in ''
+          if ! ${helper} agy-token > "$token"; then
+            # A removed enrollment stops new exports; existing copies stay until deleted.
+            ${helper} status | jq -e '.state == "removed"' >/dev/null && exit 0
+            exit 1
+          fi''
         else ''cat -- ${shellPath (toString cfg.tokenFile)} > "$token"''
       }
       # A token without a refresh grant would leave agy asking for a browser.

@@ -19,6 +19,7 @@ const USERINFO: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 struct AgyToken {
     client_id: String,
     client_secret: Secret,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     project_id: Option<String>,
     refresh_token: Secret,
     scopes: Vec<String>,
@@ -203,6 +204,7 @@ impl Google {
             sub: String,
         }
         grant.account_id = document::<UserInfo>(response)?.sub;
+        grant.scopes = Some(tokens.scope.split_whitespace().map(str::to_owned).collect());
         grant.validate_for(target)?;
         Ok(grant)
     }
@@ -486,6 +488,11 @@ mod tests {
         write_agy_token(grant, &mut output).unwrap();
         let mut expected: serde_json::Value = serde_json::from_str(AGY).unwrap();
         expected["token_uri"] = TOKEN.into();
+        // The scopes Google granted, not the file's claim.
+        expected["scopes"] = serde_json::json!([
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/cloud-platform"
+        ]);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&output).unwrap(),
             expected

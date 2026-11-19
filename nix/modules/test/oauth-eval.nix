@@ -3,7 +3,8 @@
   self,
   ...
 }: {
-  imports = [self.nixosModules.oauth];
+  # Twice: each canix enrollment module imports it, so the key must dedupe.
+  imports = [self.nixosModules.oauth self.nixosModules.oauth];
   # Exercise the integrated bindings without adding a Home Manager input.
   options.home-manager = {
     users = lib.mkOption {type = lib.types.attrs;};
