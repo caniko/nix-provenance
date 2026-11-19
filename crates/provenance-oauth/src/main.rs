@@ -328,6 +328,11 @@ fn run(cli: Cli) -> Result<()> {
             || (config.target.provider == "google" && config.target.profile == "antigravity"),
         "agy-token requires google/antigravity"
     );
+    ensure!(
+        !matches!(cli.command, Action::RcloneConfig { .. })
+            || (config.target.provider == "google" && config.target.profile == "drive-file"),
+        "rclone config requires google/drive-file"
+    );
     let store = Store::lock(&config)?;
     match cli.command {
         Action::Apply {
@@ -354,10 +359,6 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Action::RcloneConfig { remote } => {
-            ensure!(
-                config.target.provider == "google" && config.target.profile == "drive-file",
-                "rclone config requires google/drive-file"
-            );
             ensure!(
                 !std::io::stdout().is_terminal(),
                 "rclone credentials must be consumed through a pipe"

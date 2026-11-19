@@ -390,7 +390,7 @@ in
           test "$(stat -c %a "$a")" = 600
           test "$(stat -c %a "$(dirname "$a")")" = 700
            # agy can rewrite its private copy without changing the source.
-           printf '{"access_token":"agy-fixture"}' > "$a"
+           printf '{"client_id":"id","client_secret":"secret","refresh_token":"test-refresh-token","access_token":"agy-fixture"}' > "$a"
            inode=$(stat -c %i "$a")
            "$exec_start"
            test "$(stat -c %i "$a")" = "$inode"
@@ -403,9 +403,13 @@ in
            cmp -s ${stateDirectory}/state.json "$a"
            cmp -s ${stateDirectory}/state.json "$b"
            test "$(stat -c %a "$a")" = 600
-           printf '{"access_token":"agy-store-fixture"}' > "$a"
+           printf '{"client_id":"id","client_secret":"secret","refresh_token":"store-fixture","access_token":"agy-store-fixture"}' > "$a"
            "$enroll"
            grep -q 'agy-store-fixture' "$a"
+           # A stale grant saved back by a running agy is repaired on the next run.
+           printf '{"client_id":"id","client_secret":"secret","refresh_token":"stale"}' > "$a"
+           "$enroll"
+           cmp -s ${stateDirectory}/state.json "$a"
            touch $out
         '';
 

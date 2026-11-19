@@ -124,7 +124,7 @@ impl OAuthClient {
     pub fn validate(&self) -> Result<()> {
         for value in [&self.client_id, &self.client_secret.0] {
             ensure!(
-                valid_google_credential(value, b"-_."),
+                valid_google_credential(value, b"-_.", 256),
                 "invalid Google client credentials"
             );
         }
@@ -132,9 +132,9 @@ impl OAuthClient {
     }
 }
 
-fn valid_google_credential(value: &str, punctuation: &[u8]) -> bool {
+fn valid_google_credential(value: &str, punctuation: &[u8], max: usize) -> bool {
     !value.is_empty()
-        && value.len() <= 256
+        && value.len() <= max
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || punctuation.contains(&b))
@@ -170,9 +170,9 @@ impl Grant {
             client.client_id.ends_with(".apps.googleusercontent.com"),
             "invalid Antigravity client ID"
         );
-        // Google refresh tokens may use a `1//` prefix.
+        // Google refresh tokens may use a `1//` prefix and run to 512 bytes.
         ensure!(
-            valid_google_credential(&self.refresh_token.0, b"-_./"),
+            valid_google_credential(&self.refresh_token.0, b"-_./", 512),
             "invalid Antigravity refresh token"
         );
         ensure!(

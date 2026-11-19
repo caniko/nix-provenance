@@ -171,11 +171,21 @@ impl Google {
         #[derive(Deserialize)]
         struct Refreshed {
             access_token: Secret,
+            #[serde(default)]
+            scope: String,
         }
         let tokens: Refreshed = document(response)?;
         ensure!(
             !tokens.access_token.is_empty(),
             "Google token exchange did not return an access token"
+        );
+        // The file's scopes are a claim; the exchange reports what Google granted.
+        ensure!(
+            tokens
+                .scope
+                .split(' ')
+                .any(|scope| scope == "https://www.googleapis.com/auth/cloud-platform"),
+            "Antigravity Google grant lacks the cloud-platform scope"
         );
         let response = self
             .client
@@ -351,7 +361,7 @@ mod tests {
             ("refresh_token", serde_json::Value::Null),
             ("refresh_token", "".into()),
             ("refresh_token", "1//bad\n".into()),
-            ("refresh_token", "a".repeat(257).into()),
+            ("refresh_token", "a".repeat(513).into()),
             ("client_id", "bad.example.com".into()),
             ("client_secret", "%unsafe".into()),
             ("token_uri", "https://example.com/token".into()),
@@ -383,10 +393,19 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
-            for _ in 0..2 {
+            let granted = r#"{"access_token":"fixture-access","scope":"https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/cloud-platform"}"#;
+            let userinfo = ("GET /userinfo", r#"{"sub":"1234"}"#);
+            {
                 for (path, body) in [
-                    ("POST /token", r#"{"access_token":"fixture-access"}"#),
-                    ("GET /userinfo", r#"{"sub":"1234"}"#),
+                    ("POST /token", granted),
+                    userinfo,
+                    ("POST /token", granted),
+                    userinfo,
+                    // The file claims cloud-platform; Google granted less.
+                    (
+                        "POST /token",
+                        r#"{"access_token":"fixture-access","scope":"https://www.googleapis.com/auth/userinfo.email"}"#,
+                    ),
                 ] {
                     let (mut socket, _) = listener.accept().unwrap();
                     socket
@@ -477,6 +496,13 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("does not match the manifest account")
+        );
+        target.account = "1234".into();
+        assert!(
+            import(&target)
+                .unwrap_err()
+                .to_string()
+                .contains("lacks the cloud-platform scope")
         );
         server.join().unwrap();
     }

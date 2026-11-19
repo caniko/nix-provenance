@@ -28,12 +28,12 @@ _: {
     && builtins.match ".*[[:cntrl:]].*" value == null;
   script = pkgs.writeShellApplication {
     name = unitName;
-    runtimeInputs = [pkgs.coreutils pkgs.diffutils pkgs.jq];
+    runtimeInputs = [pkgs.coreutils pkgs.jq];
     text = ''
       umask 077
       work=$(mktemp -d)
       staged=
-      trap 'if [ -n "$staged" ]; then rm -f -- "$staged"; fi; rm -f -- "$work/token" "$work/source"; rmdir -- "$work"' EXIT
+      trap 'if [ -n "$staged" ]; then rm -f -- "$staged"; fi; rm -f -- "$work/token"; rmdir -- "$work"' EXIT
       token="$work/token"
       ${
         if account != null
@@ -46,25 +46,21 @@ _: {
         echo "antigravity: source is not an agy Google token file" >&2
         exit 1
       }
-      sha256sum < "$token" > "$work/source"
+      # agy rewrites its copy with fresh access tokens, so compare only the grant.
+      grant='[.client_id, .client_secret, .refresh_token]'
       # An array: a one-word literal list fails shellcheck (SC2043).
       profiles=(${lib.escapeShellArgs cfg.profileDirectories})
       for profile in "''${profiles[@]}"; do
         dir="$profile/antigravity-acp"
         target="$dir/acp_token.json"
-        marker="$dir/.provenance-token-source"
         install -d -m 700 "$dir"
-        # Compare the source to the last install, not to agy's rewritten copy.
-        if [ -f "$target" ] && cmp -s "$work/source" "$marker"; then
+        if [ -f "$target" ] && [ ! -L "$target" ] && [ "$(stat -c %a -- "$target")" = 600 ] \
+          && jq -e --slurpfile source "$token" "$grant == (\$source[0] | $grant)" "$target" >/dev/null 2>&1; then
           continue
         fi
         staged=$(mktemp "$dir/.provenance-token.XXXXXXXX")
-        if ! cmp -s "$token" "$target"; then
-          install -m 600 "$token" "$staged"
-          mv -fT -- "$staged" "$target"
-        fi
-        install -m 600 "$work/source" "$staged"
-        mv -fT -- "$staged" "$marker"
+        install -m 600 "$token" "$staged"
+        mv -fT -- "$staged" "$target"
         staged=
       done
     '';
