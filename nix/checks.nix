@@ -1237,6 +1237,9 @@ in
         test ${lib.escapeShellArg (json noWorkflows.config.systemd.services.n8n-provision.requires)} = '["n8n.service"]'
         printf '%s' ${lib.escapeShellArg (json svc.after)} | grep -q n8n-deactivate.service
         printf '%s' ${lib.escapeShellArg (json svc.requires)} | grep -q n8n-deactivate.service
+        # A switch's /run/agenix burst must not hit either rotate unit's start limit.
+        test ${lib.escapeShellArg (json rotate.unitConfig.StartLimitIntervalSec)} = 0
+        test ${lib.escapeShellArg (json n8nEval.config.systemd.services.n8n-provision-credentials-rotate.unitConfig.StartLimitIntervalSec)} = 0
         # The rotation check reads the password as a credential, not from its path.
         printf '%s' ${lib.escapeShellArg (json rotate.serviceConfig.LoadCredential)} | grep -q 'owner-password:/run/agenix/n8n-owner'
         printf '%s' ${lib.escapeShellArg rotate.serviceConfig.ExecCondition} | grep -q -- '--password-file %d/owner-password'

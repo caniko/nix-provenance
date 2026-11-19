@@ -400,8 +400,13 @@ in {
       wantedBy = ["multi-user.target"];
       pathConfig.PathChanged = watchPaths [cfg.owner.passwordFile];
     };
+    # Both rotate services: an agenix generation switch changes every watched
+    # path at once, so the default start limit (5 in 10 s) would reject the
+    # triggers, including a real rotation in the same burst. Each start is a
+    # cheap check or a restart of a unit that already serializes.
     systemd.services.n8n-provision-rotate = {
       description = "Restart n8n after the owner password file rotates";
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         LoadCredential = ["${ownerCredential}:${cfg.owner.passwordFile}"];
@@ -418,6 +423,7 @@ in {
     };
     systemd.services.n8n-provision-credentials-rotate = mkIf (fieldFiles != []) {
       description = "Re-run n8n credential provisioning after a credential file rotates";
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${config.systemd.package}/bin/systemctl restart n8n-provision.service";
