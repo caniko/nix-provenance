@@ -77,12 +77,12 @@ standalone Home Manager, also import `homeModules.oauth` and set
 the public manifest, helper, and the state directory from the manifest.
 Unset the legacy `googleAuth.tokenFile` when switching to the enrollment; the
 installer accepts exactly one source. It calls `agy-token` at runtime and
-replaces a profile copy only when its client or refresh token differs from the
-source, it is missing, or it is not a private mode-0600 file. agy refreshes and
-rewrites its own copies independently. An agy session still running across an
-Apply or Restore can save the old grant back; the next installer run repairs it,
-so run `systemctl --user start nix-provenance-antigravity-google-auth` after
-replacing a grant while agy is open.
+replaces a profile copy only when its client, refresh token or project differs
+from the source, it is missing, or it is not a private mode-0600 file. agy
+refreshes and rewrites its own copies independently. An agy session still
+running across an Apply or Restore can save the old grant back: stop those agy
+sessions, run `systemctl --user start nix-provenance-antigravity-google-auth`,
+then relaunch them.
 
 ## Ownership and lifecycle
 

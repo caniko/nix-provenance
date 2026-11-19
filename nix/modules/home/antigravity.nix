@@ -47,7 +47,7 @@ _: {
         exit 1
       }
       # agy rewrites its copy with fresh access tokens, so compare only the grant.
-      grant='[.client_id, .client_secret, .refresh_token]'
+      grant='[.client_id, .client_secret, .refresh_token, .project_id]'
       # An array: a one-word literal list fails shellcheck (SC2043).
       profiles=(${lib.escapeShellArgs cfg.profileDirectories})
       for profile in "''${profiles[@]}"; do
