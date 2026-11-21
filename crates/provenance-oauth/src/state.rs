@@ -56,7 +56,11 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path, private: bool) -> 
     );
     if private {
         ensure!(
-            metadata.mode() & 0o077 == 0,
+            private_mode(
+                metadata.mode(),
+                path,
+                std::env::var_os("CREDENTIALS_DIRECTORY").as_deref()
+            ),
             "OAuth input must not be group/world accessible"
         );
     }
@@ -68,6 +72,17 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path, private: bool) -> 
     );
     // Serde errors can contain the invalid value, which may be a secret.
     serde_json::from_slice(&data).map_err(|_| anyhow::anyhow!("invalid OAuth JSON document"))
+}
+
+/// systemd grants a non-root service its credentials through a POSIX ACL, and
+/// the ACL mask shows as group bits (0440). The credentials directory is
+/// private to the service, so group bits are fine there; world bits never are.
+fn private_mode(mode: u32, path: &Path, credentials: Option<&std::ffi::OsStr>) -> bool {
+    let allowed = match credentials {
+        Some(dir) if path.parent() == Some(Path::new(dir)) => 0o040,
+        _ => 0,
+    };
+    mode & 0o077 & !allowed == 0
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -342,4 +357,30 @@ fn rust_uid() -> Result<u32> {
     // /proc is available on the Linux hosts supported by this module. Avoid an
     // unsafe libc call solely to obtain the effective UID.
     Ok(fs::metadata("/proc/self")?.uid())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::private_mode;
+    use std::{ffi::OsStr, path::Path};
+
+    #[test]
+    fn credential_acl_mask_is_private_only_inside_the_credentials_directory() {
+        let creds = Some(OsStr::new("/run/credentials/x.service"));
+        let inside = Path::new("/run/credentials/x.service/enrollment");
+        let outside = Path::new("/run/agenix/enrollment");
+        assert!(private_mode(0o100400, outside, creds));
+        assert!(private_mode(0o100440, inside, creds));
+        assert!(!private_mode(0o100440, outside, creds));
+        assert!(!private_mode(0o100440, inside, None));
+        assert!(!private_mode(0o100444, inside, creds));
+        let escape = Path::new("/run/credentials/x.service/../../agenix/e");
+        assert!(!private_mode(0o100440, escape, creds));
+        assert!(!private_mode(0o100460, inside, creds));
+        assert!(!private_mode(
+            0o100440,
+            Path::new("/run/credentials/x.service2/e"),
+            creds
+        ));
+    }
 }
