@@ -56,7 +56,9 @@ _: {
               # A removed enrollment stops new exports; existing copies stay until deleted.
               ${helper} status | jq -e '.state == "removed"' >/dev/null && exit 0
               exit 1
-            fi ;;
+            fi
+            ${lib.optionalString cfg.keyring.enable "keyring_helper=(${helper})"}
+            ;;
         '')
         accounts)}
         *) echo "antigravity: expected a declared google/antigravity enrollment" >&2; exit 1 ;;
@@ -85,6 +87,34 @@ _: {
         mv -fT -- "$staged" "$target"
         staged=
       done
+      ${lib.optionalString cfg.keyring.enable ''
+        keyring=(timeout --kill-after=1s 5s ${lib.getExe' cfg.keyring.package "oo7-cli"})
+        attributes=(service=gemini username=antigravity xdg:content-type=text/plain)
+        same_refresh=".token.refresh_token == \$source[0].refresh_token"
+        # oo7-cli returns success with no output for a missing item.
+        if "''${keyring[@]}" lookup --secret-only "''${attributes[@]}" 2>/dev/null \
+          | jq -Rse --slurpfile source "$token" "fromjson? | $same_refresh" >/dev/null 2>&1; then
+          exit 0
+        else
+          lookup_status="''${PIPESTATUS[0]}"
+        fi
+        if [ "$lookup_status" -ne 0 ]; then
+          echo "antigravity: ACP profiles installed, but Secret Service keyring lookup failed (unlock it and retry)" >&2
+          exit 1
+        fi
+        # Keep the same refresh grant as the ACP copies if the enrollment
+        # changed during installation. Never call store on empty input.
+        if ! timeout --kill-after=1s 15s "''${keyring_helper[@]}" agy-keyring-entry \
+          | jq -cse --slurpfile source "$token" "select(length == 1) | .[0] | select($same_refresh)" 2>/dev/null \
+          | {
+            IFS= read -r entry &&
+              builtin printf '%s' "$entry" |
+              "''${keyring[@]}" store "Password for 'antigravity' on 'gemini'" "''${attributes[@]}" >/dev/null 2>&1
+          }; then
+          echo "antigravity: ACP profiles installed, but the CLI keyring entry could not be updated (check Google access and unlock the keyring, then retry)" >&2
+          exit 1
+        fi
+      ''}
     '';
   };
 in {
@@ -108,6 +138,16 @@ in {
       default = [];
       description = "agy profile directories (GEMINI_HOME), such as a T3 Code Antigravity instance's profile, that receive antigravity-acp/acp_token.json.";
     };
+
+    keyring = {
+      enable = mkEnableOption "install the selected Antigravity enrollment into the interactive agy CLI's Secret Service keyring";
+      package = mkOption {
+        type = types.package;
+        default = pkgs.oo7;
+        defaultText = lib.literalExpression "pkgs.oo7";
+        description = "Package providing oo7-cli for the Antigravity CLI keyring target.";
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -119,6 +159,10 @@ in {
       {
         assertion = cfg.tokenFile == null || literalPath cfg.tokenFile;
         message = "nix-provenance.antigravity.googleAuth.tokenFile must be a literal runtime path outside the Nix store.";
+      }
+      {
+        assertion = !cfg.keyring.enable || cfg.tokenFile == null;
+        message = "nix-provenance.antigravity.googleAuth.keyring requires an OAuth enrollment and cannot be used with tokenFile.";
       }
       {
         assertion = account == null || (stateDirectory != null && lib.hasPrefix "/" stateDirectory && literalPath stateDirectory);

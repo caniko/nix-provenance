@@ -16,6 +16,9 @@
   `authorize --token-file` and exports it with `agy-token`. Home Manager can
   install profile copies from this enrollment instead of a legacy `tokenFile`,
   leaving agy's rewritten copies alone until the source changes.
+- Opt-in `nix-provenance.antigravity.googleAuth.keyring.enable` makes the
+  interactive agy CLI follow the selected Google enrollment on activation and
+  live switches, without rewriting an entry that already has the same grant.
 - `services.windmill.provision.deployTimeoutSeconds` is the bound on one
   deployed version's lock generation job. Scripts deploy serially, so the
   reconcile unit's `TimeoutStartSec` is that budget times the number of declared

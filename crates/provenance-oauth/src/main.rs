@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{IsTerminal, Read, Write},
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::{FileTypeExt, OpenOptionsExt},
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
 };
@@ -95,6 +95,8 @@ enum Action {
     },
     /// Emit agy's Antigravity token JSON to a pipe.
     AgyToken,
+    /// Emit agy's interactive CLI keyring entry JSON to a pipe.
+    AgyKeyringEntry,
     /// Checkpoint a rotated ChatGPT credential from the local OpenCode store.
     OpencodeSync {
         #[arg(long, default_value = "opencode")]
@@ -378,6 +380,19 @@ fn run(cli: Cli) -> Result<()> {
             || matches!(config.target.profile.as_str(), "drive-file" | "drive"),
         "rclone config requires google/drive-file or google/drive"
     );
+    if matches!(cli.command, Action::AgyKeyringEntry) {
+        ensure!(
+            config.target.provider == "google" && config.target.profile == "antigravity",
+            "agy-keyring-entry requires google/antigravity"
+        );
+        ensure!(
+            fs::metadata("/proc/self/fd/1")
+                .context("cannot inspect keyring output")?
+                .file_type()
+                .is_fifo(),
+            "Antigravity keyring credentials must be consumed through a pipe"
+        );
+    }
     let store = Store::lock(&config)?;
     match cli.command {
         Action::Apply {
@@ -424,6 +439,12 @@ fn run(cli: Cli) -> Result<()> {
             );
             let mut stdout = std::io::stdout().lock();
             write_agy_token(store.grant()?, &mut stdout)?;
+            writeln!(stdout)?;
+        }
+        Action::AgyKeyringEntry => {
+            let grant = store.grant()?;
+            let mut stdout = std::io::stdout().lock();
+            Google::new()?.write_agy_keyring_entry(&grant, &mut stdout)?;
             writeln!(stdout)?;
         }
         Action::OpencodeSync { opencode } => opencode::sync(&store, &opencode)?,

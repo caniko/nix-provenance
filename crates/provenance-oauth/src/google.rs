@@ -14,6 +14,7 @@ const TOKEN: &str = "https://oauth2.googleapis.com/token";
 const DEVICE: &str = "https://oauth2.googleapis.com/device/code";
 const ABOUT: &str = "https://www.googleapis.com/drive/v3/about?fields=user(permissionId)";
 const USERINFO: &str = "https://openidconnect.googleapis.com/v1/userinfo";
+pub(crate) const CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 pub(crate) const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 
 #[derive(Deserialize, Serialize)]
@@ -71,6 +72,28 @@ pub fn write_agy_token(grant: Grant, output: impl Write) -> Result<()> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct AgyKeyringEntry<'a> {
+    token: AgyKeyringToken<'a>,
+    auth_method: &'static str,
+    id_token_email: String,
+}
+
+#[derive(Serialize)]
+struct AgyKeyringToken<'a> {
+    access_token: Secret,
+    token_type: &'static str,
+    refresh_token: &'a Secret,
+    expiry: String,
+    expires_in: u64,
+}
+
+#[derive(Deserialize)]
+struct UserInfo {
+    sub: String,
+    email: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct Tokens {
     access_token: Secret,
@@ -79,6 +102,16 @@ struct Tokens {
     expires_in: u64,
     #[serde(default)]
     scope: String,
+}
+
+impl Tokens {
+    fn expires_at(&self) -> Result<u64> {
+        ensure!(self.expires_in > 60, "Google access token expires too soon");
+        self.expires_in
+            .checked_mul(1000)
+            .and_then(|ttl| now().ok()?.checked_add(ttl))
+            .context("invalid Google token expiry")
+    }
 }
 
 fn document<T: serde::de::DeserializeOwned>(response: Response) -> Result<T> {
@@ -154,6 +187,56 @@ impl Google {
             "token import requires google/antigravity"
         );
         let mut grant = parse_agy_token(bytes)?;
+        let tokens = self.antigravity_tokens(&grant, token_endpoint)?;
+        grant.account_id = self
+            .antigravity_userinfo(userinfo_endpoint, &tokens.access_token)?
+            .sub;
+        grant.scopes = Some(tokens.scope.split_whitespace().map(str::to_owned).collect());
+        grant.validate_for(target)?;
+        Ok(grant)
+    }
+
+    pub fn write_agy_keyring_entry(&self, grant: &Grant, output: impl Write) -> Result<()> {
+        let entry = self.agy_keyring_entry(grant, TOKEN, USERINFO)?;
+        serde_json::to_writer(output, &entry)?;
+        Ok(())
+    }
+
+    fn agy_keyring_entry<'a>(
+        &self,
+        grant: &'a Grant,
+        token_endpoint: &str,
+        userinfo_endpoint: &str,
+    ) -> Result<AgyKeyringEntry<'a>> {
+        grant.validate_antigravity_credentials()?;
+        let tokens = self.antigravity_tokens(grant, token_endpoint)?;
+        let millis = i64::try_from(tokens.expires_at()?).context("invalid Google token expiry")?;
+        let expiry = chrono::DateTime::from_timestamp_millis(millis)
+            .context("invalid Google token expiry")?
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let userinfo = self.antigravity_userinfo(userinfo_endpoint, &tokens.access_token)?;
+        ensure!(
+            userinfo.sub == grant.account_id,
+            "Antigravity Google account does not match the enrolled account"
+        );
+        let email = userinfo
+            .email
+            .filter(|value| !value.trim().is_empty())
+            .context("Antigravity Google account lookup did not return an email")?;
+        Ok(AgyKeyringEntry {
+            token: AgyKeyringToken {
+                access_token: tokens.access_token,
+                token_type: "Bearer",
+                refresh_token: &grant.refresh_token,
+                expiry,
+                expires_in: tokens.expires_in,
+            },
+            auth_method: "consumer",
+            id_token_email: email,
+        })
+    }
+
+    fn antigravity_tokens(&self, grant: &Grant, token_endpoint: &str) -> Result<Tokens> {
         let client = grant
             .client
             .as_ref()
@@ -163,14 +246,18 @@ impl Google {
         ensure!(
             tokens
                 .scope
-                .split(' ')
-                .any(|scope| scope == "https://www.googleapis.com/auth/cloud-platform"),
+                .split_whitespace()
+                .any(|scope| scope == CLOUD_PLATFORM_SCOPE),
             "Antigravity Google grant lacks the cloud-platform scope"
         );
+        Ok(tokens)
+    }
+
+    fn antigravity_userinfo(&self, endpoint: &str, access_token: &Secret) -> Result<UserInfo> {
         let response = self
             .client
-            .get(userinfo_endpoint)
-            .bearer_auth(&tokens.access_token.0)
+            .get(endpoint)
+            .bearer_auth(&access_token.0)
             .send()
             .map_err(|_| anyhow::anyhow!("Antigravity Google account lookup unavailable"))?;
         ensure!(
@@ -178,14 +265,7 @@ impl Google {
             "Antigravity Google account lookup failed (HTTP {})",
             response.status().as_u16()
         );
-        #[derive(Deserialize)]
-        struct UserInfo {
-            sub: String,
-        }
-        grant.account_id = document::<UserInfo>(response)?.sub;
-        grant.scopes = Some(tokens.scope.split_whitespace().map(str::to_owned).collect());
-        grant.validate_for(target)?;
-        Ok(grant)
+        document(response)
     }
 
     pub fn authorize_drive(&self, credentials: OAuthClient, bytes: &[u8]) -> Result<Grant> {
@@ -367,15 +447,7 @@ fn valid_verification_url(value: &str) -> Option<reqwest::Url> {
 }
 
 fn into_grant(tokens: Tokens, credentials: OAuthClient, account_id: String) -> Result<Grant> {
-    ensure!(
-        tokens.expires_in > 60,
-        "Google access token expires too soon"
-    );
-    let expires_at = tokens
-        .expires_in
-        .checked_mul(1000)
-        .and_then(|ttl| now().ok()?.checked_add(ttl))
-        .context("invalid Google token expiry")?;
+    let expires_at = tokens.expires_at()?;
     let grant = Grant {
         access_token: tokens.access_token,
         refresh_token: tokens
@@ -445,10 +517,18 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let granted = r#"{"access_token":"fixture-access","scope":"https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/cloud-platform"}"#;
-            let userinfo = ("GET /userinfo", r#"{"sub":"1234"}"#);
+            let userinfo = (
+                "GET /userinfo",
+                r#"{"sub":"1234","email":"fixture@example.com"}"#,
+            );
             {
                 for (path, body) in [
                     ("POST /token", granted),
+                    userinfo,
+                    (
+                        "POST /token",
+                        r#"{"access_token":"fixture-access","scope":"https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/cloud-platform","expires_in":3600}"#,
+                    ),
                     userinfo,
                     ("POST /token", granted),
                     userinfo,
@@ -537,6 +617,34 @@ mod tests {
         };
         let grant = import(&target).unwrap();
         assert_eq!(grant.account_id, "1234");
+        let before = now().unwrap() + 3_600_000;
+        let entry = google
+            .agy_keyring_entry(
+                &grant,
+                &format!("http://{address}/token"),
+                &format!("http://{address}/userinfo"),
+            )
+            .unwrap();
+        let entry = serde_json::to_value(entry).unwrap();
+        let expiry = entry["token"]["expiry"].as_str().unwrap();
+        let expiry_ms = chrono::DateTime::parse_from_rfc3339(expiry)
+            .unwrap()
+            .timestamp_millis() as u64;
+        assert!((before..=now().unwrap() + 3_600_000).contains(&expiry_ms));
+        assert_eq!(
+            entry,
+            serde_json::json!({
+                "token": {
+                    "access_token": "fixture-access",
+                    "token_type": "Bearer",
+                    "refresh_token": "1//fixture-refresh",
+                    "expiry": expiry,
+                    "expires_in": 3600
+                },
+                "auth_method": "consumer",
+                "id_token_email": "fixture@example.com"
+            })
+        );
         assert!(
             serde_json::to_value(&grant)
                 .unwrap()

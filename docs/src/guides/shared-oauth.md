@@ -107,6 +107,27 @@ signing in again there, re-enroll from that copy with `authorize --reauth
 --token-file`. Removing the enrollment stops new exports only; each installed
 copy keeps refreshing until it is deleted or the grant is revoked at Google.
 
+#### Interactive agy CLI keyring
+
+The agy TUI and `agy -p` (tested contract: agy 1.5.12) do not use the ACP
+profile copies. To update their Secret Service sign-in as well, set
+`nix-provenance.antigravity.googleAuth.keyring.enable = true;`. This requires
+an enrollment, not the legacy `tokenFile`, and an unlocked default Secret
+Service collection in the user's session. `keyring.package` defaults to
+`pkgs.oo7`, which provides `oo7-cli`.
+
+Both the ordinary unit and `nix-provenance-antigravity-google-auth@ID.service`
+update the same per-user CLI sign-in. If its refresh token already matches,
+nothing is written. Otherwise the helper exchanges the selected refresh grant
+for a fresh Google access token and reads the account email. The grant needs
+`userinfo.email` in addition to Antigravity's scopes. The new entry goes to
+Secret Service over stdin without a temporary keyring file. The ACP copies are
+installed first: if the keyring is locked or unavailable, the unit warns and
+fails without undoing those copies. Unlock the keyring and rerun the same unit.
+Stop active agy sessions before switching to keep them from saving the old
+sign-in back. Disabling this target or removing the enrollment does not delete
+the keyring item; sign out of the CLI or revoke the Google grant separately.
+
 ## Ownership and lifecycle
 
 nix-provenance manages enrollment generations, durable state, encrypted
@@ -319,9 +340,10 @@ until expiry; local removal does not revoke already issued provider tokens.
 
 Run `provenance-oauth --config MANIFEST remove` as the declared local user to
 stop new access requests and persist a tombstone. For Google, removal stops new
-`rclone-config` or `agy-token` exports only. A consumer can keep refreshing with
-a copy already on disk until the grant is revoked in the Google account. Remove
-those private copies separately if needed. Reauthorization uses a newer enrollment.
+`rclone-config`, `agy-token`, or `agy-keyring-entry` exports only. A consumer
+can keep refreshing with a copy already on disk or in the keyring until the
+grant is revoked in the Google account. Remove those copies separately if
+needed. Reauthorization uses a newer enrollment.
 For `openai/opencode`, remove or revoke the OpenCode login separately; removing
 the provenance enrollment only stops copying credentials to or from OpenCode.
 
