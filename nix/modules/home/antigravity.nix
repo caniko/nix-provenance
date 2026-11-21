@@ -17,6 +17,9 @@ _: {
   stateFile = "${toString stateDirectory}/state.json";
   unitName = "nix-provenance-antigravity-google-auth";
   systemctl = "${lib.getExe' pkgs.systemd "systemctl"} --user";
+  agyKeyring = pkgs.oo7.overrideAttrs (old: {
+    patches = (old.patches or []) ++ [./oo7-agy.patch];
+  });
   # Runtime paths only: the token never enters the store, and `${XDG_RUNTIME_DIR}`
   # expands at run time as it does for the fj tokens.
   runtimePrefix = "\${XDG_RUNTIME_DIR}";
@@ -56,7 +59,9 @@ _: {
               # A removed enrollment stops new exports; existing copies stay until deleted.
               ${helper} status | jq -e '.state == "removed"' >/dev/null && exit 0
               exit 1
-            fi ;;
+            fi
+            ${lib.optionalString cfg.keyring.enable "keyring_helper=(${helper})"}
+            ;;
         '')
         accounts)}
         *) echo "antigravity: expected a declared google/antigravity enrollment" >&2; exit 1 ;;
@@ -85,6 +90,35 @@ _: {
         mv -fT -- "$staged" "$target"
         staged=
       done
+      ${lib.optionalString cfg.keyring.enable ''
+        # agy checks the actual collection path, not the "login" alias.
+        keyring=(timeout --kill-after=1s 5s ${lib.getExe' cfg.keyring.package "oo7-cli"}
+          --prefer-collection-path /org/freedesktop/secrets/collection/login)
+        attributes=(service=gemini username=antigravity)
+        same_refresh=".token.refresh_token == \$source[0].refresh_token"
+        if "''${keyring[@]}" search --all --json "''${attributes[@]}" 2>/dev/null \
+          | jq -e --slurpfile source "$token" "length == 1 and (.[0].secret | fromjson? | $same_refresh)" >/dev/null 2>&1; then
+          exit 0
+        else
+          lookup_status="''${PIPESTATUS[0]}"
+        fi
+        if [ "$lookup_status" -ne 0 ]; then
+          echo "antigravity: ACP profiles installed, but Secret Service keyring lookup failed (unlock it and retry)" >&2
+          exit 1
+        fi
+        # Keep the same refresh grant as the ACP copies if the enrollment
+        # changed during installation. Never call store on empty input.
+        unset entry
+        if ! {
+          entry=$(timeout --kill-after=1s 15s "''${keyring_helper[@]}" agy-keyring-entry \
+            | jq -cse --slurpfile source "$token" "select(length == 1) | .[0] | select($same_refresh)" 2>/dev/null) &&
+            builtin printf '%s' "$entry" |
+            "''${keyring[@]}" store --replace-all "Password for 'antigravity' on 'gemini'" "''${attributes[@]}" >/dev/null 2>&1
+        }; then
+          echo "antigravity: ACP profiles installed, but the CLI keyring entry could not be updated (check Google access and unlock the keyring, then retry)" >&2
+          exit 1
+        fi
+      ''}
     '';
   };
 in {
@@ -108,6 +142,16 @@ in {
       default = [];
       description = "agy profile directories (GEMINI_HOME), such as a T3 Code Antigravity instance's profile, that receive antigravity-acp/acp_token.json.";
     };
+
+    keyring = {
+      enable = mkEnableOption "install the selected Antigravity enrollment into the interactive agy CLI's Secret Service keyring";
+      package = mkOption {
+        type = types.package;
+        default = agyKeyring;
+        defaultText = lib.literalMD "`pkgs.oo7` with agy keyring support";
+        description = "Package providing oo7-cli with --prefer-collection-path and store --replace-all support.";
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -119,6 +163,10 @@ in {
       {
         assertion = cfg.tokenFile == null || literalPath cfg.tokenFile;
         message = "nix-provenance.antigravity.googleAuth.tokenFile must be a literal runtime path outside the Nix store.";
+      }
+      {
+        assertion = !cfg.keyring.enable || cfg.tokenFile == null;
+        message = "nix-provenance.antigravity.googleAuth.keyring requires an OAuth enrollment and cannot be used with tokenFile.";
       }
       {
         assertion = account == null || (stateDirectory != null && lib.hasPrefix "/" stateDirectory && literalPath stateDirectory);

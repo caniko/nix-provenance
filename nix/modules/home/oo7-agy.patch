@@ -1,0 +1,91 @@
+diff --git a/cli/src/main.rs b/cli/src/main.rs
+--- a/cli/src/main.rs
++++ b/cli/src/main.rs
+@@ -245,3 +245,5 @@
+     Store {
++        #[arg(long, help = "Remove older matches after storing a secret in Secret Service")]
++        replace_all: bool,
+         #[arg(help = "Description for the secret")]
+         label: String,
+@@ -332,3 +334,13 @@
+-                let collection = if let Some(alias) = &args.collection {
++                let collection = if let Some(path) = &args.prefer_collection_path {
++                    match service
++                        .collections()
++                        .await?
++                        .into_iter()
++                        .find(|collection| collection.path().as_str() == path.as_str())
++                    {
++                        Some(collection) => collection,
++                        None => service.default_collection().await?,
++                    }
++                } else if let Some(alias) = &args.collection {
+                     service
+                         .with_alias(alias)
+@@ -444,2 +456,6 @@
+-            Commands::Store { label, attributes } => {
++            Commands::Store {
++                label,
++                attributes,
++                replace_all,
++            } => {
+                 let mut stdin = std::io::stdin().lock();
+@@ -458,14 +474,34 @@
+                 match keyring {
+                     Keyring::File(keyring) => {
++                        if replace_all {
++                            return Err(Error::new("--replace-all requires Secret Service"));
++                        }
+                         keyring
+                             .create_item(&label, &attributes, secret, true)
+                             .await?;
+                     }
+                     Keyring::Collection(collection) => {
+-                        collection
++                        let old = if replace_all {
++                            collection.search_items(&attributes).await?
++                        } else {
++                            Vec::new()
++                        };
++                        let stored = collection
+-                            .create_item(&label, &attributes, secret, true, None)
++                            .create_item(&label, &attributes, secret, !replace_all, None)
+                             .await?;
++                        // Only remove the pre-store matches once the new secret exists.
++                        for item in old {
++                            if item.path() != stored.path()
++                                && let Err(err) = item.delete(None).await
++                                // Only ignore the error if the path has vanished.
++                                && !collection.items().await.is_ok_and(|items| {
++                                    items.iter().all(|current| current.path() != item.path())
++                                })
++                            {
++                                return Err(err.into());
++                            }
++                        }
+                     }
+                 }
+                 Output::None
+             }
+@@ -575,2 +611,9 @@
+     collection: Option<String>,
++    #[arg(
++        long,
++        global = true,
++        conflicts_with = "collection",
++        help = "Prefer this collection object path when present, otherwise use the default"
++    )]
++    prefer_collection_path: Option<String>,
+     #[arg(
+diff --git a/client/src/secret.rs b/client/src/secret.rs
+--- a/client/src/secret.rs
++++ b/client/src/secret.rs
+@@ -27,5 +27,7 @@
+     {
+         let s = String::deserialize(deserializer)?;
+-        Self::from_str(&s).map_err(serde::de::Error::custom)
++        // go-keyring may attach a MIME charset parameter to text/plain.
++        let media_type = s.split(';').next().unwrap_or_default().trim();
++        Self::from_str(media_type).map_err(serde::de::Error::custom)
+     }
+ }

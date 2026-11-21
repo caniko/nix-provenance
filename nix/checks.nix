@@ -286,10 +286,43 @@ in
       stateDirectory = "/tmp/nix-provenance-antigravity-state";
       fakeHelper = pkgs.writeShellScriptBin "provenance-oauth" ''
         set -eu
-        test "$#" = 3 && test "$1" = --config && test "$3" = agy-token || exit 1
+        test "$#" = 3 && test "$1" = --config || exit 1
         case "$2" in
-          /etc/provenance/oauth/user-google.json) exec ${lib.getExe' pkgs.coreutils "cat"} ${stateDirectory}/state.json ;;
-          /etc/provenance/oauth/user-work.json) exec ${lib.getExe' pkgs.coreutils "cat"} ${stateDirectory}/work.json ;;
+          /etc/provenance/oauth/user-google.json) source=${stateDirectory}/state.json ;;
+          /etc/provenance/oauth/user-work.json) source=${stateDirectory}/work.json ;;
+          *) exit 1 ;;
+        esac
+        case "$3" in
+          agy-token) exec ${lib.getExe' pkgs.coreutils "cat"} "$source" ;;
+          agy-keyring-entry)
+            test -p /proc/self/fd/1 && test -z "''${FAIL_KEYRING_ENTRY:-}" || exit 1
+            exec ${lib.getExe pkgs.jq} -c '{token:{refresh_token}}' "$source"
+            ;;
+          *) exit 1 ;;
+        esac
+      '';
+      fakeKeyring = pkgs.writeShellScriptBin "oo7-cli" ''
+        set -eu
+        test "$1 $2" = "--prefer-collection-path /org/freedesktop/secrets/collection/login" || exit 1
+        shift 2
+        test "$#" = 5 && test "$4 $5" = "service=gemini username=antigravity" || exit 1
+        collection="$KEYRING_DIRECTORY/default"
+        if test -d "$KEYRING_DIRECTORY/login"; then collection="$KEYRING_DIRECTORY/login"; fi
+        shopt -s nullglob
+        items=("$collection"/*)
+        case "$1" in
+          search)
+            test "$2 $3" = "--all --json" && test -z "''${FAIL_KEYRING_LOOKUP:-}" || exit 1
+            ${lib.getExe pkgs.jq} -s 'map({secret: tojson})' /dev/null "''${items[@]}"
+            ;;
+          store)
+            test "$2 $3" = "--replace-all Password for 'antigravity' on 'gemini'" || exit 1
+            test -z "''${FAIL_KEYRING_STORE:-}" && test -z "''${entry+x}" && test -p /proc/self/fd/0 || exit 1
+            cat > "$KEYRING_DIRECTORY/staged"
+            test -s "$KEYRING_DIRECTORY/staged"
+            rm -f -- "''${items[@]}"
+            mv "$KEYRING_DIRECTORY/staged" "$collection/text_plain"
+            ;;
           *) exit 1 ;;
         esac
       '';
@@ -300,7 +333,7 @@ in
         package = fakeHelper;
         inherit stateDirectory;
       };
-      evaluate = profileDirectories: tokenFile: enrollment:
+      evaluate = profileDirectories: tokenFile: enrollment: keyring:
         lib.evalModules {
           modules = [
             ({lib, ...}: {
@@ -329,7 +362,7 @@ in
             {
               nix-provenance.antigravity.googleAuth = {
                 enable = true;
-                inherit tokenFile profileDirectories;
+                inherit tokenFile profileDirectories keyring;
               };
             }
             (lib.optionalAttrs (enrollment != null) {
@@ -346,10 +379,16 @@ in
           };
         };
       profiles = ["/tmp/nix-provenance-antigravity-a" "/tmp/nix-provenance-antigravity-b"];
-      evaluated = evaluate profiles tokenFile null;
+      evaluated = evaluate profiles tokenFile null {};
       # One profile, as T3 uses: its script must pass shellcheck too.
-      single = evaluate [(builtins.head profiles)] tokenFile null;
-      enrolled = evaluate profiles null google;
+      single = evaluate [(builtins.head profiles)] tokenFile null {};
+      enrolled = evaluate profiles null google {};
+      keyring = {enable = true;};
+      keyringPackage = (evaluate profiles null google keyring).config.nix-provenance.antigravity.googleAuth.keyring.package;
+      keyringTestPython = pkgs.python3.withPackages (ps: [ps.dbus-python ps.pygobject3]);
+      keyringConfig = (evaluate profiles null google (keyring // {package = fakeKeyring;})).config;
+      keyringService = keyringConfig.systemd.user.services.nix-provenance-antigravity-google-auth.Service.ExecStart;
+      keyringTemplate = lib.removeSuffix " %i" keyringConfig.systemd.user.services."nix-provenance-antigravity-google-auth@".Service.ExecStart;
       enrollmentService = enrolled.config.systemd.user.services.nix-provenance-antigravity-google-auth;
       template = enrolled.config.systemd.user.services."nix-provenance-antigravity-google-auth@";
       enrollmentPath = enrolled.config.systemd.user.paths.nix-provenance-antigravity-google-auth;
@@ -367,9 +406,14 @@ in
       assert enrolled.config.home.activation.provenanceAntigravity.after == ["reloadSystemd"];
       assert !(evaluated.config.home.activation ? provenanceAntigravity);
       assert lib.hasSuffix " %i" template.Service.ExecStart;
-      assert !(lib.all (entry: entry.assertion) (evaluate profiles tokenFile google).config.assertions);
-      assert !(lib.all (entry: entry.assertion) (evaluate profiles null null).config.assertions);
-        runCommand "antigravity-google-auth-eval" {} ''
+      assert !(lib.all (entry: entry.assertion) (evaluate profiles tokenFile google {}).config.assertions);
+      assert !(lib.all (entry: entry.assertion) (evaluate profiles null null {}).config.assertions);
+      assert lib.all (entry: entry.assertion) keyringConfig.assertions;
+      assert !(lib.all (entry: entry.assertion) (evaluate profiles tokenFile null keyring).config.assertions);
+      assert keyringService == keyringTemplate;
+        runCommand "antigravity-google-auth-eval" {nativeBuildInputs = [pkgs.dbus keyringTestPython];} ''
+          # Exercise the packaged CLI against a private Secret Service as well as the installer stub.
+          python3 -B ${./modules/test/antigravity-secret-service.py} ${lib.getExe' keyringPackage "oo7-cli"}
           test -x ${single.config.systemd.user.services.nix-provenance-antigravity-google-auth.Service.ExecStart}
           exec_start=${service.Service.ExecStart}
           if grep -Fq 'test-refresh-token' "$exec_start"; then
@@ -426,7 +470,46 @@ in
             done
             "$enroll"
             cmp -s ${stateDirectory}/state.json "$a"
-            touch $out
+
+             keyring_install=${keyringService}
+             grep -Fq 'agy-keyring-entry' "$keyring_install"
+             export KEYRING_DIRECTORY="$TMPDIR/keyring"
+             mkdir -p "$KEYRING_DIRECTORY/default"
+             default_entry="$KEYRING_DIRECTORY/default/text_plain"
+             export entry=nonsecret_value
+             "$keyring_install"
+             grep -Fq '"refresh_token":"store-fixture"' "$default_entry"
+             FAIL_KEYRING_ENTRY=1 "$keyring_install" # Matching refresh token skips the exchange.
+
+             # The agy item in login wins over the already-matching default item.
+             login="$KEYRING_DIRECTORY/login"
+             mkdir "$login"
+             printf '{"token":{"refresh_token":"native-stale"}}' > "$login/text_plain_charset_utf8"
+             "$keyring_install"
+             test ! -e "$login/text_plain_charset_utf8"
+             login_entry="$login/text_plain"
+             grep -Fq '"refresh_token":"store-fixture"' "$login_entry"
+             FAIL_KEYRING_ENTRY=1 "$keyring_install"
+             cp "$login_entry" "$login/text_plain_charset_utf8"
+             "$keyring_install"
+             test ! -e "$login/text_plain_charset_utf8"
+
+             for failure in FAIL_KEYRING_LOOKUP FAIL_KEYRING_ENTRY FAIL_KEYRING_STORE; do
+               if env "$failure=1" "$keyring_install" work 2>"$TMPDIR/warning"; then
+                 echo "antigravity: did not report $failure" >&2
+                 exit 1
+               fi
+               grep -Fq 'ACP profiles installed' "$TMPDIR/warning"
+               cmp -s ${stateDirectory}/work.json "$a"
+               cmp -s ${stateDirectory}/work.json "$b"
+               grep -Fq '"refresh_token":"store-fixture"' "$login_entry"
+             done
+             "$keyring_install" work
+             grep -Fq '"refresh_token":"work-fixture"' "$login_entry"
+             grep -Fq '"refresh_token":"store-fixture"' "$default_entry"
+             "$keyring_install"
+             grep -Fq '"refresh_token":"store-fixture"' "$login_entry"
+             touch $out
         '';
 
     # Lint each crate against its isolated deps.

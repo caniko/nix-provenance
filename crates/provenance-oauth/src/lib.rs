@@ -220,7 +220,7 @@ impl Grant {
             self.scopes.as_ref().is_some_and(|scopes| {
                 scopes
                     .iter()
-                    .any(|scope| scope == "https://www.googleapis.com/auth/cloud-platform")
+                    .any(|scope| scope == google::CLOUD_PLATFORM_SCOPE)
             }),
             "Antigravity token requires the cloud-platform scope"
         );

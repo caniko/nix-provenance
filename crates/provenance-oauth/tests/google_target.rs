@@ -149,8 +149,29 @@ fn agy_token_flags_and_export_are_profile_specific() {
                 run(dir.path(), &["agy-token"]),
                 "requires google/antigravity",
             );
+            refuses(
+                run(dir.path(), &["agy-keyring-entry"]),
+                "requires google/antigravity",
+            );
         }
     }
+}
+
+#[test]
+fn agy_keyring_entry_refuses_stdout_to_a_regular_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = manifest(dir.path(), "google", "antigravity");
+    let redirected = tempfile::tempfile().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_provenance-oauth"))
+        .arg("--config")
+        .arg(dir.path().join("config.json"))
+        .arg("agy-keyring-entry")
+        .stdout(redirected.try_clone().unwrap())
+        .output()
+        .unwrap();
+    refuses(output, "must be consumed through a pipe");
+    assert_eq!(redirected.metadata().unwrap().len(), 0);
+    assert!(!config.state_directory.exists());
 }
 
 #[test]
