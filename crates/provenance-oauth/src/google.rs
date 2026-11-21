@@ -14,6 +14,7 @@ const TOKEN: &str = "https://oauth2.googleapis.com/token";
 const DEVICE: &str = "https://oauth2.googleapis.com/device/code";
 const ABOUT: &str = "https://www.googleapis.com/drive/v3/about?fields=user(permissionId)";
 const USERINFO: &str = "https://openidconnect.googleapis.com/v1/userinfo";
+pub(crate) const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 
 #[derive(Deserialize, Serialize)]
 struct AgyToken {
@@ -73,7 +74,10 @@ pub fn write_agy_token(grant: Grant, output: impl Write) -> Result<()> {
 struct Tokens {
     access_token: Secret,
     refresh_token: Option<Secret>,
+    #[serde(default)]
     expires_in: u64,
+    #[serde(default)]
+    scope: String,
 }
 
 fn document<T: serde::de::DeserializeOwned>(response: Response) -> Result<T> {
@@ -153,33 +157,7 @@ impl Google {
             .client
             .as_ref()
             .context("Google grant is missing client credentials")?;
-        let response = self
-            .client
-            .post(token_endpoint)
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("client_id", client.client_id.as_str()),
-                ("client_secret", &client.client_secret.0),
-                ("refresh_token", &grant.refresh_token.0),
-            ])
-            .send()
-            .map_err(|_| anyhow::anyhow!("Antigravity Google token exchange unavailable"))?;
-        ensure!(
-            response.status().is_success(),
-            "Antigravity Google token exchange failed (HTTP {})",
-            response.status().as_u16()
-        );
-        #[derive(Deserialize)]
-        struct Refreshed {
-            access_token: Secret,
-            #[serde(default)]
-            scope: String,
-        }
-        let tokens: Refreshed = document(response)?;
-        ensure!(
-            !tokens.access_token.is_empty(),
-            "Google token exchange did not return an access token"
-        );
+        let tokens = self.exchange_grant(token_endpoint, client, &grant.refresh_token)?;
         // The file's scopes are a claim; the exchange reports what Google granted.
         ensure!(
             tokens
@@ -207,6 +185,95 @@ impl Google {
         grant.scopes = Some(tokens.scope.split_whitespace().map(str::to_owned).collect());
         grant.validate_for(target)?;
         Ok(grant)
+    }
+
+    pub fn authorize_drive(&self, credentials: OAuthClient, bytes: &[u8]) -> Result<Grant> {
+        self.import_drive(credentials, bytes, TOKEN, ABOUT)
+    }
+
+    fn import_drive(
+        &self,
+        credentials: OAuthClient,
+        bytes: &[u8],
+        token_endpoint: &str,
+        about: &str,
+    ) -> Result<Grant> {
+        #[derive(Deserialize)]
+        struct RcloneToken {
+            refresh_token: Secret,
+        }
+        let RcloneToken { refresh_token } = serde_json::from_slice(bytes)
+            .map_err(|_| anyhow::anyhow!("invalid rclone token JSON"))?;
+        credentials.validate()?;
+        ensure!(
+            crate::valid_google_credential(&refresh_token.0, b"-_./", 512),
+            "invalid Google Drive refresh token"
+        );
+        let mut tokens = self.exchange_grant(token_endpoint, &credentials, &refresh_token)?;
+        let scopes: Vec<_> = tokens.scope.split_whitespace().map(str::to_owned).collect();
+        ensure!(
+            scopes.iter().any(|scope| scope == DRIVE_SCOPE),
+            "Google Drive grant lacks the full Drive scope"
+        );
+        let account_id = self.drive_account(about, &tokens.access_token)?;
+        tokens.refresh_token = Some(refresh_token);
+        let mut grant = into_grant(tokens, credentials, account_id)?;
+        grant.scopes = Some(scopes);
+        Ok(grant)
+    }
+
+    fn exchange_grant(
+        &self,
+        endpoint: &str,
+        credentials: &OAuthClient,
+        refresh_token: &Secret,
+    ) -> Result<Tokens> {
+        let response = self
+            .client
+            .post(endpoint)
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", credentials.client_id.as_str()),
+                ("client_secret", &credentials.client_secret.0),
+                ("refresh_token", &refresh_token.0),
+            ])
+            .send()
+            .map_err(|_| anyhow::anyhow!("Google token exchange unavailable"))?;
+        ensure!(
+            response.status().is_success(),
+            "Google token exchange failed (HTTP {})",
+            response.status().as_u16()
+        );
+        let tokens: Tokens = document(response)?;
+        ensure!(
+            !tokens.access_token.is_empty(),
+            "Google token exchange did not return an access token"
+        );
+        Ok(tokens)
+    }
+
+    fn drive_account(&self, endpoint: &str, access_token: &Secret) -> Result<String> {
+        #[derive(Deserialize)]
+        struct About {
+            user: User,
+        }
+        #[derive(Deserialize)]
+        struct User {
+            #[serde(rename = "permissionId")]
+            permission_id: String,
+        }
+        let response = self
+            .client
+            .get(endpoint)
+            .bearer_auth(&access_token.0)
+            .send()
+            .map_err(|_| anyhow::anyhow!("Google Drive account lookup unavailable"))?;
+        ensure!(
+            response.status().is_success(),
+            "Google Drive account lookup failed (HTTP {})",
+            response.status().as_u16()
+        );
+        Ok(document::<About>(response)?.user.permission_id)
     }
 
     pub fn authorize(
@@ -270,28 +337,8 @@ impl Google {
             let Some(tokens) = poll_response(response, &mut interval)? else {
                 continue;
             };
-            #[derive(Deserialize)]
-            struct About {
-                user: User,
-            }
-            #[derive(Deserialize)]
-            struct User {
-                #[serde(rename = "permissionId")]
-                permission_id: String,
-            }
-            let response = self
-                .client
-                .get(ABOUT)
-                .bearer_auth(&tokens.access_token.0)
-                .send()
-                .map_err(|_| anyhow::anyhow!("Google Drive account lookup unavailable"))?;
-            ensure!(
-                response.status().is_success(),
-                "Google Drive account lookup failed (HTTP {})",
-                response.status().as_u16()
-            );
-            let about: About = document(response)?;
-            return into_grant(tokens, credentials, about.user.permission_id);
+            let account_id = self.drive_account(ABOUT, &tokens.access_token)?;
+            return into_grant(tokens, credentials, account_id);
         }
     }
 }
@@ -386,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn agy_import_verifies_subject_without_storing_access() {
+    fn token_imports_verify_google_scope_and_account() {
         use std::{
             io::{BufRead, BufReader},
             net::TcpListener,
@@ -407,6 +454,15 @@ mod tests {
                     (
                         "POST /token",
                         r#"{"access_token":"fixture-access","scope":"https://www.googleapis.com/auth/userinfo.email"}"#,
+                    ),
+                    (
+                        "POST /token",
+                        r#"{"access_token":"fixture-access","scope":"https://www.googleapis.com/auth/drive","expires_in":3600}"#,
+                    ),
+                    ("GET /about", r#"{"user":{"permissionId":"drive-user"}}"#),
+                    (
+                        "POST /token",
+                        r#"{"access_token":"fixture-access","scope":"https://www.googleapis.com/auth/drive.file","expires_in":3600}"#,
                     ),
                 ] {
                     let (mut socket, _) = listener.accept().unwrap();
@@ -467,6 +523,7 @@ mod tests {
             provider: "google".into(),
             profile: "antigravity".into(),
             account: "1234".into(),
+            enrollment: None,
         };
         let import = |target: &Target| {
             google.import_antigravity(
@@ -510,6 +567,24 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("lacks the cloud-platform scope")
+        );
+        let import_drive = || {
+            google.import_drive(
+                parse_agy_token(AGY.as_bytes()).unwrap().client.unwrap(),
+                br#"{"access_token":"stale","refresh_token":"1//fixture-refresh","token_type":"Bearer","expiry":"2020-01-01T00:00:00Z"}"#,
+                &format!("http://{address}/token"),
+                &format!("http://{address}/about"),
+            )
+        };
+        let grant = import_drive().unwrap();
+        assert_eq!(grant.account_id, "drive-user");
+        assert_eq!(grant.access_token.0, "fixture-access");
+        assert_eq!(grant.refresh_token.0, "1//fixture-refresh");
+        assert!(
+            import_drive()
+                .unwrap_err()
+                .to_string()
+                .contains("lacks the full Drive scope")
         );
         server.join().unwrap();
     }

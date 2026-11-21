@@ -23,6 +23,12 @@
       enrollmentFile = "/run/agenix/oauth-alice-google";
       recoveryRecipients = ["age1luyy6j8g4689rqj2qwlu4znr3zjael48pq8tlgl5fu7l2l8r7qvqdfxaa5"];
     };
+    services.provenance.oauth.users.alice.enrollments.drive = {
+      provider = "google";
+      profile = "drive";
+      enrollmentFile = "/run/agenix/oauth-alice-drive";
+      recoveryRecipients = ["age1luyy6j8g4689rqj2qwlu4znr3zjael48pq8tlgl5fu7l2l8r7qvqdfxaa5"];
+    };
     services.provenance.oauth.users.root.providers.google = {
       profile = "drive-file";
       enrollmentFile = "/run/agenix/oauth-root-google";

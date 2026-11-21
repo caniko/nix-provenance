@@ -42,6 +42,30 @@ fn google_client_credentials_reject_ini_metacharacters() {
     }
 }
 
+#[test]
+fn full_drive_requires_the_verified_full_scope() {
+    let mut enrollment: Enrollment = serde_json::from_value(json!({
+        "version": 1, "generation": 1,
+        "target": {"host":"atlas","user":"user","provider":"google","profile":"drive","account":"default","enrollment":"my-drive"},
+        "grant": {
+            "accessToken":"a","refreshToken":"r","expiresAt":123,"accountId":"id",
+            "client":{"clientId":"client","clientSecret":"secret"},
+            "scopes":["https://www.googleapis.com/auth/drive.file"]
+        }
+    })).unwrap();
+    enrollment.target.validate().unwrap();
+    assert!(enrollment.validate(&enrollment.target).is_err());
+    enrollment.grant.scopes = Some(vec!["https://www.googleapis.com/auth/drive".into()]);
+    enrollment.validate(&enrollment.target).unwrap();
+    let mut other = serde_json::to_value(&enrollment.target).unwrap();
+    other["enrollment"] = "other-drive".into();
+    assert!(
+        enrollment
+            .validate(&serde_json::from_value(other).unwrap())
+            .is_err()
+    );
+}
+
 fn manifest(directory: &Path, provider: &str, profile: &str) -> Config {
     let config = Config {
         version: 1,
@@ -57,6 +81,7 @@ fn manifest(directory: &Path, provider: &str, profile: &str) -> Config {
             provider: provider.into(),
             profile: profile.into(),
             account: "default".into(),
+            enrollment: None,
         },
         state_directory: directory.join("state"),
         recovery_recipients: vec![age::x25519::Identity::generate().to_public().to_string()],

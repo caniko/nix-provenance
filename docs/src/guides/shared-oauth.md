@@ -1,16 +1,14 @@
 # Shared provider OAuth
 
-`provenance-oauth` authorizes a provider once for a Linux host and local user.
+`provenance-oauth` manages named provider enrollments for a Linux host and local user.
 Compatible applications obtain access credentials through supported plugin or
 command interfaces. The supported profiles are `openai/chatgpt`,
-`google/drive-file`, and `google/antigravity`.
+`google/drive-file`, `google/drive`, and `google/antigravity`.
 
 ## Google profiles
 
-Drive and Antigravity use separate grants. Antigravity's installed-app client
-cannot carry a Drive scope, and it does not support the Drive device flow.
-The NixOS module declares one Google profile per local user; for example, use
-`drive-file` for the `root` backup service and `antigravity` for your desktop user.
+Drive and Antigravity use separate grants. They can be enrolled under different
+IDs for the same local user.
 
 ### Drive and rclone
 
@@ -48,6 +46,23 @@ The helper's `access` command is OpenAI-only.
 The `drive.file` scope only grants access to files created or explicitly shared
 with this app, not arbitrary pre-existing Drive files.
 
+For full Drive access, declare a separate `provider = "google"; profile =
+"drive";` enrollment. Google does not offer this scope through device flow.
+Create a **Desktop app** OAuth client and authorize an rclone Drive remote with
+that client and the `drive` scope. Use rclone's interactive configuration to avoid
+putting the client secret on the command line. Pass the private rclone token JSON
+(the `token` value from the remote configuration) and the Desktop app client JSON:
+
+```sh
+"$helper" --config "$manifest" authorize atlas google --user can \
+  --profile drive --client-file "$client_json" --token-file "$rclone_token" \
+  --secret "$secret" --pending-directory "$pending"
+```
+
+The helper verifies the full scope with Google and identifies the Drive account.
+After deployment, render `rclone-config` from that enrollment's manifest as above;
+the output uses `scope = drive`. rclone still owns subsequent refreshes.
+
 ### Antigravity and agy
 
 Sign in through agy's browser flow once. Use the resulting
@@ -75,6 +90,10 @@ Integrated Home Manager receives the enrollment binding automatically. For
 standalone Home Manager, also import `homeModules.oauth` and set
 `nix-provenance.oauth.accounts.google.{configFile,package,stateDirectory}` to
 the public manifest, helper, and the state directory from the manifest.
+Set `googleAuth.enrollment` to the ID to install by default (defaults to
+`google`). Start `nix-provenance-antigravity-google-auth@ID.service` with
+`systemctl --user` to switch the same profile directories to another declared
+Antigravity enrollment. The ordinary unit still installs the declared default.
 Unset the legacy `googleAuth.tokenFile` when switching to the enrollment; the
 installer accepts exactly one source. It calls `agy-token` at runtime and
 replaces a profile copy only when its client, refresh token or project differs
@@ -99,7 +118,7 @@ For OpenAI this keeps one refresh owner without introducing a network broker or 
 applications. Stock OpenCode and OMP continue to own model catalogs, inference,
 and their normal request protocols.
 
-The state directory is `/var/lib/provenance-oauth-USER-PROVIDER`, owned by the
+The state directory is `/var/lib/provenance-oauth-USER-ID`, owned by the
 declared user with mode `0700`; state and lock files have mode `0600`. This is
 isolation between local users. Applications running as the same UID are trusted
 and can read that user's files. OpenAI adapters return only access tokens,
@@ -157,10 +176,18 @@ The module exports `manifests.USER.PROVIDER` and `helperPackage` under
 never the enrollment grant. Build the target's helper and manifest before first
 enrollment; they do not require a plaintext grant at evaluation time.
 
+For multiple grants, declare `services.provenance.oauth.users.USER.enrollments.ID`
+instead, with the same fields plus `provider`. IDs match `[a-z0-9][a-z0-9-]*`
+and cannot duplicate a `providers` key. Each uses `manifests.USER.ID`,
+`/etc/provenance/oauth/USER-ID.json`, and `provenance-oauth-USER-ID` units. Legacy
+`providers.PROVIDER` entries keep their existing manifests and state.
+
 When integrated Home Manager is present, enabled compatible applications are
 bound automatically. Standalone Home Manager imports `homeModules.oauth` and
 sets `nix-provenance.oauth.accounts.openai.{configFile,package}` to the host's
 public manifest and helper.
+Named Home Manager bindings use `nix-provenance.oauth.accounts.ID` and carry the
+provider and profile from NixOS. Set those explicitly with standalone Home Manager.
 
 ## Authorize, deploy, and finalize
 

@@ -35,6 +35,8 @@ pub struct Target {
     pub provider: String,
     pub profile: String,
     pub account: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment: Option<String>,
 }
 
 impl Target {
@@ -60,9 +62,20 @@ impl Target {
         ensure!(
             matches!(
                 (self.provider.as_str(), self.profile.as_str()),
-                ("openai", "chatgpt") | ("google", "drive-file" | "antigravity")
+                ("openai", "chatgpt") | ("google", "drive-file" | "drive" | "antigravity")
             ),
             "unsupported OAuth profile"
+        );
+        ensure!(
+            self.enrollment.as_ref().is_none_or(|id| {
+                id.bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            }),
+            "invalid OAuth enrollment ID"
         );
         Ok(())
     }
@@ -203,7 +216,17 @@ impl Grant {
         self.validate()?;
         match (&*target.provider, &self.client) {
             ("openai", None) => Ok(()),
-            ("google", Some(client)) => client.validate(),
+            ("google", Some(client)) => {
+                client.validate()?;
+                ensure!(
+                    target.profile != "drive"
+                        || self.scopes.as_ref().is_some_and(|scopes| scopes
+                            .iter()
+                            .any(|scope| scope == google::DRIVE_SCOPE)),
+                    "Google Drive grant lacks the full Drive scope"
+                );
+                Ok(())
+            }
             _ => anyhow::bail!("OAuth client credentials do not match provider"),
         }
     }

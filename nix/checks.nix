@@ -286,11 +286,17 @@ in
       stateDirectory = "/tmp/nix-provenance-antigravity-state";
       fakeHelper = pkgs.writeShellScriptBin "provenance-oauth" ''
         set -eu
-        test "$#" = 3 && test "$1" = --config && test "$2" = /etc/provenance/oauth/user-google.json && test "$3" = agy-token || exit 1
-        exec ${lib.getExe' pkgs.coreutils "cat"} ${stateDirectory}/state.json
+        test "$#" = 3 && test "$1" = --config && test "$3" = agy-token || exit 1
+        case "$2" in
+          /etc/provenance/oauth/user-google.json) exec ${lib.getExe' pkgs.coreutils "cat"} ${stateDirectory}/state.json ;;
+          /etc/provenance/oauth/user-work.json) exec ${lib.getExe' pkgs.coreutils "cat"} ${stateDirectory}/work.json ;;
+          *) exit 1 ;;
+        esac
       '';
       google = {
         configFile = "/etc/provenance/oauth/user-google.json";
+        provider = "google";
+        profile = "antigravity";
         package = fakeHelper;
         inherit stateDirectory;
       };
@@ -322,7 +328,13 @@ in
                 inherit tokenFile profileDirectories;
               };
             }
-            (lib.optionalAttrs (enrollment != null) {nix-provenance.oauth.accounts.google = enrollment;})
+            (lib.optionalAttrs (enrollment != null) {
+              nix-provenance.oauth.accounts = {
+                google = enrollment;
+                work = enrollment // {configFile = "/etc/provenance/oauth/user-work.json";};
+                drive = enrollment // {profile = "drive";};
+              };
+            })
           ];
           specialArgs = {inherit pkgs;};
         };
@@ -332,6 +344,7 @@ in
       single = evaluate [(builtins.head profiles)] tokenFile null;
       enrolled = evaluate profiles null google;
       enrollmentService = enrolled.config.systemd.user.services.nix-provenance-antigravity-google-auth;
+      template = enrolled.config.systemd.user.services."nix-provenance-antigravity-google-auth@";
       enrollmentPath = enrolled.config.systemd.user.paths.nix-provenance-antigravity-google-auth;
       service = evaluated.config.systemd.user.services.nix-provenance-antigravity-google-auth;
       path = evaluated.config.systemd.user.paths.nix-provenance-antigravity-google-auth;
@@ -344,6 +357,7 @@ in
       assert lib.all (entry: entry.assertion) enrolled.config.assertions;
       assert enrollmentService.Unit.ConditionPathExists == "${stateDirectory}/state.json";
       assert enrollmentPath.Path.PathChanged == "${stateDirectory}/state.json";
+      assert lib.hasSuffix " %i" template.Service.ExecStart;
       assert !(lib.all (entry: entry.assertion) (evaluate profiles tokenFile google).config.assertions);
       assert !(lib.all (entry: entry.assertion) (evaluate profiles null null).config.assertions);
         runCommand "antigravity-google-auth-eval" {} ''
@@ -389,8 +403,21 @@ in
            # A stale grant saved back by a running agy is repaired on the next run.
            printf '{"client_id":"id","client_secret":"secret","refresh_token":"stale"}' > "$a"
            "$enroll"
-           cmp -s ${stateDirectory}/state.json "$a"
-           touch $out
+            cmp -s ${stateDirectory}/state.json "$a"
+            switch=${lib.escapeShellArg (lib.removeSuffix " %i" template.Service.ExecStart)}
+            printf '{"client_id":"id","client_secret":"secret","refresh_token":"work-fixture"}' > ${stateDirectory}/work.json
+            "$switch" work
+            cmp -s ${stateDirectory}/work.json "$a"
+            cmp -s ${stateDirectory}/work.json "$b"
+            for id in drive unknown; do
+              if "$switch" "$id" 2>/dev/null; then
+                echo "antigravity: accepted invalid instance $id" >&2
+                exit 1
+              fi
+            done
+            "$enroll"
+            cmp -s ${stateDirectory}/state.json "$a"
+            touch $out
         '';
 
     # Lint each crate against its isolated deps.
@@ -430,6 +457,8 @@ in
       svc = oauthEval.config.systemd.services.provenance-oauth-alice-openai;
       initial = oauthEval.config.systemd.services.provenance-oauth-alice-openai-initialize;
       bindings = oauthEval.config.home-manager.users;
+      drive = oauthEval.config.systemd.services.provenance-oauth-alice-drive;
+      driveManifest = oauthEval.config.services.provenance.oauth.manifests.alice.drive;
     in
       assert svc.serviceConfig.User == "alice";
       assert oauthEval.config.systemd.services.provenance-oauth-root-google.serviceConfig.User == "root";
@@ -439,6 +468,12 @@ in
       assert !(bindings ? root);
       assert bindings.alice.nix-provenance.oauth.accounts.google.configFile == oauthEval.config.services.provenance.oauth.manifests.alice.google;
       assert bindings.alice.nix-provenance.oauth.accounts.google.stateDirectory == "/var/lib/provenance-oauth-alice-google";
+      assert drive.serviceConfig.StateDirectory == "provenance-oauth-alice-drive";
+      assert drive.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-drive"];
+      assert oauthEval.config.environment.etc."provenance/oauth/alice-drive.json".source == driveManifest;
+      assert bindings.alice.nix-provenance.oauth.accounts.drive.configFile == driveManifest;
+      assert bindings.alice.nix-provenance.oauth.accounts.drive.provider == "google";
+      assert bindings.alice.nix-provenance.oauth.accounts.drive.profile == "drive";
       assert svc.serviceConfig.StateDirectoryMode == "0700";
       assert svc.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-openai"];
       assert !(lib.hasInfix "--initialize" svc.serviceConfig.ExecStart);

@@ -12,24 +12,49 @@
     exec ${lib.getExe cfg.package} "$@"
   '';
   entries = lib.concatLists (lib.mapAttrsToList (user: value:
-    lib.mapAttrsToList (provider: settings: let
-      name = "provenance-oauth-${user}-${provider}";
+    lib.mapAttrsToList (id: settings: let
+      named = value.enrollments ? ${id};
+      inherit (settings) provider;
+      name = "provenance-oauth-${user}-${id}";
       stateDirectory = "/var/lib/${name}";
       manifest = pkgs.writeText "${name}.json" (builtins.toJSON {
         version = 1;
-        target = {
-          host = config.networking.hostName;
-          inherit user provider;
-          inherit (settings) profile account;
-        };
+        target =
+          {
+            host = config.networking.hostName;
+            inherit user provider;
+            inherit (settings) profile account;
+          }
+          // lib.optionalAttrs named {enrollment = id;};
         inherit stateDirectory;
         inherit (settings) recoveryRecipients;
       });
     in {
-      inherit user provider settings name manifest stateDirectory;
+      inherit user id provider named settings name manifest stateDirectory;
     })
-    value.providers)
+    ((lib.mapAttrs (provider: settings: settings // {inherit provider;}) value.providers) // value.enrollments))
   cfg.users);
+  unitNames = lib.concatMap (entry: [entry.name "${entry.name}-initialize"]) entries;
+  enrollmentOptions = {
+    profile = mkOption {
+      type = types.enum ["chatgpt" "drive-file" "drive" "antigravity"];
+      default = "chatgpt";
+      description = "Compatible provider authorization profile.";
+    };
+    account = mkOption {
+      type = types.str;
+      default = "default";
+      description = "Host-local enrollment account alias. For google/antigravity, either default or the expected Google account subject.";
+    };
+    enrollmentFile = mkOption {
+      type = types.str;
+      description = "Runtime agenix enrollment file, loaded through systemd credentials.";
+    };
+    recoveryRecipients = mkOption {
+      type = types.nonEmptyListOf types.str;
+      description = "Public age X25519, SSH or plugin recipients for current-state checkpoints.";
+    };
+  };
   hasHomeManager = options ? home-manager;
   service = initialize: entry: {
     description = "${
@@ -83,31 +108,26 @@ in {
     users = mkOption {
       default = {};
       type = types.attrsOf (types.submodule {
-        options.providers = mkOption {
-          default = {};
-          type = types.attrsOf (types.submodule {
-            options = {
-              profile = mkOption {
-                type = types.enum ["chatgpt" "drive-file" "antigravity"];
-                default = "chatgpt";
-                description = "Compatible provider authorization profile.";
-              };
-              account = mkOption {
-                type = types.str;
-                default = "default";
-                description = "Host-local enrollment account alias. For google/antigravity, either default or the expected Google account subject.";
-              };
-              enrollmentFile = mkOption {
-                type = types.str;
-                description = "Runtime agenix enrollment file, loaded through systemd credentials.";
-              };
-              recoveryRecipients = mkOption {
-                type = types.nonEmptyListOf types.str;
-                description = "Public age X25519, SSH or plugin recipients for current-state checkpoints.";
-              };
-            };
-          });
-          description = "Host-shared OAuth provider enrollments.";
+        options = {
+          providers = mkOption {
+            default = {};
+            type = types.attrsOf (types.submodule {options = enrollmentOptions;});
+            description = "Legacy OAuth enrollments keyed by provider.";
+          };
+          enrollments = mkOption {
+            default = {};
+            type = types.attrsOf (types.submodule {
+              options =
+                enrollmentOptions
+                // {
+                  provider = mkOption {
+                    type = types.enum ["google" "openai"];
+                    description = "OAuth provider for this named enrollment.";
+                  };
+                };
+            });
+            description = "OAuth enrollments keyed by a simple lowercase identifier.";
+          };
         };
       });
       description = "Enrollments isolated by host and local user; compatible enabled Home Manager apps bind automatically.";
@@ -115,7 +135,7 @@ in {
     manifests = mkOption {
       type = types.attrsOf (types.attrsOf types.path);
       readOnly = true;
-      description = "Public per-user/provider manifests for the CLI and application adapters.";
+      description = "Public per-user/enrollment manifests for the CLI and application adapters.";
     };
   };
 
@@ -123,12 +143,27 @@ in {
     {
       services.provenance.oauth.helperPackage = helper;
       services.provenance.oauth.manifests = lib.foldl' (result: entry:
-        lib.recursiveUpdate result {${entry.user}.${entry.provider} = entry.manifest;}) {}
+        lib.recursiveUpdate result {${entry.user}.${entry.id} = entry.manifest;}) {}
       entries;
       assertions =
-        lib.concatMap (entry: [
+        [
           {
-            assertion = (entry.provider == "openai" && entry.settings.profile == "chatgpt") || (entry.provider == "google" && builtins.elem entry.settings.profile ["drive-file" "antigravity"]);
+            assertion = lib.allUnique unitNames;
+            message = "provenance OAuth: generated service names must be unique.";
+          }
+        ]
+        ++ lib.mapAttrsToList (user: value: {
+          assertion = lib.intersectLists (builtins.attrNames value.providers) (builtins.attrNames value.enrollments) == [];
+          message = "provenance OAuth: ${user}'s providers and enrollments must not share IDs.";
+        })
+        cfg.users
+        ++ lib.concatMap (entry: [
+          {
+            assertion = builtins.match "[a-z0-9][a-z0-9-]*" entry.id != null;
+            message = "provenance OAuth: invalid enrollment ID '${entry.id}'.";
+          }
+          {
+            assertion = (entry.provider == "openai" && entry.settings.profile == "chatgpt") || (entry.provider == "google" && builtins.elem entry.settings.profile ["drive-file" "drive" "antigravity"]);
             message = "provenance OAuth: unsupported provider/profile pair '${entry.provider}/${entry.settings.profile}'.";
           }
           {
@@ -142,7 +177,7 @@ in {
         ])
         entries;
       environment.systemPackages = lib.optional (entries != []) helper;
-      environment.etc = builtins.listToAttrs (map (entry: lib.nameValuePair "provenance/oauth/${entry.user}-${entry.provider}.json" {source = entry.manifest;}) entries);
+      environment.etc = builtins.listToAttrs (map (entry: lib.nameValuePair "provenance/oauth/${entry.user}-${entry.id}.json" {source = entry.manifest;}) entries);
       systemd.services = builtins.listToAttrs (lib.concatMap (entry: [
           (lib.nameValuePair entry.name (service false entry))
           (lib.nameValuePair "${entry.name}-initialize" (service true entry))
@@ -161,16 +196,18 @@ in {
     }
     (lib.optionalAttrs hasHomeManager {
       home-manager.sharedModules = [self.homeModules.oauth];
-      home-manager.users = lib.foldl' (result: entry:
-        lib.recursiveUpdate result {
-          ${entry.user}.nix-provenance.oauth.accounts.${entry.provider} =
-            {
+      home-manager.users =
+        lib.foldl' (result: entry:
+          lib.recursiveUpdate result {
+            ${entry.user}.nix-provenance.oauth.accounts.${entry.id} = {
               configFile = entry.manifest;
               package = helper;
-            }
-            // lib.optionalAttrs (entry.provider == "google") {inherit (entry) stateDirectory;};
-        }) {}
-      (lib.filter (entry: entry.provider == "openai" || (entry.provider == "google" && entry.settings.profile == "antigravity")) entries);
+              inherit (entry) provider stateDirectory;
+              inherit (entry.settings) profile;
+            };
+          }) {}
+        # Legacy service-only Drive entries (e.g. root) must not create HM users.
+        (lib.filter (entry: entry.named || entry.provider == "openai" || entry.settings.profile == "antigravity") entries);
     })
   ];
 }
