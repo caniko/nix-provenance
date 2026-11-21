@@ -4,6 +4,7 @@
 pub mod age_file;
 pub mod google;
 pub mod openai;
+pub mod opencode;
 pub mod state;
 
 use anyhow::{Context, Result, ensure};
@@ -35,6 +36,8 @@ pub struct Target {
     pub provider: String,
     pub profile: String,
     pub account: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment: Option<String>,
 }
 
 impl Target {
@@ -47,7 +50,11 @@ impl Target {
     }
 
     pub fn validate(&self) -> Result<()> {
-        for value in [&self.host, &self.user, &self.account] {
+        let values = [&self.host, &self.user];
+        for value in values
+            .into_iter()
+            .chain((self.profile != "opencode").then_some(&self.account))
+        {
             ensure!(
                 !value.is_empty()
                     && value.len() <= 128
@@ -60,9 +67,40 @@ impl Target {
         ensure!(
             matches!(
                 (self.provider.as_str(), self.profile.as_str()),
-                ("openai", "chatgpt") | ("google", "drive-file" | "antigravity")
+                ("openai", "chatgpt" | "opencode")
+                    | ("google", "drive-file" | "drive" | "antigravity")
             ),
             "unsupported OAuth profile"
+        );
+        ensure!(
+            self.profile != "opencode" || opencode::valid_label(&self.account),
+            "invalid OpenCode credential label"
+        );
+        ensure!(
+            self.enrollment.as_ref().is_none_or(|id| {
+                id.len() <= 48
+                    && id
+                        .bytes()
+                        .next()
+                        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            }),
+            "invalid OAuth enrollment ID"
+        );
+        Ok(())
+    }
+
+    pub fn require_access(&self) -> Result<()> {
+        ensure!(
+            self.profile != "opencode",
+            "openai/opencode grants are refreshed only by OpenCode"
+        );
+        ensure!(
+            self.provider == "openai",
+            "{}",
+            self.google_refresh_owner_message()
         );
         Ok(())
     }
@@ -104,6 +142,7 @@ pub struct Grant {
     pub refresh_token: Secret,
     #[serde(default)]
     pub expires_at: u64,
+    /// For `openai/opencode`, the native OpenCode credential ID.
     pub account_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<OAuthClient>,
@@ -111,6 +150,8 @@ pub struct Grant {
     pub project_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opencode: Option<opencode::Details>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -187,6 +228,10 @@ impl Grant {
     }
 
     pub fn validate_for(&self, target: &Target) -> Result<()> {
+        ensure!(
+            self.opencode.is_some() == (target.profile == "opencode"),
+            "OpenCode credential details do not match the OAuth profile"
+        );
         if target.provider == "google" && target.profile == "antigravity" {
             self.validate_antigravity_credentials()?;
             self.validate_account_id()?;
@@ -202,8 +247,19 @@ impl Grant {
         }
         self.validate()?;
         match (&*target.provider, &self.client) {
+            ("openai", None) if target.profile == "opencode" => opencode::validate(self),
             ("openai", None) => Ok(()),
-            ("google", Some(client)) => client.validate(),
+            ("google", Some(client)) => {
+                client.validate()?;
+                ensure!(
+                    target.profile != "drive"
+                        || self.scopes.as_ref().is_some_and(|scopes| scopes
+                            .iter()
+                            .any(|scope| scope == google::DRIVE_SCOPE)),
+                    "Google Drive grant lacks the full Drive scope"
+                );
+                Ok(())
+            }
             _ => anyhow::bail!("OAuth client credentials do not match provider"),
         }
     }

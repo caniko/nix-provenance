@@ -25,6 +25,7 @@ fn fixture() -> (tempfile::TempDir, Config, age::x25519::Identity) {
             provider: "openai".into(),
             profile: "chatgpt".into(),
             account: "default".into(),
+            enrollment: None,
         },
         state_directory: dir.path().join("state"),
         recovery_recipients: vec![identity.to_public().to_string()],
@@ -45,6 +46,7 @@ fn enrollment(config: &Config, generation: u64) -> Enrollment {
             client: None,
             project_id: None,
             scopes: None,
+            opencode: None,
         },
     }
 }
@@ -59,6 +61,7 @@ fn rotate(grant: &Grant) -> anyhow::Result<Grant> {
         client: None,
         project_id: None,
         scopes: None,
+        opencode: None,
     })
 }
 

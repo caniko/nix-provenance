@@ -14,6 +14,7 @@ fn authorize_checks_client_file_for_provider_before_resuming() {
                 provider: provider.into(),
                 profile: profile.into(),
                 account: "default".into(),
+                enrollment: None,
             },
             state_directory: dir.path().join("state"),
             recovery_recipients: vec![age::x25519::Identity::generate().to_public().to_string()],
@@ -55,6 +56,7 @@ fn agenix_handoff_is_resumable_and_contains_only_paths_in_argv() {
         provider: "openai".into(),
         profile: "chatgpt".into(),
         account: "default".into(),
+        enrollment: None,
     };
     let config = Config {
         version: 1,
@@ -86,6 +88,7 @@ fn agenix_handoff_is_resumable_and_contains_only_paths_in_argv() {
             client: None,
             project_id: None,
             scopes: None,
+            opencode: None,
         },
     };
     atomic_write(
@@ -232,6 +235,7 @@ fn expired_google_export_and_removal_do_not_refresh() {
         provider: "google".into(),
         profile: "drive-file".into(),
         account: "default".into(),
+        enrollment: None,
     };
     let config = Config {
         version: 1,
@@ -254,6 +258,7 @@ fn expired_google_export_and_removal_do_not_refresh() {
             }),
             project_id: None,
             scopes: None,
+            opencode: None,
         },
     };
     let config_file = dir.path().join("config.json");

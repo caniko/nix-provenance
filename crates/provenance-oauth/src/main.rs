@@ -8,6 +8,7 @@ use provenance_oauth::{
     google::{Google, write_agy_token},
     now,
     openai::OpenAi,
+    opencode,
     state::{Store, atomic_write, read_json},
 };
 use serde::{Deserialize, Serialize};
@@ -51,7 +52,7 @@ enum Action {
         /// Google OAuth client JSON downloaded from Cloud Console.
         #[arg(long)]
         client_file: Option<PathBuf>,
-        /// Antigravity acp_token.json from agy's browser sign-in.
+        /// agy's acp_token.json, rclone's token JSON, or `-` for OpenCode auth export on stdin.
         #[arg(long, value_parser = PathBufValueParser::new().map(Box::new))]
         token_file: Option<Box<PathBuf>>,
         /// Private operator-side transaction directory. Retries reuse enrollment.
@@ -94,6 +95,18 @@ enum Action {
     },
     /// Emit agy's Antigravity token JSON to a pipe.
     AgyToken,
+    /// Checkpoint a rotated ChatGPT credential from the local OpenCode store.
+    OpencodeSync {
+        #[arg(long, default_value = "opencode")]
+        opencode: PathBuf,
+    },
+    /// Restore a missing ChatGPT credential to the local OpenCode store.
+    OpencodeInstall {
+        #[arg(long, default_value = "opencode")]
+        opencode: PathBuf,
+        #[arg(long)]
+        activate: bool,
+    },
     /// Inspect enrollment metadata; never prints token values.
     Status,
     /// Revoke local consumption while retaining the generation tombstone.
@@ -178,29 +191,41 @@ fn run(cli: Cli) -> Result<()> {
                     user,
                     provider,
                     profile,
-                    account
+                    account,
+                    enrollment: config.target.enrollment.clone(),
                 },
             "requested target does not match the evaluated manifest"
         );
-        if config.target.profile == "antigravity" {
+        let import_token = matches!(
+            config.target.profile.as_str(),
+            "antigravity" | "drive" | "opencode"
+        );
+        let import_client =
+            config.target.provider == "google" && config.target.profile != "antigravity";
+        for (flag, provided, required) in [
+            ("--token-file", token_file.is_some(), import_token),
+            ("--client-file", client_file.is_some(), import_client),
+        ] {
             ensure!(
-                client_file.is_none(),
-                "--client-file is rejected for google/antigravity"
-            );
-            ensure!(
-                token_file.is_some(),
-                "--token-file is required for google/antigravity"
-            );
-        } else {
-            ensure!(
-                token_file.is_none(),
-                "--token-file is rejected outside google/antigravity"
-            );
-            ensure!(
-                (config.target.provider == "google") == client_file.is_some(),
-                "--client-file is required for google and rejected for openai"
+                !provided || required,
+                "{flag} is rejected for this OAuth profile"
             );
         }
+        ensure!(
+            token_file.is_some() || !import_token,
+            "--token-file is required for this OAuth profile"
+        );
+        ensure!(
+            config.target.profile != "opencode"
+                || token_file
+                    .as_deref()
+                    .is_some_and(|path| path.as_path() == Path::new("-")),
+            "openai/opencode requires --token-file -; pipe OpenCode auth export to stdin"
+        );
+        ensure!(
+            client_file.is_some() || !import_client,
+            "--client-file is required for this OAuth profile"
+        );
         let pending_config = Config {
             state_directory: pending_directory,
             ..config.clone()
@@ -246,6 +271,9 @@ fn run(cli: Cli) -> Result<()> {
                 );
             };
             let grant = match config.target.provider.as_str() {
+                "openai" if config.target.profile == "opencode" => {
+                    opencode::authorize(&config.target)?
+                }
                 "openai" => OpenAi::new()?.authorize(prompt)?,
                 "google" if config.target.profile == "antigravity" => {
                     let bytes = read_google_file(
@@ -255,9 +283,21 @@ fn run(cli: Cli) -> Result<()> {
                     Google::new()?.authorize_antigravity(&bytes, &config.target)?
                 }
                 "google" => {
-                    let credentials =
-                        read_client_file(client_file.as_deref().context("missing --client-file")?)?;
-                    Google::new()?.authorize(credentials, prompt)?
+                    let full_drive = config.target.profile == "drive";
+                    let credentials = read_client_file(
+                        client_file.as_deref().context("missing --client-file")?,
+                        full_drive,
+                    )?;
+                    let google = Google::new()?;
+                    if full_drive {
+                        let bytes = read_google_file(
+                            token_file.as_deref().context("missing --token-file")?,
+                            "rclone token",
+                        )?;
+                        google.authorize_drive(credentials, &bytes)?
+                    } else {
+                        google.authorize(credentials, prompt)?
+                    }
                 }
                 _ => unreachable!(),
             };
@@ -317,11 +357,16 @@ fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
     verify_local_target(&config.target)?;
-    // Refused before the lock: a Google access call must not create or wait on state.
+    // Refuse requests for another refresh owner before opening state.
+    if matches!(cli.command, Action::Access { .. }) {
+        config.target.require_access()?;
+    }
     ensure!(
-        !matches!(cli.command, Action::Access { .. }) || config.target.provider == "openai",
-        "{}",
-        config.target.google_refresh_owner_message()
+        !matches!(
+            cli.command,
+            Action::OpencodeSync { .. } | Action::OpencodeInstall { .. }
+        ) || config.target.profile == "opencode",
+        "command requires openai/opencode"
     );
     ensure!(
         !matches!(cli.command, Action::AgyToken)
@@ -330,8 +375,8 @@ fn run(cli: Cli) -> Result<()> {
     );
     ensure!(
         !matches!(cli.command, Action::RcloneConfig { .. })
-            || (config.target.provider == "google" && config.target.profile == "drive-file"),
-        "rclone config requires google/drive-file"
+            || matches!(config.target.profile.as_str(), "drive-file" | "drive"),
+        "rclone config requires google/drive-file or google/drive"
     );
     let store = Store::lock(&config)?;
     match cli.command {
@@ -364,7 +409,12 @@ fn run(cli: Cli) -> Result<()> {
                 "rclone credentials must be consumed through a pipe"
             );
             let grant = store.grant()?;
-            let output = Zeroizing::new(rclone_config(&remote, &grant)?);
+            let scope = if config.target.profile == "drive" {
+                "drive"
+            } else {
+                "drive.file"
+            };
+            let output = Zeroizing::new(rclone_config(&remote, scope, &grant)?);
             std::io::stdout().lock().write_all(output.as_bytes())?;
         }
         Action::AgyToken => {
@@ -375,6 +425,10 @@ fn run(cli: Cli) -> Result<()> {
             let mut stdout = std::io::stdout().lock();
             write_agy_token(store.grant()?, &mut stdout)?;
             writeln!(stdout)?;
+        }
+        Action::OpencodeSync { opencode } => opencode::sync(&store, &opencode)?,
+        Action::OpencodeInstall { opencode, activate } => {
+            opencode::install(&store, &opencode, activate)?
         }
         Action::Status => println!("{}", store.status()?),
         Action::Remove => {
@@ -407,12 +461,16 @@ fn read_google_file(path: &Path, kind: &str) -> Result<Zeroizing<Vec<u8>>> {
     Ok(bytes)
 }
 
-fn read_client_file(path: &Path) -> Result<OAuthClient> {
+fn read_client_file(path: &Path, desktop: bool) -> Result<OAuthClient> {
     let bytes = read_google_file(path, "Google client")?;
     let document: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow::anyhow!("invalid Google client JSON"))?;
     let root = document.as_object().context("invalid Google client JSON")?;
-    let fields = if root.contains_key("client_id") || root.contains_key("client_secret") {
+    let fields = if desktop {
+        root.get("installed")
+            .and_then(serde_json::Value::as_object)
+            .context("google/drive requires a Desktop app (installed) client JSON")?
+    } else if root.contains_key("client_id") || root.contains_key("client_secret") {
         root
     } else {
         let mut objects = root.values().filter_map(serde_json::Value::as_object);
@@ -438,7 +496,7 @@ fn read_client_file(path: &Path) -> Result<OAuthClient> {
     Ok(client)
 }
 
-fn rclone_config(remote: &str, grant: &provenance_oauth::Grant) -> Result<String> {
+fn rclone_config(remote: &str, scope: &str, grant: &provenance_oauth::Grant) -> Result<String> {
     ensure!(
         !remote.is_empty()
             && remote
@@ -459,7 +517,7 @@ fn rclone_config(remote: &str, grant: &provenance_oauth::Grant) -> Result<String
     )?);
     let token = Zeroizing::new(token.replace('%', "\\u0025"));
     Ok(format!(
-        "[{remote}]\ntype = drive\nclient_id = {}\nclient_secret = {}\nscope = drive.file\ntoken = {}\n",
+        "[{remote}]\ntype = drive\nclient_id = {}\nclient_secret = {}\nscope = {scope}\ntoken = {}\n",
         client.client_id, client.client_secret.0, *token
     ))
 }
@@ -532,9 +590,13 @@ mod tests {
             r#"{"installed":{"client_id":"id","client_secret":"secret","redirect_uris":[]}}"#,
         ] {
             fs::write(&path, json).unwrap();
-            let client = read_client_file(&path).unwrap();
+            let client = read_client_file(&path, false).unwrap();
             assert_eq!(client.client_id, "id");
             assert_eq!(client.client_secret.0, "secret");
+            assert_eq!(
+                read_client_file(&path, true).is_ok(),
+                json.contains("\"installed\"")
+            );
         }
         for json in [
             r#"{"client_id":"id"}"#,
@@ -542,10 +604,10 @@ mod tests {
             r#"{"a":{"client_id":"id","client_secret":"secret"},"b":{}}"#,
         ] {
             fs::write(&path, json).unwrap();
-            assert!(read_client_file(&path).is_err());
+            assert!(read_client_file(&path, false).is_err());
         }
         fs::write(&path, vec![b' '; 64 * 1024 + 1]).unwrap();
-        assert!(read_client_file(&path).is_err());
+        assert!(read_client_file(&path, false).is_err());
     }
 
     #[test]
@@ -561,15 +623,17 @@ mod tests {
             }),
             project_id: None,
             scopes: None,
+            opencode: None,
         };
         assert_eq!(
-            rclone_config("gdrive", &grant).unwrap(),
+            rclone_config("gdrive", "drive.file", &grant).unwrap(),
             "[gdrive]\ntype = drive\nclient_id = id\nclient_secret = secret\nscope = drive.file\ntoken = {\"access_token\":\"access\",\"expiry\":\"2023-11-14T22:13:20.000Z\",\"refresh_token\":\"refresh\",\"token_type\":\"Bearer\"}\n"
         );
-        assert!(rclone_config("bad\n[other]", &grant).is_err());
+        assert!(rclone_config("bad\n[other]", "drive", &grant).is_err());
         let mut grant = grant;
         grant.access_token.0 = "%(type)s".into();
-        let output = rclone_config("gdrive", &grant).unwrap();
+        let output = rclone_config("gdrive", "drive", &grant).unwrap();
+        assert!(output.contains("\nscope = drive\n"));
         let token = output
             .lines()
             .find_map(|line| line.strip_prefix("token = "))

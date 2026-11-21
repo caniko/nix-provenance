@@ -4,6 +4,13 @@
 
 ### Added
 
+- `openai/opencode` enrolls and checkpoints a named native ChatGPT login
+  without refreshing it or using an adapter. Home Manager enables hourly
+  backups and live switching through OpenCode's native auth commands.
+- Named OAuth enrollments let a local user hold multiple grants from the same
+  provider without changing legacy unit names or state. `google/drive` imports
+  a Desktop-client rclone grant for full Drive access. Antigravity can switch
+  among its named Google grants through a user service instance.
 - Google Drive device authorization and rclone configuration export; rclone refreshes the Drive grant. Download the OAuth client JSON from Google Cloud Console Credentials, pass it to `authorize --client-file`, and delete it after enrollment.
 - `google/antigravity` enrolls agy's existing Google sign-in with
   `authorize --token-file` and exports it with `agy-token`. Home Manager can

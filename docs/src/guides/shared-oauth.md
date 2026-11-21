@@ -1,16 +1,14 @@
 # Shared provider OAuth
 
-`provenance-oauth` authorizes a provider once for a Linux host and local user.
+`provenance-oauth` manages named provider enrollments for a Linux host and local user.
 Compatible applications obtain access credentials through supported plugin or
-command interfaces. The supported profiles are `openai/chatgpt`,
-`google/drive-file`, and `google/antigravity`.
+command interfaces. The supported profiles are `openai/chatgpt`, `openai/opencode`,
+`google/drive-file`, `google/drive`, and `google/antigravity`.
 
 ## Google profiles
 
-Drive and Antigravity use separate grants. Antigravity's installed-app client
-cannot carry a Drive scope, and it does not support the Drive device flow.
-The NixOS module declares one Google profile per local user; for example, use
-`drive-file` for the `root` backup service and `antigravity` for your desktop user.
+Drive and Antigravity use separate grants. They can be enrolled under different
+IDs for the same local user.
 
 ### Drive and rclone
 
@@ -44,9 +42,26 @@ provenance-oauth --config /etc/provenance/oauth/root-google.json rclone-config -
 
 Point rclone at that file. It contains both client credentials and refresh
 token; keep it private and ephemeral. rclone refreshes the Drive grant itself.
-The helper's `access` command is OpenAI-only.
+The helper's `access` command is only for `openai/chatgpt`.
 The `drive.file` scope only grants access to files created or explicitly shared
 with this app, not arbitrary pre-existing Drive files.
+
+For full Drive access, declare a separate `provider = "google"; profile =
+"drive";` enrollment. Google does not offer this scope through device flow.
+Create a **Desktop app** OAuth client and authorize an rclone Drive remote with
+that client and the `drive` scope. Use rclone's interactive configuration to avoid
+putting the client secret on the command line. Pass the private rclone token JSON
+(the `token` value from the remote configuration) and the Desktop app client JSON:
+
+```sh
+"$helper" --config "$manifest" authorize atlas google --user can \
+  --profile drive --client-file "$client_json" --token-file "$rclone_token" \
+  --secret "$secret" --pending-directory "$pending"
+```
+
+The helper verifies the full scope with Google and identifies the Drive account.
+After deployment, render `rclone-config` from that enrollment's manifest as above;
+the output uses `scope = drive`. rclone still owns subsequent refreshes.
 
 ### Antigravity and agy
 
@@ -75,6 +90,11 @@ Integrated Home Manager receives the enrollment binding automatically. For
 standalone Home Manager, also import `homeModules.oauth` and set
 `nix-provenance.oauth.accounts.google.{configFile,package,stateDirectory}` to
 the public manifest, helper, and the state directory from the manifest.
+Set `googleAuth.enrollment` to the ID to install by default (defaults to
+`google`). Start `nix-provenance-antigravity-google-auth@ID.service` with
+`systemctl --user` to switch the same profile directories to another declared
+Antigravity enrollment. The ordinary unit restores the declared default on
+Home Manager activation and login.
 Unset the legacy `googleAuth.tokenFile` when switching to the enrollment; the
 installer accepts exactly one source. It calls `agy-token` at runtime and
 replaces a profile copy only when its client, refresh token or project differs
@@ -89,17 +109,18 @@ copy keeps refreshing until it is deleted or the grant is revoked at Google.
 
 ## Ownership and lifecycle
 
-nix-provenance owns authorization, grant validation, enrollment generations,
-refresh, durable state, encrypted checkpoints, and consumer adapters. The fleet
+nix-provenance manages enrollment generations, durable state, encrypted
+checkpoints, and consumer adapters. For `openai/chatgpt` it also refreshes
+the grant. rclone, agy, and native OpenCode refresh their own grants. The fleet
 operator owns host selection, agenix declarations/rekeying, deployment, and
 verification on the selected host.
 
-A short-lived CLI process locks the per-user state directory for each access.
-For OpenAI this keeps one refresh owner without introducing a network broker or patching
+A short-lived CLI process locks the enrollment state directory for each access.
+For `openai/chatgpt` this keeps one refresh owner without introducing a network broker or patching
 applications. Stock OpenCode and OMP continue to own model catalogs, inference,
 and their normal request protocols.
 
-The state directory is `/var/lib/provenance-oauth-USER-PROVIDER`, owned by the
+The state directory is `/var/lib/provenance-oauth-USER-ID`, owned by the
 declared user with mode `0700`; state and lock files have mode `0600`. This is
 isolation between local users. Applications running as the same UID are trusted
 and can read that user's files. OpenAI adapters return only access tokens,
@@ -110,10 +131,10 @@ An agenix enrollment is a bootstrap artifact, not the current token store:
 
 - A newer enrollment generation replaces live state. Older generations cannot
   replace it; reusing a generation with different contents is rejected.
-The refresh and checkpoint guarantees below apply to OpenAI, whose refresh
-tokens rotate. Google refresh tokens do not rotate and consumers refresh them
-outside the store, so a Google checkpoint holds the enrolled grant, which stays
-valid until it is revoked.
+  The durable refresh-intent guarantees below apply to `openai/chatgpt`.
+  Google refresh tokens do not rotate, so the checkpoint holds the enrolled
+  grant. The native `openai/opencode` checkpoint holds the most recently synced
+  grant; see the backup interval and recovery caveat below.
 
 - Refresh intent is durably recorded in live state and `checkpoint.age` before
   contacting the provider. A failed checkpoint before dispatch is retryable if
@@ -157,10 +178,19 @@ The module exports `manifests.USER.PROVIDER` and `helperPackage` under
 never the enrollment grant. Build the target's helper and manifest before first
 enrollment; they do not require a plaintext grant at evaluation time.
 
-When integrated Home Manager is present, enabled compatible applications are
-bound automatically. Standalone Home Manager imports `homeModules.oauth` and
+For multiple grants, declare `services.provenance.oauth.users.USER.enrollments.ID`
+instead, with the same fields plus `provider`. IDs match `[a-z0-9][a-z0-9-]{0,47}`
+and cannot duplicate a `providers` key. Each uses `manifests.USER.ID`,
+`/etc/provenance/oauth/USER-ID.json`, and `provenance-oauth-USER-ID` units. Legacy
+`providers.PROVIDER` entries keep their existing manifests and state.
+
+The NixOS module supplies OpenAI and Google Antigravity bindings to integrated
+Home Manager; Google Drive enrollments do not create Home Manager bindings.
+Standalone Home Manager imports `homeModules.oauth` and
 sets `nix-provenance.oauth.accounts.openai.{configFile,package}` to the host's
 public manifest and helper.
+Named Home Manager bindings use `nix-provenance.oauth.accounts.ID` and carry the
+provider and profile from NixOS. Set those explicitly with standalone Home Manager.
 
 ## Authorize, deploy, and finalize
 
@@ -215,6 +245,50 @@ starts a new generation.
 
 ## Consumers
 
+### OpenCode native ChatGPT (`openai/opencode`)
+
+With OpenCode v2.3.2 or compatible, sign in through its native
+ChatGPT login and keep selecting `openai/MODEL`. Declare an `openai` enrollment
+with `profile = "opencode"` and `account` set to its exact credential label.
+Pipe the export into the enrollment command; do not save the full export:
+
+```sh
+opencode auth export openai |
+  "$helper" --config "$manifest" authorize atlas openai --user can \
+    --profile opencode --account 'Work Account' --token-file - \
+    --secret "$secret" --pending-directory "$pending"
+```
+
+OpenCode enrollment accepts the export only on stdin (`--token-file -`).
+Only the matching credential goes into agenix. After deploying and initializing
+each enrollment, configure Home Manager:
+
+```nix
+nix-provenance.opencode.chatgpt = {
+  enable = true;
+  accounts = ["chat-work" "chat-personal"];
+  active = "chat-work";
+};
+```
+
+Set `chatgpt.package` if `programs.opencode.package` is not the package you
+use with that OpenCode database. Home Manager installs and activates `active`
+at activation and login. Start `nix-provenance-opencode-install@chat-personal.service` with
+`systemctl --user` to switch live. Install only imports if the label is missing;
+an existing OpenCode credential is never replaced. Sync and install require
+the label to identify the enrolled native credential ID. If the label was
+reassigned, re-enroll the intended login.
+Without `--activate`, the CLI does not request a switch. OpenCode itself
+selects the first login if the integration has no existing credential.
+
+The `nix-provenance-opencode-sync.timer` checkpoints rotations hourly. Start
+`nix-provenance-opencode-sync.service` before taking a backup or moving the
+credential. A refresh since the last successful sync can make the checkpoint
+unusable. Never run the same chain in two OpenCode databases at once. `access`
+refuses these enrollments, and no provenance plugin is added for them.
+
+### Shared ChatGPT adapters (`openai/chatgpt`)
+
 **OpenCode V2:** select `provenance-openai-chatgpt/MODEL` from its stock catalog.
 The separate provider ID avoids resolving an app-local OpenAI OAuth grant. The
 adapter retains the native OpenAI driver, sets `store=false`, and injects
@@ -234,8 +308,10 @@ stock Codex models and protocol. OMP invalidates its command cache on an auth
 retry, then invokes the shared helper again. A custom launcher must preserve
 extension discovery or explicitly load this extension.
 
-Existing app-local credentials are not imported. After verifying shared-model
-requests, remove obsolete grants through each application's supported logout
+The shared adapters each expose one provider. They bind only
+`nix-provenance.oauth.accounts.openai` with the `openai/chatgpt` profile.
+These adapters do not import existing app-local credentials.
+After verifying shared-model requests, remove obsolete grants through each application's supported logout
 interface if they are no longer needed. Applications may cache an access token
 until expiry; local removal does not revoke already issued provider tokens.
 
@@ -246,6 +322,8 @@ stop new access requests and persist a tombstone. For Google, removal stops new
 `rclone-config` or `agy-token` exports only. A consumer can keep refreshing with
 a copy already on disk until the grant is revoked in the Google account. Remove
 those private copies separately if needed. Reauthorization uses a newer enrollment.
+For `openai/opencode`, remove or revoke the OpenCode login separately; removing
+the provenance enrollment only stops copying credentials to or from OpenCode.
 
 Back up the **current** `checkpoint.age` outside the host. A copy of the original
 agenix enrollment cannot recover rotated credentials. For missing live state,
