@@ -17,6 +17,9 @@ _: {
   stateFile = "${toString stateDirectory}/state.json";
   unitName = "nix-provenance-antigravity-google-auth";
   systemctl = "${lib.getExe' pkgs.systemd "systemctl"} --user";
+  agyKeyring = pkgs.oo7.overrideAttrs (old: {
+    patches = (old.patches or []) ++ [./oo7-agy.patch];
+  });
   # Runtime paths only: the token never enters the store, and `${XDG_RUNTIME_DIR}`
   # expands at run time as it does for the fj tokens.
   runtimePrefix = "\${XDG_RUNTIME_DIR}";
@@ -88,12 +91,13 @@ _: {
         staged=
       done
       ${lib.optionalString cfg.keyring.enable ''
-        keyring=(timeout --kill-after=1s 5s ${lib.getExe' cfg.keyring.package "oo7-cli"})
-        attributes=(service=gemini username=antigravity xdg:content-type=text/plain)
+        # agy checks the actual collection path, not the "login" alias.
+        keyring=(timeout --kill-after=1s 5s ${lib.getExe' cfg.keyring.package "oo7-cli"}
+          --prefer-collection-path /org/freedesktop/secrets/collection/login)
+        attributes=(service=gemini username=antigravity)
         same_refresh=".token.refresh_token == \$source[0].refresh_token"
-        # oo7-cli returns success with no output for a missing item.
-        if "''${keyring[@]}" lookup --secret-only "''${attributes[@]}" 2>/dev/null \
-          | jq -Rse --slurpfile source "$token" "fromjson? | $same_refresh" >/dev/null 2>&1; then
+        if "''${keyring[@]}" search --all --json "''${attributes[@]}" 2>/dev/null \
+          | jq -e --slurpfile source "$token" "length == 1 and (.[0].secret | fromjson? | $same_refresh)" >/dev/null 2>&1; then
           exit 0
         else
           lookup_status="''${PIPESTATUS[0]}"
@@ -104,13 +108,13 @@ _: {
         fi
         # Keep the same refresh grant as the ACP copies if the enrollment
         # changed during installation. Never call store on empty input.
-        if ! timeout --kill-after=1s 15s "''${keyring_helper[@]}" agy-keyring-entry \
-          | jq -cse --slurpfile source "$token" "select(length == 1) | .[0] | select($same_refresh)" 2>/dev/null \
-          | {
-            IFS= read -r entry &&
-              builtin printf '%s' "$entry" |
-              "''${keyring[@]}" store "Password for 'antigravity' on 'gemini'" "''${attributes[@]}" >/dev/null 2>&1
-          }; then
+        unset entry
+        if ! {
+          entry=$(timeout --kill-after=1s 15s "''${keyring_helper[@]}" agy-keyring-entry \
+            | jq -cse --slurpfile source "$token" "select(length == 1) | .[0] | select($same_refresh)" 2>/dev/null) &&
+            builtin printf '%s' "$entry" |
+            "''${keyring[@]}" store --replace-all "Password for 'antigravity' on 'gemini'" "''${attributes[@]}" >/dev/null 2>&1
+        }; then
           echo "antigravity: ACP profiles installed, but the CLI keyring entry could not be updated (check Google access and unlock the keyring, then retry)" >&2
           exit 1
         fi
@@ -143,9 +147,9 @@ in {
       enable = mkEnableOption "install the selected Antigravity enrollment into the interactive agy CLI's Secret Service keyring";
       package = mkOption {
         type = types.package;
-        default = pkgs.oo7;
-        defaultText = lib.literalExpression "pkgs.oo7";
-        description = "Package providing oo7-cli for the Antigravity CLI keyring target.";
+        default = agyKeyring;
+        defaultText = lib.literalMD "`pkgs.oo7` with agy keyring support";
+        description = "Package providing oo7-cli with --prefer-collection-path and store --replace-all support.";
       };
     };
   };

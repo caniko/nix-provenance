@@ -112,14 +112,17 @@ copy keeps refreshing until it is deleted or the grant is revoked at Google.
 The agy TUI and `agy -p` (tested contract: agy 1.5.12) do not use the ACP
 profile copies. To update their Secret Service sign-in as well, set
 `nix-provenance.antigravity.googleAuth.keyring.enable = true;`. This requires
-an enrollment, not the legacy `tokenFile`, and an unlocked default Secret
-Service collection in the user's session. `keyring.package` defaults to
-`pkgs.oo7`, which provides `oo7-cli`.
+an enrollment, not the legacy `tokenFile`, and an unlocked Secret Service
+collection in the user's session. Like agy, the installer uses the `login`
+collection if present and the default collection otherwise. `keyring.package`
+defaults to `pkgs.oo7` patched to support collection paths and replacing all
+matching items.
 
 Both the ordinary unit and `nix-provenance-antigravity-google-auth@ID.service`
-update the same per-user CLI sign-in. If its refresh token already matches,
-nothing is written. Otherwise the helper exchanges the selected refresh grant
-for a fresh Google access token and reads the account email. The grant needs
+update the same per-user CLI sign-in. If exactly one matching item exists and
+its refresh token already matches, nothing is written. Otherwise the helper
+exchanges the selected refresh grant for a fresh Google access token and reads
+the account email. The grant needs
 `userinfo.email` in addition to Antigravity's scopes. The new entry goes to
 Secret Service over stdin without a temporary keyring file. The ACP copies are
 installed first: if the keyring is locked or unavailable, the unit warns and

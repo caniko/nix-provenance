@@ -303,16 +303,25 @@ in
       '';
       fakeKeyring = pkgs.writeShellScriptBin "oo7-cli" ''
         set -eu
-        test "$#" = 5 || exit 1
-        test "$3 $4 $5" = "service=gemini username=antigravity xdg:content-type=text/plain" || exit 1
+        test "$1 $2" = "--prefer-collection-path /org/freedesktop/secrets/collection/login" || exit 1
+        shift 2
+        test "$#" = 5 && test "$4 $5" = "service=gemini username=antigravity" || exit 1
+        collection="$KEYRING_DIRECTORY/default"
+        if test -d "$KEYRING_DIRECTORY/login"; then collection="$KEYRING_DIRECTORY/login"; fi
+        shopt -s nullglob
+        items=("$collection"/*)
         case "$1" in
-          lookup)
-            test "$2" = --secret-only && test -z "''${FAIL_KEYRING_LOOKUP:-}" || exit 1
-            if test -f "$KEYRING_ENTRY"; then cat "$KEYRING_ENTRY"; fi
+          search)
+            test "$2 $3" = "--all --json" && test -z "''${FAIL_KEYRING_LOOKUP:-}" || exit 1
+            ${lib.getExe pkgs.jq} -s 'map({secret: tojson})' /dev/null "''${items[@]}"
             ;;
           store)
-            test "$2" = "Password for 'antigravity' on 'gemini'" && test -z "''${FAIL_KEYRING_STORE:-}" || exit 1
-            cat > "$KEYRING_ENTRY"
+            test "$2 $3" = "--replace-all Password for 'antigravity' on 'gemini'" || exit 1
+            test -z "''${FAIL_KEYRING_STORE:-}" && test -z "''${entry+x}" && test -p /proc/self/fd/0 || exit 1
+            cat > "$KEYRING_DIRECTORY/staged"
+            test -s "$KEYRING_DIRECTORY/staged"
+            rm -f -- "''${items[@]}"
+            mv "$KEYRING_DIRECTORY/staged" "$collection/text_plain"
             ;;
           *) exit 1 ;;
         esac
@@ -375,6 +384,7 @@ in
       single = evaluate [(builtins.head profiles)] tokenFile null {};
       enrolled = evaluate profiles null google {};
       keyring = {enable = true;};
+      keyringPackage = (evaluate profiles null google keyring).config.nix-provenance.antigravity.googleAuth.keyring.package;
       keyringConfig = (evaluate profiles null google (keyring // {package = fakeKeyring;})).config;
       keyringService = keyringConfig.systemd.user.services.nix-provenance-antigravity-google-auth.Service.ExecStart;
       keyringTemplate = lib.removeSuffix " %i" keyringConfig.systemd.user.services."nix-provenance-antigravity-google-auth@".Service.ExecStart;
@@ -398,10 +408,11 @@ in
       assert !(lib.all (entry: entry.assertion) (evaluate profiles tokenFile google {}).config.assertions);
       assert !(lib.all (entry: entry.assertion) (evaluate profiles null null {}).config.assertions);
       assert lib.all (entry: entry.assertion) keyringConfig.assertions;
-      assert (evaluate profiles null google keyring).config.nix-provenance.antigravity.googleAuth.keyring.package == pkgs.oo7;
       assert !(lib.all (entry: entry.assertion) (evaluate profiles tokenFile null keyring).config.assertions);
       assert keyringService == keyringTemplate;
         runCommand "antigravity-google-auth-eval" {} ''
+          ${lib.getExe' keyringPackage "oo7-cli"} store --help | grep -Fq -- --replace-all
+          ${lib.getExe' keyringPackage "oo7-cli"} --help | grep -Fq -- --prefer-collection-path
           test -x ${single.config.systemd.user.services.nix-provenance-antigravity-google-auth.Service.ExecStart}
           exec_start=${service.Service.ExecStart}
           if grep -Fq 'test-refresh-token' "$exec_start"; then
@@ -461,10 +472,26 @@ in
 
              keyring_install=${keyringService}
              grep -Fq 'agy-keyring-entry' "$keyring_install"
-             export KEYRING_ENTRY="$TMPDIR/keyring-entry"
+             export KEYRING_DIRECTORY="$TMPDIR/keyring"
+             mkdir -p "$KEYRING_DIRECTORY/default"
+             default_entry="$KEYRING_DIRECTORY/default/text_plain"
+             export entry=nonsecret_value
              "$keyring_install"
-             grep -Fq '"refresh_token":"store-fixture"' "$KEYRING_ENTRY"
+             grep -Fq '"refresh_token":"store-fixture"' "$default_entry"
              FAIL_KEYRING_ENTRY=1 "$keyring_install" # Matching refresh token skips the exchange.
+
+             # The agy item in login wins over the already-matching default item.
+             login="$KEYRING_DIRECTORY/login"
+             mkdir "$login"
+             printf '{"token":{"refresh_token":"native-stale"}}' > "$login/text_plain_charset_utf8"
+             "$keyring_install"
+             test ! -e "$login/text_plain_charset_utf8"
+             login_entry="$login/text_plain"
+             grep -Fq '"refresh_token":"store-fixture"' "$login_entry"
+             FAIL_KEYRING_ENTRY=1 "$keyring_install"
+             cp "$login_entry" "$login/text_plain_charset_utf8"
+             "$keyring_install"
+             test ! -e "$login/text_plain_charset_utf8"
 
              for failure in FAIL_KEYRING_LOOKUP FAIL_KEYRING_ENTRY FAIL_KEYRING_STORE; do
                if env "$failure=1" "$keyring_install" work 2>"$TMPDIR/warning"; then
@@ -474,12 +501,13 @@ in
                grep -Fq 'ACP profiles installed' "$TMPDIR/warning"
                cmp -s ${stateDirectory}/work.json "$a"
                cmp -s ${stateDirectory}/work.json "$b"
-               grep -Fq '"refresh_token":"store-fixture"' "$KEYRING_ENTRY"
+               grep -Fq '"refresh_token":"store-fixture"' "$login_entry"
              done
              "$keyring_install" work
-             grep -Fq '"refresh_token":"work-fixture"' "$KEYRING_ENTRY"
+             grep -Fq '"refresh_token":"work-fixture"' "$login_entry"
+             grep -Fq '"refresh_token":"store-fixture"' "$default_entry"
              "$keyring_install"
-             grep -Fq '"refresh_token":"store-fixture"' "$KEYRING_ENTRY"
+             grep -Fq '"refresh_token":"store-fixture"' "$login_entry"
              touch $out
         '';
 
