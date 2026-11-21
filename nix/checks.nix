@@ -401,8 +401,8 @@ in
       assert path.Path.PathChanged == tokenFile;
       assert !(builtins.elem "agenix.service" (path.Unit.After or []));
       assert lib.all (entry: entry.assertion) enrolled.config.assertions;
-      assert enrollmentService.Unit.ConditionPathExists == "${stateDirectory}/state.json";
-      assert enrollmentPath.Path.PathChanged == "${stateDirectory}/state.json";
+      assert enrollmentService.Unit.ConditionPathExists == ["|${stateDirectory}/state.json"];
+      assert enrollmentPath.Path.PathChanged == ["${stateDirectory}/state.json"];
       assert enrolled.config.home.activation.provenanceAntigravity.after == ["reloadSystemd"];
       assert !(evaluated.config.home.activation ? provenanceAntigravity);
       assert lib.hasSuffix " %i" template.Service.ExecStart;
@@ -414,6 +414,8 @@ in
         runCommand "antigravity-google-auth-eval" {nativeBuildInputs = [pkgs.dbus keyringTestPython];} ''
           # Exercise the packaged CLI against a private Secret Service as well as the installer stub.
           python3 -B ${./modules/test/antigravity-secret-service.py} ${lib.getExe' keyringPackage "oo7-cli"}
+          export XDG_STATE_HOME="$TMPDIR/state"
+          selection="$XDG_STATE_HOME/nix-provenance/antigravity-selection"
           test -x ${single.config.systemd.user.services.nix-provenance-antigravity-google-auth.Service.ExecStart}
           exec_start=${service.Service.ExecStart}
           if grep -Fq 'test-refresh-token' "$exec_start"; then
@@ -468,7 +470,17 @@ in
                 exit 1
               fi
             done
+            # The live pick survives the declared unit (token refresh, reactivation).
             "$enroll"
+            cmp -s ${stateDirectory}/work.json "$a"
+            # A changed declaration wins over the old pick, as does a removed pick.
+            for stale in '{"enrollment":"work","declared":"previous"}' '{"enrollment":"gone","declared":"google"}'; do
+              printf '%s' "$stale" > "$selection"
+              "$enroll"
+              cmp -s ${stateDirectory}/state.json "$a"
+              "$switch" work
+            done
+            "$switch" google
             cmp -s ${stateDirectory}/state.json "$a"
 
              keyring_install=${keyringService}
@@ -508,6 +520,8 @@ in
              grep -Fq '"refresh_token":"work-fixture"' "$login_entry"
              grep -Fq '"refresh_token":"store-fixture"' "$default_entry"
              "$keyring_install"
+             grep -Fq '"refresh_token":"work-fixture"' "$login_entry"
+             "$keyring_install" google
              grep -Fq '"refresh_token":"store-fixture"' "$login_entry"
              touch $out
         '';

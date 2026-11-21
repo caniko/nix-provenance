@@ -14,7 +14,9 @@ _: {
   accounts = lib.filterAttrs (_: value: value.provider == "google" && value.profile == "antigravity") (config.nix-provenance.oauth.accounts or {});
   account = accounts.${cfg.enrollment} or null;
   stateDirectory = account.stateDirectory or null;
-  stateFile = "${toString stateDirectory}/state.json";
+  # Every enrollment can be the live pick, so each one's refresh re-syncs it.
+  stateFiles = lib.unique (lib.mapAttrsToList (_: value: "${toString value.stateDirectory}/state.json") accounts);
+  declared = lib.escapeShellArg cfg.enrollment;
   unitName = "nix-provenance-antigravity-google-auth";
   systemctl = "${lib.getExe' pkgs.systemd "systemctl"} --user";
   agyKeyring = pkgs.oo7.overrideAttrs (old: {
@@ -48,7 +50,19 @@ _: {
       ${
         if cfg.tokenFile != null
         then ''if [ "$#" -eq 0 ]; then cat -- ${shellPath cfg.tokenFile} > "$token"; else''
-        else ''if [ "$#" -eq 0 ]; then set -- ${lib.escapeShellArg cfg.enrollment}; fi''
+        else ''
+          selection="''${XDG_STATE_HOME:-$HOME/.local/state}/nix-provenance/antigravity-selection"
+          remember=1
+          if [ "$#" -eq 0 ]; then
+            remember=
+            set -- ${declared}
+            # A live pick (the @ID unit) holds until the declared enrollment changes.
+            picked=$(jq -r --arg declared ${declared} 'select(.declared == $declared) | .enrollment' "$selection" 2>/dev/null) || picked=
+            case "$picked" in
+              ${lib.concatMapStringsSep "|" lib.escapeShellArg (builtins.attrNames accounts)}) set -- "$picked" ;;
+            esac
+          fi
+        ''
       }
       case "$1" in
         ${lib.concatStringsSep "\n" (lib.mapAttrsToList (id: value: let
@@ -90,6 +104,13 @@ _: {
         mv -fT -- "$staged" "$target"
         staged=
       done
+      ${lib.optionalString (cfg.tokenFile == null) ''
+        if [ -n "$remember" ]; then
+          install -d -m 700 "$(dirname -- "$selection")"
+          jq -n --arg enrollment "$1" --arg declared ${declared} '{$enrollment, $declared}' > "$selection.tmp"
+          mv -fT -- "$selection.tmp" "$selection"
+        fi
+      ''}
       ${lib.optionalString cfg.keyring.enable ''
         # agy checks the actual collection path, not the "login" alias.
         keyring=(timeout --kill-after=1s 5s ${lib.getExe' cfg.keyring.package "oo7-cli"}
@@ -185,7 +206,8 @@ in {
         // (
           if account != null
           then {
-            ConditionPathExists = stateFile;
+            # Any enrollment's state: the live pick need not be the declared one.
+            ConditionPathExists = map (file: "|${file}") stateFiles;
           }
           else {
             Wants = ["agenix.service"];
@@ -209,12 +231,12 @@ in {
       Unit.Description = "Watch the shared Antigravity Google token";
       Path.PathChanged =
         if account != null
-        then stateFile
+        then stateFiles
         else builtins.replaceStrings [runtimePrefix] ["%t"] (toString cfg.tokenFile);
       Install.WantedBy = ["default.target"];
     };
-    # HM only starts new/changed units. Restore the declared enrollment on
-    # reactivation even if a live switch did not change any unit files.
+    # HM only starts new/changed units. Re-sync on reactivation even if no unit
+    # file changed: the live pick, or the declared enrollment once it changes.
     home.activation.provenanceAntigravity = mkIf (account != null && (config.systemd.user.startServices or true)) (lib.hm.dag.entryAfter ["reloadSystemd"] ''
       if ${systemctl} --quiet is-active default.target; then
         run ${systemctl} --no-block start ${unitName}.service
