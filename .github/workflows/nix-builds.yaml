@@ -21,7 +21,7 @@ jobs:
     name: build (${{ matrix.group }})
     runs-on: ubuntu-24.04
     needs: [changes]
-    if: ${{ needs.changes.outputs.code == 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -67,7 +67,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/simit-engine-cache
-          key: simit-engine-v1-${{ vars.SIMIT_CI_ENGINE_REVISION }}-${{ runner.os }}-${{ runner.arch }}
+          key: simit-engine-v2-${{ vars.SIMIT_CI_ENGINE_REVISION }}-${{ runner.os }}-${{ runner.arch }}
       - name: Import grouped-build engine
         shell: bash
         env:
@@ -81,7 +81,14 @@ jobs:
           set -euo pipefail
           [ "$SIMIT_ENGINE_CACHE_HIT" = true ] || exit 0
           cache_root="$RUNNER_TEMP/simit-engine-cache"
-          env -u GH_TOKEN -u GITHUB_TOKEN -u GITHUB_OAUTH_TOKEN -u ATTIC_TOKEN -u CACHIX_AUTH_TOKEN -u CACHIX_SIGNING_KEY nix copy --no-check-sigs --all --from "file://$cache_root" || echo '::warning::Cached grouped-build engine failed to import; building it normally'
+          # Copy from the recorded root: `--all` lists a file cache under placeholder
+          # names, so the daemon rejects paths whose references are not yet valid.
+          root=$(cat "$cache_root/root" 2>/dev/null || true)
+          if [[ "$root" =~ ^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$ ]]; then
+            env -u GH_TOKEN -u GITHUB_TOKEN -u GITHUB_OAUTH_TOKEN -u ATTIC_TOKEN -u CACHIX_AUTH_TOKEN -u CACHIX_SIGNING_KEY nix copy --no-check-sigs --from "file://$cache_root" "$root" || echo '::warning::Cached grouped-build engine failed to import; building it normally'
+          else
+            echo '::warning::Cached grouped-build engine has no valid root; building it normally'
+          fi
           rm -rf "$cache_root"
       - name: Provision grouped-build Rust engine
         shell: bash
@@ -122,6 +129,7 @@ jobs:
           cache_root="$RUNNER_TEMP/simit-engine-cache"
           rm -rf "$cache_root"
           if nix copy --to "file://$cache_root?compression=zstd" "${SIMIT_CI_ENGINE%/bin/simit}"; then
+            printf '%s\n' "${SIMIT_CI_ENGINE%/bin/simit}" > "$cache_root/root"
             printf 'save=true\n' >> "$GITHUB_OUTPUT"
           else
             echo '::warning::Grouped-build engine failed to export; not saving it'
@@ -131,7 +139,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/simit-engine-cache
-          key: simit-engine-v1-${{ vars.SIMIT_CI_ENGINE_REVISION }}-${{ runner.os }}-${{ runner.arch }}
+          key: simit-engine-v2-${{ vars.SIMIT_CI_ENGINE_REVISION }}-${{ runner.os }}-${{ runner.arch }}
       - name: Enable hosted KVM
         run: |
           test "${RUNNER_ENVIRONMENT:-}" = github-hosted
@@ -201,7 +209,7 @@ jobs:
             case "$1" in
               */*) return 1 ;;
               README.md) return 1 ;;
-              *.md) return 0 ;;
+              ?*.md) return 0 ;;
               *) return 1 ;;
             esac
           }
@@ -219,7 +227,7 @@ jobs:
             esac
           fi
           # A missing or unreachable base, or an empty diff, has nothing to classify.
-          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null && changed=$(git diff --name-only "$base" HEAD --) && [ -n "$changed" ]; then
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null && changed=$(git diff --no-renames --name-only "$base" HEAD --) && [ -n "$changed" ]; then
             code=false
             while IFS= read -r path; do
               classify "$path" || { code=true; break; }
