@@ -385,6 +385,7 @@ in
       enrolled = evaluate profiles null google {};
       keyring = {enable = true;};
       keyringPackage = (evaluate profiles null google keyring).config.nix-provenance.antigravity.googleAuth.keyring.package;
+      keyringTestPython = pkgs.python3.withPackages (ps: [ps.dbus-python ps.pygobject3]);
       keyringConfig = (evaluate profiles null google (keyring // {package = fakeKeyring;})).config;
       keyringService = keyringConfig.systemd.user.services.nix-provenance-antigravity-google-auth.Service.ExecStart;
       keyringTemplate = lib.removeSuffix " %i" keyringConfig.systemd.user.services."nix-provenance-antigravity-google-auth@".Service.ExecStart;
@@ -410,9 +411,9 @@ in
       assert lib.all (entry: entry.assertion) keyringConfig.assertions;
       assert !(lib.all (entry: entry.assertion) (evaluate profiles tokenFile null keyring).config.assertions);
       assert keyringService == keyringTemplate;
-        runCommand "antigravity-google-auth-eval" {} ''
-          ${lib.getExe' keyringPackage "oo7-cli"} store --help | grep -Fq -- --replace-all
-          ${lib.getExe' keyringPackage "oo7-cli"} --help | grep -Fq -- --prefer-collection-path
+        runCommand "antigravity-google-auth-eval" {nativeBuildInputs = [pkgs.dbus keyringTestPython];} ''
+          # Exercise the packaged CLI against a private Secret Service as well as the installer stub.
+          python3 -B ${./modules/test/antigravity-secret-service.py} ${lib.getExe' keyringPackage "oo7-cli"}
           test -x ${single.config.systemd.user.services.nix-provenance-antigravity-google-auth.Service.ExecStart}
           exec_start=${service.Service.ExecStart}
           if grep -Fq 'test-refresh-token' "$exec_start"; then

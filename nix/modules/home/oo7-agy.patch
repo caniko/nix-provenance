@@ -30,7 +30,7 @@ diff --git a/cli/src/main.rs b/cli/src/main.rs
 +                replace_all,
 +            } => {
                  let mut stdin = std::io::stdin().lock();
-@@ -458,14 +474,29 @@
+@@ -458,14 +474,34 @@
                  match keyring {
                      Keyring::File(keyring) => {
 +                        if replace_all {
@@ -48,20 +48,26 @@ diff --git a/cli/src/main.rs b/cli/src/main.rs
 +                            Vec::new()
 +                        };
 +                        let stored = collection
-                             .create_item(&label, &attributes, secret, true, None)
+-                            .create_item(&label, &attributes, secret, true, None)
++                            .create_item(&label, &attributes, secret, !replace_all, None)
                              .await?;
-+                        // The server may replace an existing item in place.
-+                        // Don't delete any match until the new secret is stored.
++                        // Only remove the pre-store matches once the new secret exists.
 +                        for item in old {
-+                            if item.path() != stored.path() {
-+                                item.delete(None).await?;
++                            if item.path() != stored.path()
++                                && let Err(err) = item.delete(None).await
++                                // Only ignore the error if the path has vanished.
++                                && !collection.items().await.is_ok_and(|items| {
++                                    items.iter().all(|current| current.path() != item.path())
++                                })
++                            {
++                                return Err(err.into());
 +                            }
 +                        }
                      }
                  }
                  Output::None
              }
-@@ -575,2 +606,9 @@
+@@ -575,2 +611,9 @@
      collection: Option<String>,
 +    #[arg(
 +        long,
