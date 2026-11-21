@@ -8,6 +8,7 @@ use provenance_oauth::{
     google::{Google, write_agy_token},
     now,
     openai::OpenAi,
+    opencode,
     state::{Store, atomic_write, read_json},
 };
 use serde::{Deserialize, Serialize};
@@ -51,7 +52,7 @@ enum Action {
         /// Google OAuth client JSON downloaded from Cloud Console.
         #[arg(long)]
         client_file: Option<PathBuf>,
-        /// agy's acp_token.json or the token JSON printed by rclone authorize.
+        /// agy's acp_token.json, rclone's token JSON, or OpenCode auth export (file or `-`).
         #[arg(long, value_parser = PathBufValueParser::new().map(Box::new))]
         token_file: Option<Box<PathBuf>>,
         /// Private operator-side transaction directory. Retries reuse enrollment.
@@ -94,6 +95,18 @@ enum Action {
     },
     /// Emit agy's Antigravity token JSON to a pipe.
     AgyToken,
+    /// Checkpoint a rotated ChatGPT credential from the local OpenCode store.
+    OpencodeSync {
+        #[arg(long, default_value = "opencode")]
+        opencode: PathBuf,
+    },
+    /// Restore a missing ChatGPT credential to the local OpenCode store.
+    OpencodeInstall {
+        #[arg(long, default_value = "opencode")]
+        opencode: PathBuf,
+        #[arg(long)]
+        activate: bool,
+    },
     /// Inspect enrollment metadata; never prints token values.
     Status,
     /// Revoke local consumption while retaining the generation tombstone.
@@ -183,7 +196,10 @@ fn run(cli: Cli) -> Result<()> {
                 },
             "requested target does not match the evaluated manifest"
         );
-        let import_token = matches!(config.target.profile.as_str(), "antigravity" | "drive");
+        let import_token = matches!(
+            config.target.profile.as_str(),
+            "antigravity" | "drive" | "opencode"
+        );
         let import_client =
             config.target.provider == "google" && config.target.profile != "antigravity";
         for (flag, provided, required) in [
@@ -248,6 +264,10 @@ fn run(cli: Cli) -> Result<()> {
                 );
             };
             let grant = match config.target.provider.as_str() {
+                "openai" if config.target.profile == "opencode" => opencode::authorize(
+                    token_file.as_deref().context("missing --token-file")?,
+                    &config.target,
+                )?,
                 "openai" => OpenAi::new()?.authorize(prompt)?,
                 "google" if config.target.profile == "antigravity" => {
                     let bytes = read_google_file(
@@ -331,11 +351,16 @@ fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
     verify_local_target(&config.target)?;
-    // Refused before the lock: a Google access call must not create or wait on state.
+    // Refuse requests for another refresh owner before opening state.
+    if matches!(cli.command, Action::Access { .. }) {
+        config.target.require_access()?;
+    }
     ensure!(
-        !matches!(cli.command, Action::Access { .. }) || config.target.provider == "openai",
-        "{}",
-        config.target.google_refresh_owner_message()
+        !matches!(
+            cli.command,
+            Action::OpencodeSync { .. } | Action::OpencodeInstall { .. }
+        ) || config.target.profile == "opencode",
+        "command requires openai/opencode"
     );
     ensure!(
         !matches!(cli.command, Action::AgyToken)
@@ -394,6 +419,10 @@ fn run(cli: Cli) -> Result<()> {
             let mut stdout = std::io::stdout().lock();
             write_agy_token(store.grant()?, &mut stdout)?;
             writeln!(stdout)?;
+        }
+        Action::OpencodeSync { opencode } => opencode::sync(&store, &opencode)?,
+        Action::OpencodeInstall { opencode, activate } => {
+            opencode::install(&store, &opencode, activate)?
         }
         Action::Status => println!("{}", store.status()?),
         Action::Remove => {
@@ -588,6 +617,7 @@ mod tests {
             }),
             project_id: None,
             scopes: None,
+            opencode: None,
         };
         assert_eq!(
             rclone_config("gdrive", "drive.file", &grant).unwrap(),

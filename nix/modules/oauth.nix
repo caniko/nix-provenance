@@ -37,14 +37,14 @@
   unitNames = lib.concatMap (entry: [entry.name "${entry.name}-initialize"]) entries;
   enrollmentOptions = {
     profile = mkOption {
-      type = types.enum ["chatgpt" "drive-file" "drive" "antigravity"];
+      type = types.enum ["chatgpt" "opencode" "drive-file" "drive" "antigravity"];
       default = "chatgpt";
       description = "Compatible provider authorization profile.";
     };
     account = mkOption {
       type = types.str;
       default = "default";
-      description = "Host-local enrollment account alias. For google/antigravity, either default or the expected Google account subject.";
+      description = "Enrollment account alias; the OpenCode credential label for openai/opencode, or default or the expected Google subject for google/antigravity.";
     };
     enrollmentFile = mkOption {
       type = types.str;
@@ -163,7 +163,7 @@ in {
             message = "provenance OAuth: invalid enrollment ID '${entry.id}'.";
           }
           {
-            assertion = (entry.provider == "openai" && entry.settings.profile == "chatgpt") || (entry.provider == "google" && builtins.elem entry.settings.profile ["drive-file" "drive" "antigravity"]);
+            assertion = (entry.provider == "openai" && builtins.elem entry.settings.profile ["chatgpt" "opencode"]) || (entry.provider == "google" && builtins.elem entry.settings.profile ["drive-file" "drive" "antigravity"]);
             message = "provenance OAuth: unsupported provider/profile pair '${entry.provider}/${entry.settings.profile}'.";
           }
           {

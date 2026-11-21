@@ -320,6 +320,10 @@ in
                 type = lib.types.attrs;
                 default = {};
               };
+              options.home.activation = lib.mkOption {
+                type = lib.types.attrsOf lib.types.anything;
+                default = {};
+              };
             })
             (import ./modules/home/antigravity.nix {inherit self;})
             {
@@ -336,7 +340,10 @@ in
               };
             })
           ];
-          specialArgs = {inherit pkgs;};
+          specialArgs = {
+            inherit pkgs;
+            lib = lib // {hm.dag.entryAfter = after: data: {inherit after data;};};
+          };
         };
       profiles = ["/tmp/nix-provenance-antigravity-a" "/tmp/nix-provenance-antigravity-b"];
       evaluated = evaluate profiles tokenFile null;
@@ -357,6 +364,8 @@ in
       assert lib.all (entry: entry.assertion) enrolled.config.assertions;
       assert enrollmentService.Unit.ConditionPathExists == "${stateDirectory}/state.json";
       assert enrollmentPath.Path.PathChanged == "${stateDirectory}/state.json";
+      assert enrolled.config.home.activation.provenanceAntigravity.after == ["reloadSystemd"];
+      assert !(evaluated.config.home.activation ? provenanceAntigravity);
       assert lib.hasSuffix " %i" template.Service.ExecStart;
       assert !(lib.all (entry: entry.assertion) (evaluate profiles tokenFile google).config.assertions);
       assert !(lib.all (entry: entry.assertion) (evaluate profiles null null).config.assertions);
@@ -459,11 +468,20 @@ in
       bindings = oauthEval.config.home-manager.users;
       drive = oauthEval.config.systemd.services.provenance-oauth-alice-drive;
       driveManifest = oauthEval.config.services.provenance.oauth.manifests.alice.drive;
+      collision = oauthEval.extendModules {
+        modules = [
+          {
+            services.provenance.oauth.users.alice.enrollments.google =
+              oauthEval.config.services.provenance.oauth.users.alice.providers.google // {provider = "google";};
+          }
+        ];
+      };
     in
       assert svc.serviceConfig.User == "alice";
       assert oauthEval.config.systemd.services.provenance-oauth-root-google.serviceConfig.User == "root";
       assert oauthEval.config.services.provenance.oauth.users.root.providers.google.profile == "drive-file";
       assert lib.all (entry: entry.assertion || !(lib.hasPrefix "provenance OAuth:" entry.message)) oauthEval.config.assertions;
+      assert lib.any (entry: !entry.assertion && lib.hasSuffix "providers and enrollments must not share IDs." entry.message) collision.config.assertions;
       assert oauthEval.config.systemd.services.provenance-oauth-alice-google.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-google"];
       assert !(bindings ? root);
       assert bindings.alice.nix-provenance.oauth.accounts.google.configFile == oauthEval.config.services.provenance.oauth.manifests.alice.google;
@@ -474,6 +492,8 @@ in
       assert bindings.alice.nix-provenance.oauth.accounts.drive.configFile == driveManifest;
       assert bindings.alice.nix-provenance.oauth.accounts.drive.provider == "google";
       assert bindings.alice.nix-provenance.oauth.accounts.drive.profile == "drive";
+      assert bindings.alice.nix-provenance.oauth.accounts.work.provider == "openai";
+      assert bindings.alice.nix-provenance.oauth.accounts.work.profile == "opencode";
       assert svc.serviceConfig.StateDirectoryMode == "0700";
       assert svc.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-openai"];
       assert !(lib.hasInfix "--initialize" svc.serviceConfig.ExecStart);

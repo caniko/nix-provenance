@@ -29,6 +29,13 @@
       enrollmentFile = "/run/agenix/oauth-alice-drive";
       recoveryRecipients = ["age1luyy6j8g4689rqj2qwlu4znr3zjael48pq8tlgl5fu7l2l8r7qvqdfxaa5"];
     };
+    services.provenance.oauth.users.alice.enrollments.work = {
+      provider = "openai";
+      profile = "opencode";
+      account = "Work Account";
+      enrollmentFile = "/run/agenix/oauth-alice-work";
+      recoveryRecipients = ["age1luyy6j8g4689rqj2qwlu4znr3zjael48pq8tlgl5fu7l2l8r7qvqdfxaa5"];
+    };
     services.provenance.oauth.users.root.providers.google = {
       profile = "drive-file";
       enrollmentFile = "/run/agenix/oauth-root-google";

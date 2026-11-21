@@ -137,6 +137,10 @@ impl OpenAi {
     }
 
     pub fn refresh(&self, previous: &Grant) -> Result<Grant> {
+        ensure!(
+            previous.opencode.is_none(),
+            "openai/opencode grants are refreshed only by OpenCode"
+        );
         self.exchange(
             &[
                 ("grant_type", "refresh_token"),
@@ -189,6 +193,7 @@ fn into_grant(tokens: Tokens, previous: Option<&Grant>, now: u64) -> Result<Gran
         client: None,
         project_id: None,
         scopes: None,
+        opencode: None,
     };
     grant.validate()?;
     Ok(grant)
@@ -219,6 +224,7 @@ mod tests {
             client: None,
             project_id: None,
             scopes: None,
+            opencode: None,
         };
         let tokens = Tokens {
             access_token: Secret("next-access-secret".into()),
@@ -243,6 +249,7 @@ mod tests {
             client: None,
             project_id: None,
             scopes: None,
+            opencode: None,
         };
         let tokens = || Tokens {
             access_token: Secret("next".into()),

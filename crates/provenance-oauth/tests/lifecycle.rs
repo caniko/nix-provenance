@@ -46,6 +46,7 @@ fn enrollment(config: &Config, generation: u64) -> Enrollment {
             client: None,
             project_id: None,
             scopes: None,
+            opencode: None,
         },
     }
 }
@@ -60,6 +61,7 @@ fn rotate(grant: &Grant) -> anyhow::Result<Grant> {
         client: None,
         project_id: None,
         scopes: None,
+        opencode: None,
     })
 }
 

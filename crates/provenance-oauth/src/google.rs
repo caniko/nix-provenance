@@ -47,6 +47,7 @@ fn parse_agy_token(bytes: &[u8]) -> Result<Grant> {
         }),
         project_id: token.project_id,
         scopes: Some(token.scopes),
+        opencode: None,
     };
     grant.validate_antigravity_credentials()?;
     Ok(grant)
@@ -385,6 +386,7 @@ fn into_grant(tokens: Tokens, credentials: OAuthClient, account_id: String) -> R
         client: Some(credentials),
         project_id: None,
         scopes: None,
+        opencode: None,
     };
     grant.validate()?;
     Ok(grant)

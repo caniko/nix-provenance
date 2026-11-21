@@ -4,6 +4,9 @@
 
 ### Added
 
+- `openai/opencode` enrolls and checkpoints a named native ChatGPT login
+  without refreshing it or using an adapter. Home Manager enables hourly
+  backups and live switching through OpenCode's native auth commands.
 - Named OAuth enrollments let a local user hold multiple grants from the same
   provider without changing legacy unit names or state. `google/drive` imports
   a Desktop-client rclone grant for full Drive access. Antigravity can switch

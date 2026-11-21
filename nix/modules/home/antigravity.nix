@@ -15,6 +15,7 @@ _: {
   stateDirectory = account.stateDirectory or null;
   stateFile = "${toString stateDirectory}/state.json";
   unitName = "nix-provenance-antigravity-google-auth";
+  systemctl = "${lib.getExe' pkgs.systemd "systemctl"} --user";
   # Runtime paths only: the token never enters the store, and `${XDG_RUNTIME_DIR}`
   # expands at run time as it does for the fj tokens.
   runtimePrefix = "\${XDG_RUNTIME_DIR}";
@@ -163,5 +164,12 @@ in {
         else builtins.replaceStrings [runtimePrefix] ["%t"] (toString cfg.tokenFile);
       Install.WantedBy = ["default.target"];
     };
+    # HM only starts new/changed units. Restore the declared enrollment on
+    # reactivation even if a live switch did not change any unit files.
+    home.activation.provenanceAntigravity = mkIf (account != null && (config.systemd.user.startServices or true)) (lib.hm.dag.entryAfter ["reloadSystemd"] ''
+      if ${systemctl} --quiet is-active default.target; then
+        run ${systemctl} --no-block start ${unitName}.service
+      fi
+    '');
   };
 }

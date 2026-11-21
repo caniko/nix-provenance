@@ -212,11 +212,7 @@ impl<'a> Store<'a> {
         clock: impl Fn() -> Result<u64>,
         refresh: impl FnOnce(&Grant) -> Result<Grant>,
     ) -> Result<Access> {
-        ensure!(
-            self.config.target.provider == "openai",
-            "{}",
-            self.config.target.google_refresh_owner_message()
-        );
+        self.config.target.require_access()?;
         let now = clock()?;
         let mut state = self.load()?;
         ensure!(
@@ -274,6 +270,54 @@ impl<'a> Store<'a> {
         })
     }
 
+    pub(crate) fn sync_opencode(
+        &self,
+        export: impl FnOnce() -> Result<Option<Grant>>,
+    ) -> Result<()> {
+        let mut state = self.load_opencode()?;
+        let Some(current) = &state.grant else {
+            return Ok(());
+        };
+        let Some(next) = export()? else {
+            return Ok(());
+        };
+        next.validate_for(&self.config.target)?;
+        if next.refresh_token.0 != current.refresh_token.0 && next.expires_at >= current.expires_at
+        {
+            state.grant = Some(next);
+            state.revision = state
+                .revision
+                .checked_add(1)
+                .context("OAuth revision overflow")?;
+            self.save(&state)?;
+        }
+        // Repair a stale checkpoint if the previous sync failed after saving state.
+        self.checkpoint(&state)
+    }
+
+    pub(crate) fn opencode_grant(&self) -> Result<Grant> {
+        self.load_opencode()?
+            .grant
+            .context("OAuth enrollment has been removed")
+    }
+
+    pub(crate) fn target(&self) -> &Target {
+        &self.config.target
+    }
+
+    fn load_opencode(&self) -> Result<State> {
+        ensure!(
+            self.config.target.profile == "opencode",
+            "command requires openai/opencode"
+        );
+        let state = self.load()?;
+        ensure!(
+            !state.refresh_pending,
+            "OAuth refresh outcome is uncertain; reauthorize"
+        );
+        Ok(state)
+    }
+
     pub fn status(&self) -> Result<serde_json::Value> {
         let state = self.load()?;
         Ok(serde_json::to_value(Status {
@@ -293,8 +337,8 @@ impl<'a> Store<'a> {
         })?)
     }
 
-    /// The full Google grant for rclone or agy. OpenAI refresh tokens
-    /// never leave the store; they are only used through `access`.
+    /// The full Google grant for rclone or agy. OpenAI grants are never
+    /// returned by this export interface.
     pub fn grant(&self) -> Result<Grant> {
         ensure!(
             self.config.target.provider == "google",
