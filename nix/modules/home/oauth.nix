@@ -7,12 +7,13 @@
 }: let
   cfg = config.nix-provenance.oauth;
   chat = config.nix-provenance.opencode.chatgpt;
+  enrollmentIdPattern = import ../../lib/oauth-enrollment-id-pattern.nix;
   adapter = self.packages.${pkgs.stdenv.hostPlatform.system}.oauth-adapters;
   openCodeEnabled = lib.attrByPath ["programs" "opencode" "enable"] false config;
   ompEnabled = lib.attrByPath ["programs" "omp" "enable"] false config;
   openaiAccounts = lib.filterAttrs (_: account: account.provider == "openai" && account.profile == "chatgpt") cfg.accounts;
   # Both legacy adapters expose a single fixed model/provider ID.
-  legacy = openaiAccounts.openai or (lib.findFirst (_: true) null (builtins.attrValues openaiAccounts));
+  legacy = openaiAccounts.openai or null;
   binding = {
     command = lib.getExe legacy.package;
     configFile = toString legacy.configFile;
@@ -128,7 +129,7 @@ in {
           assertion = lib.all (id: let
             account = cfg.accounts.${id};
           in
-            builtins.match "[a-z0-9][a-z0-9-]*" id
+            builtins.match enrollmentIdPattern id
             != null
             && ((account.provider == "openai" && builtins.elem account.profile ["chatgpt" "opencode"])
               || (account.provider == "google" && builtins.elem account.profile ["antigravity" "drive" "drive-file"]))) (builtins.attrNames cfg.accounts);

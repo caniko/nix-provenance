@@ -4,9 +4,8 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, value::RawValue};
 use std::{
-    fmt, fs,
+    fmt,
     io::{self, IsTerminal, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
     process::{Command, Stdio},
 };
@@ -76,7 +75,7 @@ enum Credential {
     },
 }
 
-fn select(bytes: &[u8], target: &Target) -> Result<Option<Grant>> {
+fn select(bytes: &[u8], target: &Target, expected_id: Option<&str>) -> Result<Option<Grant>> {
     let entries: Vec<Entry<&RawValue>> = serde_json::from_slice(bytes)
         .map_err(|_| anyhow::anyhow!("invalid OpenCode auth export array"))?;
     let mut selected = None;
@@ -99,6 +98,10 @@ fn select(bytes: &[u8], target: &Target) -> Result<Option<Grant>> {
     let Some(entry) = selected else {
         return Ok(None);
     };
+    ensure!(
+        expected_id.is_none_or(|id| id == entry.id),
+        "OpenCode label belongs to a different credential ID; re-enroll the intended login"
+    );
     ensure!(
         entry.value.get().len() <= 48 * 1024,
         "OpenCode credential exceeds size limit"
@@ -135,25 +138,12 @@ fn read_export(input: impl Read) -> Result<Zeroizing<Vec<u8>>> {
     Ok(bytes)
 }
 
-pub fn authorize(path: &Path, target: &Target) -> Result<Grant> {
+pub fn authorize(target: &Target) -> Result<Grant> {
     let stdin = io::stdin();
-    let bytes = if path == Path::new("-") {
-        ensure!(!stdin.is_terminal(), "pipe OpenCode auth export to stdin");
-        read_export(stdin.lock())?
-    } else {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(path)
-            .context("cannot open OpenCode auth export")?;
-        let metadata = file.metadata()?;
-        ensure!(
-            metadata.is_file() && metadata.len() <= MAX_EXPORT && metadata.mode() & 0o077 == 0,
-            "OpenCode auth export must be a bounded private regular file"
-        );
-        read_export(file)?
-    };
-    select(&bytes, target)?.context("OpenCode auth export is missing the requested OpenAI label")
+    ensure!(!stdin.is_terminal(), "pipe OpenCode auth export to stdin");
+    let bytes = read_export(stdin.lock())?;
+    select(&bytes, target, None)?
+        .context("OpenCode auth export is missing the requested OpenAI label")
 }
 
 fn auth(opencode: &Path) -> Command {
@@ -165,7 +155,7 @@ fn auth(opencode: &Path) -> Command {
     cmd
 }
 
-fn export(opencode: &Path, target: &Target) -> Result<Option<Grant>> {
+fn export(opencode: &Path, target: &Target, expected_id: &str) -> Result<Option<Grant>> {
     let mut child = auth(opencode)
         .args(["export", "openai"])
         .stdout(Stdio::piped())
@@ -183,23 +173,24 @@ fn export(opencode: &Path, target: &Target) -> Result<Option<Grant>> {
     let status = child.wait()?;
     let bytes = result?;
     ensure!(status.success(), "OpenCode auth export failed");
-    select(&bytes, target)
+    select(&bytes, target, Some(expected_id))
 }
 
 pub fn sync(store: &Store<'_>, opencode: &Path) -> Result<()> {
-    store.sync_opencode(|| export(opencode, store.target()))
+    store.sync_opencode(|id| export(opencode, store.target(), id))
 }
 
 pub fn install(store: &Store<'_>, opencode: &Path, activate: bool) -> Result<()> {
     let grant = store.opencode_grant()?;
     let target = store.target();
-    if export(opencode, target)?.is_none() {
+    let id = &grant.account_id;
+    if export(opencode, target, id)?.is_none() {
         let details = grant.opencode.context("missing OpenCode OAuth method")?;
         // Native import is create-only and preserves any existing selection.
         // OpenCode may auto-select its first credential; only switch explicitly
         // when requested.
         let bytes = Zeroizing::new(serde_json::to_vec(&[Entry {
-            id: grant.account_id,
+            id: id.clone(),
             integration: "openai".into(),
             label: target.account.clone(),
             active: false,
@@ -224,14 +215,14 @@ pub fn install(store: &Store<'_>, opencode: &Path, activate: bool) -> Result<()>
         write.context("write OpenCode credential to import pipe")?;
         ensure!(status.success(), "OpenCode auth import failed");
         ensure!(
-            export(opencode, target)?.is_some(),
+            export(opencode, target, id)?.is_some(),
             "OpenCode did not import the requested credential"
         );
     }
     if activate {
         ensure!(
             auth(opencode)
-                .args(["switch", "openai", &target.account])
+                .args(["switch", "openai", "--", id])
                 .status()?
                 .success(),
             "OpenCode auth switch failed"

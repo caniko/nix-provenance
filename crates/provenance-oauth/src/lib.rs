@@ -78,9 +78,11 @@ impl Target {
         );
         ensure!(
             self.enrollment.as_ref().is_none_or(|id| {
-                id.bytes()
-                    .next()
-                    .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                id.len() <= 48
+                    && id
+                        .bytes()
+                        .next()
+                        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
                     && id
                         .bytes()
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -140,6 +142,7 @@ pub struct Grant {
     pub refresh_token: Secret,
     #[serde(default)]
     pub expires_at: u64,
+    /// For `openai/opencode`, the native OpenCode credential ID.
     pub account_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<OAuthClient>,

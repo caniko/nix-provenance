@@ -272,17 +272,15 @@ impl<'a> Store<'a> {
 
     pub(crate) fn sync_opencode(
         &self,
-        export: impl FnOnce() -> Result<Option<Grant>>,
+        export: impl FnOnce(&str) -> Result<Option<Grant>>,
     ) -> Result<()> {
         let mut state = self.load_opencode()?;
         let Some(current) = &state.grant else {
             return Ok(());
         };
-        let Some(next) = export()? else {
-            return Ok(());
-        };
-        next.validate_for(&self.config.target)?;
-        if next.refresh_token.0 != current.refresh_token.0 && next.expires_at >= current.expires_at
+        if let Some(next) = export(&current.account_id)?
+            && next.refresh_token.0 != current.refresh_token.0
+            && next.expires_at >= current.expires_at
         {
             state.grant = Some(next);
             state.revision = state
@@ -291,7 +289,7 @@ impl<'a> Store<'a> {
                 .context("OAuth revision overflow")?;
             self.save(&state)?;
         }
-        // Repair a stale checkpoint if the previous sync failed after saving state.
+        // Repair a stale checkpoint even if the label has since disappeared.
         self.checkpoint(&state)
     }
 

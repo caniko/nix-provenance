@@ -76,6 +76,14 @@
   };
   enabled = (evaluate true true (openai // google // nativeAccounts) chat).config;
   googleOnly = (evaluate true true google {}).config;
+  namedChatgpt = {
+    provider = "openai";
+    inherit (openai.openai) configFile;
+  };
+  namedOnly = (evaluate true true {chat = namedChatgpt;} {}).config;
+  maxLengthId = lib.fixedWidthString 48 "a" "";
+  maxLength = (evaluate true true {${maxLengthId} = namedChatgpt;} {}).config;
+  overlong = (evaluate true true {${maxLengthId + "a"} = namedChatgpt;} {}).config;
   disabled = (evaluate true false openai {}).config;
   absent = (evaluate false false openai {}).config;
   invalid = (evaluate true true (openai // nativeAccounts) (chat // {active = "openai";})).config;
@@ -94,6 +102,10 @@ in
   assert lib.all (item: item.assertion) googleOnly.assertions;
   assert googleOnly.programs.opencode.settings.plugins == [];
   assert googleOnly.home.file == {};
+  assert namedOnly.programs.opencode.settings.plugins == [];
+  assert namedOnly.home.file == {};
+  assert lib.all (item: item.assertion) maxLength.assertions;
+  assert !(lib.all (item: item.assertion) overlong.assertions);
   assert disabled.nix-provenance.oauth.opencodePlugins == [];
   assert disabled.home.file == {};
   assert absent.nix-provenance.oauth.opencodePlugins == [];

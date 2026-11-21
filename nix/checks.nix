@@ -479,6 +479,7 @@ in
     in
       assert svc.serviceConfig.User == "alice";
       assert oauthEval.config.systemd.services.provenance-oauth-root-google.serviceConfig.User == "root";
+      assert oauthEval.config.systemd.services.provenance-oauth-root-backup.serviceConfig.User == "root";
       assert oauthEval.config.services.provenance.oauth.users.root.providers.google.profile == "drive-file";
       assert lib.all (entry: entry.assertion || !(lib.hasPrefix "provenance OAuth:" entry.message)) oauthEval.config.assertions;
       assert lib.any (entry: !entry.assertion && lib.hasSuffix "providers and enrollments must not share IDs." entry.message) collision.config.assertions;
@@ -489,9 +490,7 @@ in
       assert drive.serviceConfig.StateDirectory == "provenance-oauth-alice-drive";
       assert drive.serviceConfig.LoadCredential == ["enrollment:/run/agenix/oauth-alice-drive"];
       assert oauthEval.config.environment.etc."provenance/oauth/alice-drive.json".source == driveManifest;
-      assert bindings.alice.nix-provenance.oauth.accounts.drive.configFile == driveManifest;
-      assert bindings.alice.nix-provenance.oauth.accounts.drive.provider == "google";
-      assert bindings.alice.nix-provenance.oauth.accounts.drive.profile == "drive";
+      assert !(bindings.alice.nix-provenance.oauth.accounts ? drive);
       assert bindings.alice.nix-provenance.oauth.accounts.work.provider == "openai";
       assert bindings.alice.nix-provenance.oauth.accounts.work.profile == "opencode";
       assert svc.serviceConfig.StateDirectoryMode == "0700";

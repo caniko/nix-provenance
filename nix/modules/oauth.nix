@@ -7,6 +7,7 @@
 }: let
   inherit (lib) mkOption types;
   cfg = config.services.provenance.oauth;
+  enrollmentIdPattern = import ../lib/oauth-enrollment-id-pattern.nix;
   helper = pkgs.writeShellScriptBin "provenance-oauth" ''
     export PATH=${lib.makeBinPath (cfg.recoveryPlugins ++ [pkgs.coreutils])}:"$PATH"
     exec ${lib.getExe cfg.package} "$@"
@@ -159,7 +160,7 @@ in {
         cfg.users
         ++ lib.concatMap (entry: [
           {
-            assertion = builtins.match "[a-z0-9][a-z0-9-]*" entry.id != null;
+            assertion = builtins.match enrollmentIdPattern entry.id != null;
             message = "provenance OAuth: invalid enrollment ID '${entry.id}'.";
           }
           {
@@ -206,8 +207,8 @@ in {
               inherit (entry.settings) profile;
             };
           }) {}
-        # Legacy service-only Drive entries (e.g. root) must not create HM users.
-        (lib.filter (entry: entry.named || entry.provider == "openai" || entry.settings.profile == "antigravity") entries);
+        # Drive is consumed by services (including root), not bound into HM.
+        (lib.filter (entry: entry.provider == "openai" || entry.settings.profile == "antigravity") entries);
     })
   ];
 }

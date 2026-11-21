@@ -179,13 +179,14 @@ never the enrollment grant. Build the target's helper and manifest before first
 enrollment; they do not require a plaintext grant at evaluation time.
 
 For multiple grants, declare `services.provenance.oauth.users.USER.enrollments.ID`
-instead, with the same fields plus `provider`. IDs match `[a-z0-9][a-z0-9-]*`
+instead, with the same fields plus `provider`. IDs match `[a-z0-9][a-z0-9-]{0,47}`
 and cannot duplicate a `providers` key. Each uses `manifests.USER.ID`,
 `/etc/provenance/oauth/USER-ID.json`, and `provenance-oauth-USER-ID` units. Legacy
 `providers.PROVIDER` entries keep their existing manifests and state.
 
-When integrated Home Manager is present, enabled compatible applications are
-bound automatically. Standalone Home Manager imports `homeModules.oauth` and
+The NixOS module supplies OpenAI and Google Antigravity bindings to integrated
+Home Manager; Google Drive enrollments do not create Home Manager bindings.
+Standalone Home Manager imports `homeModules.oauth` and
 sets `nix-provenance.oauth.accounts.openai.{configFile,package}` to the host's
 public manifest and helper.
 Named Home Manager bindings use `nix-provenance.oauth.accounts.ID` and carry the
@@ -258,7 +259,7 @@ opencode auth export openai |
     --secret "$secret" --pending-directory "$pending"
 ```
 
-`--token-file` also accepts a private JSON export file if you already have one.
+OpenCode enrollment accepts the export only on stdin (`--token-file -`).
 Only the matching credential goes into agenix. After deploying and initializing
 each enrollment, configure Home Manager:
 
@@ -274,7 +275,9 @@ Set `chatgpt.package` if `programs.opencode.package` is not the package you
 use with that OpenCode database. Home Manager installs and activates `active`
 at activation and login. Start `nix-provenance-opencode-install@chat-personal.service` with
 `systemctl --user` to switch live. Install only imports if the label is missing;
-an existing OpenCode credential is never replaced.
+an existing OpenCode credential is never replaced. Sync and install require
+the label to identify the enrolled native credential ID. If the label was
+reassigned, re-enroll the intended login.
 Without `--activate`, the CLI does not request a switch. OpenCode itself
 selects the first login if the integration has no existing credential.
 
@@ -305,9 +308,9 @@ stock Codex models and protocol. OMP invalidates its command cache on an auth
 retry, then invokes the shared helper again. A custom launcher must preserve
 extension discovery or explicitly load this extension.
 
-The shared adapters each expose one provider. They prefer the `openai` ID
-when it is a shared `chatgpt` enrollment, otherwise the first `chatgpt` ID
-in name order. These adapters do not import existing app-local credentials.
+The shared adapters each expose one provider. They bind only
+`nix-provenance.oauth.accounts.openai` with the `openai/chatgpt` profile.
+These adapters do not import existing app-local credentials.
 After verifying shared-model requests, remove obsolete grants through each application's supported logout
 interface if they are no longer needed. Applications may cache an access token
 until expiry; local removal does not revoke already issued provider tokens.

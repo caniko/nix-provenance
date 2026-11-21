@@ -52,7 +52,7 @@ enum Action {
         /// Google OAuth client JSON downloaded from Cloud Console.
         #[arg(long)]
         client_file: Option<PathBuf>,
-        /// agy's acp_token.json, rclone's token JSON, or OpenCode auth export (file or `-`).
+        /// agy's acp_token.json, rclone's token JSON, or `-` for OpenCode auth export on stdin.
         #[arg(long, value_parser = PathBufValueParser::new().map(Box::new))]
         token_file: Option<Box<PathBuf>>,
         /// Private operator-side transaction directory. Retries reuse enrollment.
@@ -216,6 +216,13 @@ fn run(cli: Cli) -> Result<()> {
             "--token-file is required for this OAuth profile"
         );
         ensure!(
+            config.target.profile != "opencode"
+                || token_file
+                    .as_deref()
+                    .is_some_and(|path| path.as_path() == Path::new("-")),
+            "openai/opencode requires --token-file -; pipe OpenCode auth export to stdin"
+        );
+        ensure!(
             client_file.is_some() || !import_client,
             "--client-file is required for this OAuth profile"
         );
@@ -264,10 +271,9 @@ fn run(cli: Cli) -> Result<()> {
                 );
             };
             let grant = match config.target.provider.as_str() {
-                "openai" if config.target.profile == "opencode" => opencode::authorize(
-                    token_file.as_deref().context("missing --token-file")?,
-                    &config.target,
-                )?,
+                "openai" if config.target.profile == "opencode" => {
+                    opencode::authorize(&config.target)?
+                }
                 "openai" => OpenAi::new()?.authorize(prompt)?,
                 "google" if config.target.profile == "antigravity" => {
                     let bytes = read_google_file(

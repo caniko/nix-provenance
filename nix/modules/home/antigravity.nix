@@ -10,6 +10,7 @@ _: {
 }: let
   inherit (lib) mkEnableOption mkIf mkOption types;
   cfg = config.nix-provenance.antigravity.googleAuth;
+  enrollmentIdPattern = import ../../lib/oauth-enrollment-id-pattern.nix;
   accounts = lib.filterAttrs (_: value: value.provider == "google" && value.profile == "antigravity") (config.nix-provenance.oauth.accounts or {});
   account = accounts.${cfg.enrollment} or null;
   stateDirectory = account.stateDirectory or null;
@@ -91,7 +92,7 @@ in {
     enable = mkEnableOption "automatic Antigravity Google sign-in from a shared agy token";
 
     enrollment = mkOption {
-      type = types.str;
+      type = types.strMatching enrollmentIdPattern;
       default = "google";
       description = "OAuth account ID with the google/antigravity profile to install on activation.";
     };

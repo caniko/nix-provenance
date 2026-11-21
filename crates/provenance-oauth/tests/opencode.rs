@@ -34,7 +34,7 @@ set -eu
 case "$2" in
 export) [ "$#" = 3 ] && [ "$3" = openai ]; cat db.json ;;
 import) [ "$#" = 2 ]; cat > db.json; echo 'sidecar-output-must-be-hidden' ;;
-switch) [ "$#" = 4 ] && [ "$3" = openai ] && [ "$4" = 'Work Account' ]; touch switched ;;
+switch) [ "$#" = 5 ] && [ "$3" = openai ] && [ "$4" = -- ] && [ "$5" = cred_work ]; touch switched ;;
 *) exit 90 ;;
 esac
 "#,
@@ -65,8 +65,9 @@ esac
         cmd
     };
     let pending = dir.join("pending");
-    let mut authorize = run()
-        .args([
+    let authorize = |token_file: &str| {
+        let mut cmd = run();
+        cmd.args([
             "authorize",
             &config.target.host,
             "openai",
@@ -77,21 +78,24 @@ esac
             "--account",
             "Work Account",
             "--token-file",
-            "-",
+            token_file,
             "--secret",
             dir.join("enrollment.age").to_str().unwrap(),
             "--agenix",
             "./agenix",
             "--pending-directory",
         ])
-        .arg(&pending)
+        .arg(&pending);
+        cmd
+    };
+    let mut input = authorize("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     serde_json::to_writer(
-        authorize.stdin.take().unwrap(),
+        input.stdin.take().unwrap(),
         &json!([
             {"id":"cred_unrelated","integrationID":"other","label":"Work Account","active":true,
              "value":{"type":"key","key":"unrelated-provider-secret"}},
@@ -99,7 +103,7 @@ esac
         ]),
     )
     .unwrap();
-    let result = authorize.wait_with_output().unwrap();
+    let result = input.wait_with_output().unwrap();
     assert!(
         result.status.success(),
         "{}",
@@ -109,6 +113,9 @@ esac
     let enrolled = fs::read_to_string(&enrollment).unwrap();
     assert!(!enrolled.contains("unrelated-provider-secret"));
     assert!(enrolled.contains("initial-refresh"));
+    let file_input = authorize("export.json").output().unwrap();
+    assert!(!file_input.status.success());
+    assert!(String::from_utf8_lossy(&file_input.stderr).contains("--token-file -"));
     assert!(
         run()
             .args(["apply", "--initialize", "--enrollment"])
@@ -137,21 +144,37 @@ esac
     };
     let db = dir.join("db.json");
     let state = config.state_directory.join("state.json");
+    let checkpoint_path = config.state_directory.join("checkpoint.age");
     assert!(!run().arg("access").output().unwrap().status.success());
-    for (refresh, expiry) in [("rotated-refresh", 200), ("older-refresh", 150)] {
-        atomic_write(
-            &db,
-            &serde_json::to_vec(&[credential(refresh, expiry)]).unwrap(),
-        )
-        .unwrap();
-        native_action("opencode-sync", &[]);
-        assert!(
-            fs::read_to_string(&state)
-                .unwrap()
-                .contains("rotated-refresh")
-        );
-    }
-    let rotate_backup = fs::read(config.state_directory.join("checkpoint.age")).unwrap();
+
+    // Simulate a checkpoint publication failure after the rotated state is saved.
+    let stale_checkpoint = fs::read(&checkpoint_path).unwrap();
+    fs::remove_file(&checkpoint_path).unwrap();
+    fs::create_dir(&checkpoint_path).unwrap();
+    atomic_write(
+        &db,
+        &serde_json::to_vec(&[credential("rotated-refresh", 200)]).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !run()
+            .args(["opencode-sync", "--opencode"])
+            .arg(&native)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        fs::read_to_string(&state)
+            .unwrap()
+            .contains("rotated-refresh")
+    );
+    fs::remove_dir(&checkpoint_path).unwrap();
+    atomic_write(&checkpoint_path, &stale_checkpoint).unwrap();
+    atomic_write(&db, b"[]").unwrap();
+    native_action("opencode-sync", &[]);
+    let rotate_backup = fs::read(&checkpoint_path).unwrap();
     let mut decrypt = age::Decryptor::new(&rotate_backup[..])
         .unwrap()
         .decrypt(std::iter::once(&identity as &dyn age::Identity))
@@ -162,6 +185,18 @@ esac
     assert_eq!(checkpoint["revision"], 1);
     assert_eq!(checkpoint["grant"]["refreshToken"], "rotated-refresh");
 
+    atomic_write(
+        &db,
+        &serde_json::to_vec(&[credential("older-refresh", 150)]).unwrap(),
+    )
+    .unwrap();
+    native_action("opencode-sync", &[]);
+    assert!(
+        fs::read_to_string(&state)
+            .unwrap()
+            .contains("rotated-refresh")
+    );
+
     // The existing DB label remains untouched even if state has a newer backup.
     let before = fs::read(&db).unwrap();
     native_action("opencode-install", &[]);
@@ -169,6 +204,29 @@ esac
     assert!(!dir.join("switched").exists());
     let mut duplicate = credential("must-not-leak", 300);
     duplicate["id"] = "another-credential".into();
+    let reassigned = serde_json::to_vec(&[&duplicate]).unwrap();
+    atomic_write(&db, &reassigned).unwrap();
+    let previous_state = fs::read(&state).unwrap();
+    let previous_checkpoint = fs::read(&checkpoint_path).unwrap();
+    for (action, args) in [
+        ("opencode-install", &["--activate"][..]),
+        ("opencode-sync", &[][..]),
+    ] {
+        let output = run()
+            .args([action, "--opencode"])
+            .arg(&native)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{action} accepted a different ID");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("re-enroll"));
+        assert!(!error.contains("must-not-leak"));
+        assert_eq!(fs::read(&db).unwrap(), reassigned);
+        assert_eq!(fs::read(&state).unwrap(), previous_state);
+        assert_eq!(fs::read(&checkpoint_path).unwrap(), previous_checkpoint);
+        assert!(!dir.join("switched").exists());
+    }
     atomic_write(
         &db,
         &serde_json::to_vec(&[credential("older-refresh", 150), duplicate]).unwrap(),

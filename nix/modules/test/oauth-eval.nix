@@ -41,6 +41,12 @@
       enrollmentFile = "/run/agenix/oauth-root-google";
       recoveryRecipients = ["age1luyy6j8g4689rqj2qwlu4znr3zjael48pq8tlgl5fu7l2l8r7qvqdfxaa5"];
     };
+    services.provenance.oauth.users.root.enrollments.backup = {
+      provider = "google";
+      profile = "drive";
+      enrollmentFile = "/run/agenix/oauth-root-backup";
+      recoveryRecipients = ["age1luyy6j8g4689rqj2qwlu4znr3zjael48pq8tlgl5fu7l2l8r7qvqdfxaa5"];
+    };
     system.stateVersion = "26.05";
   };
 }
