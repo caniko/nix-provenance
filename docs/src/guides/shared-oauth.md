@@ -97,15 +97,18 @@ Antigravity enrollment. The ordinary unit restores the declared default on
 Home Manager activation and login.
 Unset the legacy `googleAuth.tokenFile` when switching to the enrollment; the
 installer accepts exactly one source. It calls `agy-token` at runtime and
-replaces a profile copy only when its client, refresh token or project differs
-from the source, it is missing, or it is not a private mode-0600 file. agy
-refreshes and rewrites its own copies independently. An agy session still
-running across an Apply or Restore can save the old grant back: stop those agy
-sessions, run `systemctl --user start nix-provenance-antigravity-google-auth`,
-then relaunch them. The enrollment wins over a fresh sign-in inside agy: after
-signing in again there, re-enroll from that copy with `authorize --reauth
---token-file`. Removing the enrollment stops new exports only; each installed
-copy keeps refreshing until it is deleted or the grant is revoked at Google.
+installs both `antigravity-acp/antigravity-oauth-token` (agy 1.5+'s native
+file-storage credential) and `antigravity-acp/acp_token.json` (the legacy
+export). Each file is replaced independently only when its grant fields differ
+from the source, it is missing, or it is not a private mode-0600 regular file,
+so agy keeps refreshing and caching access tokens in its own copies
+independently. An agy session still running across an Apply or Restore can save
+the old grant back: stop those agy sessions, run
+`systemctl --user start nix-provenance-antigravity-google-auth`, then relaunch
+them. The enrollment wins over a fresh sign-in inside agy: after signing in
+again there, re-enroll from that copy with `authorize --reauth --token-file`.
+Removing the enrollment stops new exports only; each installed copy keeps
+refreshing until it is deleted or the grant is revoked at Google.
 
 #### Interactive agy CLI keyring
 

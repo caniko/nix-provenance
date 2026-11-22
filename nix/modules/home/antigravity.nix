@@ -45,7 +45,7 @@ _: {
       fi
       work=$(mktemp -d -p "''${XDG_RUNTIME_DIR:-''${TMPDIR:-/tmp}}")
       staged=
-      trap 'if [ -n "$staged" ]; then rm -f -- "$staged"; fi; rm -f -- "$work/token"; rmdir -- "$work"' EXIT
+      trap 'if [ -n "$staged" ]; then rm -f -- "$staged"; fi; rm -f -- "$work/token" "$work/native"; rmdir -- "$work"' EXIT
       token="$work/token"
       ${
         if cfg.tokenFile != null
@@ -87,22 +87,27 @@ _: {
         echo "antigravity: source is not an agy Google token file" >&2
         exit 1
       }
-      # agy rewrites its copy with fresh access tokens, so compare only the grant.
-      grant='[.client_id, .client_secret, .refresh_token, .project_id]'
+      # agy 1.5 reads the native file instead of acp_token.json in file-storage mode.
+      jq -ce '{auth_method:"consumer", token:{token_type:"Bearer", refresh_token}}' "$token" > "$work/native"
+      install_grant() {
+        local source=$1 target=$2 grant=$3
+        # Keep access tokens agy cached for the same grant.
+        if [ -f "$target" ] && [ ! -L "$target" ] && [ "$(stat -c %a -- "$target")" = 600 ] \
+          && jq -e --slurpfile source "$source" "$grant == (\$source[0] | $grant)" "$target" >/dev/null 2>&1; then
+          return
+        fi
+        staged=$(mktemp "''${target%/*}/.provenance-token.XXXXXXXX")
+        install -m 600 "$source" "$staged"
+        mv -fT -- "$staged" "$target"
+        staged=
+      }
       # An array: a one-word literal list fails shellcheck (SC2043).
       profiles=(${lib.escapeShellArgs cfg.profileDirectories})
       for profile in "''${profiles[@]}"; do
         dir="$profile/antigravity-acp"
-        target="$dir/acp_token.json"
         install -d -m 700 "$dir"
-        if [ -f "$target" ] && [ ! -L "$target" ] && [ "$(stat -c %a -- "$target")" = 600 ] \
-          && jq -e --slurpfile source "$token" "$grant == (\$source[0] | $grant)" "$target" >/dev/null 2>&1; then
-          continue
-        fi
-        staged=$(mktemp "$dir/.provenance-token.XXXXXXXX")
-        install -m 600 "$token" "$staged"
-        mv -fT -- "$staged" "$target"
-        staged=
+        install_grant "$token" "$dir/acp_token.json" '[.client_id, .client_secret, .refresh_token, .project_id]'
+        install_grant "$work/native" "$dir/antigravity-oauth-token" '[.auth_method, .token.token_type, .token.refresh_token]'
       done
       ${lib.optionalString (cfg.tokenFile == null) ''
         if [ -n "$remember" ]; then
@@ -161,7 +166,7 @@ in {
     profileDirectories = mkOption {
       type = types.listOf types.str;
       default = [];
-      description = "agy profile directories (GEMINI_HOME), such as a T3 Code Antigravity instance's profile, that receive antigravity-acp/acp_token.json.";
+      description = "agy profile directories (GEMINI_HOME), such as a T3 Code Antigravity instance's profile, that receive both native and legacy credentials in antigravity-acp.";
     };
 
     keyring = {
