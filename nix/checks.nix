@@ -424,6 +424,8 @@ in
           fi
           a=/tmp/nix-provenance-antigravity-a/antigravity-acp/acp_token.json
           b=/tmp/nix-provenance-antigravity-b/antigravity-acp/acp_token.json
+          native_a="$(dirname "$a")/antigravity-oauth-token"
+          native_b="$(dirname "$b")/antigravity-oauth-token"
           for invalid in '{"client_id":"id","client_secret":"secret"}' '{"client_id":"id","client_secret":"secret","refresh_token":7}'; do
             printf '%s' "$invalid" > ${lib.escapeShellArg tokenFile}
             if "$exec_start" 2>/dev/null; then
@@ -432,18 +434,48 @@ in
             fi
           done
           test ! -e "$a"
+          test ! -e "$native_a"
           printf '{"client_id":"id","client_secret":"secret","refresh_token":"test-refresh-token"}' > ${lib.escapeShellArg tokenFile}
           "$exec_start"
           cmp -s ${lib.escapeShellArg tokenFile} "$a"
           cmp -s ${lib.escapeShellArg tokenFile} "$b"
           test "$(stat -c %a "$a")" = 600
           test "$(stat -c %a "$(dirname "$a")")" = 700
+          printf '%s\n' '{"auth_method":"consumer","token":{"token_type":"Bearer","refresh_token":"test-refresh-token"}}' > "$TMPDIR/expected-native"
+          cmp "$TMPDIR/expected-native" "$native_a"
+          cmp "$TMPDIR/expected-native" "$native_b"
+          test "$(stat -c %a "$native_a")" = 600
            # agy can rewrite its private copy without changing the source.
            printf '{"client_id":"id","client_secret":"secret","refresh_token":"test-refresh-token","access_token":"agy-fixture"}' > "$a"
+           printf '{"auth_method":"consumer","token":{"token_type":"Bearer","refresh_token":"test-refresh-token","access_token":"native-fixture"}}' > "$native_a"
+           rm -- "$native_b"
            inode=$(stat -c %i "$a")
+           native_inode=$(stat -c %i "$native_a")
            "$exec_start"
            test "$(stat -c %i "$a")" = "$inode"
+           test "$(stat -c %i "$native_a")" = "$native_inode"
            grep -q 'agy-fixture' "$a"
+           grep -q 'native-fixture' "$native_a"
+           cmp "$TMPDIR/expected-native" "$native_b"
+           # Stale, corrupt, loose-mode, or symlinked native copies are repaired even when acp_token.json matches.
+           for bad_native in \
+             '{"auth_method":"consumer","token":{"token_type":"Bearer","refresh_token":"stale"}}' \
+             '{"auth_method":"business","token":{"token_type":"Bearer","refresh_token":"test-refresh-token"}}' \
+             '{"auth_method":"consumer","token":{"refresh_token":"test-refresh-token"}}' \
+             'not-json'; do
+             printf '%s' "$bad_native" > "$native_b"
+             "$exec_start"
+             cmp "$TMPDIR/expected-native" "$native_b"
+             test "$(stat -c %a "$native_b")" = 600
+           done
+           chmod 644 "$native_b"
+           "$exec_start"
+           test "$(stat -c %a "$native_b")" = 600
+           rm -- "$native_b"
+           ln -s "$native_a" "$native_b"
+           "$exec_start"
+           test ! -L "$native_b"
+           cmp "$TMPDIR/expected-native" "$native_b"
 
            enroll=${enrollmentService.Service.ExecStart}
            mkdir -p ${stateDirectory}
@@ -464,6 +496,8 @@ in
             "$switch" work
             cmp -s ${stateDirectory}/work.json "$a"
             cmp -s ${stateDirectory}/work.json "$b"
+            grep -Fq '"refresh_token":"work-fixture"' "$native_a"
+            cmp "$native_a" "$native_b"
             for id in drive unknown; do
               if "$switch" "$id" 2>/dev/null; then
                 echo "antigravity: accepted invalid instance $id" >&2
@@ -473,15 +507,18 @@ in
             # The live pick survives the declared unit (token refresh, reactivation).
             "$enroll"
             cmp -s ${stateDirectory}/work.json "$a"
+            grep -Fq '"refresh_token":"work-fixture"' "$native_a"
             # A changed declaration wins over the old pick, as does a removed pick.
             for stale in '{"enrollment":"work","declared":"previous"}' '{"enrollment":"gone","declared":"google"}'; do
               printf '%s' "$stale" > "$selection"
               "$enroll"
               cmp -s ${stateDirectory}/state.json "$a"
+              grep -Fq '"refresh_token":"store-fixture"' "$native_a"
               "$switch" work
             done
             "$switch" google
             cmp -s ${stateDirectory}/state.json "$a"
+            grep -Fq '"refresh_token":"store-fixture"' "$native_a"
 
              keyring_install=${keyringService}
              grep -Fq 'agy-keyring-entry' "$keyring_install"
