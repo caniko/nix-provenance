@@ -130,6 +130,10 @@ _: {
         fi
         if [ "$lookup_status" -ne 0 ]; then
           echo "antigravity: ACP profiles installed, but Secret Service keyring lookup failed (unlock it and retry)" >&2
+          # The ordinary unit also runs before graphical login. Keep explicit @ID switches strict.
+          if [ -z "$remember" ]; then
+            exit 0
+          fi
           exit 1
         fi
         # Keep the same refresh grant as the ACP copies if the enrollment

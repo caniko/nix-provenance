@@ -525,6 +525,25 @@ in
              export KEYRING_DIRECTORY="$TMPDIR/keyring"
              mkdir -p "$KEYRING_DIRECTORY/default"
              default_entry="$KEYRING_DIRECTORY/default/text_plain"
+             # The ordinary unit must install both profiles even before Secret Service is ready.
+             rm -- "$a" "$b" "$native_a" "$native_b"
+             if ! FAIL_KEYRING_LOOKUP=1 "$keyring_install" 2>"$TMPDIR/warning"; then
+               cat "$TMPDIR/warning" >&2
+               exit 1
+             fi
+             grep -Fq 'ACP profiles installed, but Secret Service keyring lookup failed (unlock it and retry)' "$TMPDIR/warning"
+             cmp ${stateDirectory}/state.json "$a"
+             cmp "$a" "$b"
+             grep -Fq '"refresh_token":"store-fixture"' "$native_a"
+             cmp "$native_a" "$native_b"
+             test ! -e "$default_entry"
+
+             # A write failure is still fatal for the ordinary unit.
+             if FAIL_KEYRING_STORE=1 "$keyring_install" 2>"$TMPDIR/warning"; then
+               echo 'antigravity: did not report a failed keyring write' >&2
+               exit 1
+             fi
+             grep -Fq 'the CLI keyring entry could not be updated' "$TMPDIR/warning"
              export entry=nonsecret_value
              "$keyring_install"
              grep -Fq '"refresh_token":"store-fixture"' "$default_entry"

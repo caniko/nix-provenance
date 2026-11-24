@@ -128,8 +128,11 @@ exchanges the selected refresh grant for a fresh Google access token and reads
 the account email. The grant needs
 `userinfo.email` in addition to Antigravity's scopes. The new entry goes to
 Secret Service over stdin without a temporary keyring file. The ACP copies are
-installed first: if the keyring is locked or unavailable, the unit warns and
-fails without undoing those copies. Unlock the keyring and rerun the same unit.
+installed first. If keyring lookup fails because Secret Service is locked or
+unavailable, the ordinary unit warns and exits successfully without updating
+the keyring. Unlock it and rerun the unit to sync the CLI sign-in. An explicit
+`@ID` switch still reports a failed lookup as an error. If lookup succeeds but
+the entry cannot be updated, either unit fails without undoing the ACP copies.
 Stop active agy sessions before switching to keep them from saving the old
 sign-in back. Disabling this target or removing the enrollment does not delete
 the keyring item; sign out of the CLI or revoke the Google grant separately.
