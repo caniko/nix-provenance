@@ -321,7 +321,7 @@ pub fn parse_auth_list(bytes: &[u8]) -> Result<Vec<CredentialInfo>> {
     let integrations: Vec<Value> = serde_json::from_slice(bytes)
         .map_err(|_| anyhow::anyhow!("invalid public OpenCode auth list"))?;
     let mut credentials = Vec::new();
-    if let Some(openai) = integrations.iter().find(|entry| entry["id"] == "openai") {
+    for openai in integrations.iter().filter(|entry| entry["id"] == "openai") {
         for connection in openai["connections"]
             .as_array()
             .context("invalid OpenAI connections list")?
@@ -508,6 +508,24 @@ fn extract_export_metadata(raw: &RawValue) -> Result<ExportMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_auth_list_collects_all_openai_integrations() {
+        let credentials = parse_auth_list(
+            br#"[
+                {"id":"openai","connections":[{"type":"credential","id":"id-1","label":"Work"}]},
+                {"id":"other"},
+                {"id":"openai","connections":[{"type":"credential","id":"id-2","label":"work"}]}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(credentials.len(), 2);
+        assert_eq!(credentials[1].id, "id-2");
+        assert_eq!(
+            check_label_uniqueness(&credentials, Some("Work")),
+            (true, false)
+        );
+    }
 
     #[test]
     fn detects_unique_and_duplicate_labels() {

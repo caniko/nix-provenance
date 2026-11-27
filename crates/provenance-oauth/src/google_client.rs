@@ -295,7 +295,12 @@ fn parse_client_json(
     }
     let mut root: ClientFields = serde_json::from_slice(bytes)
         .map_err(|_| CliError::validation("invalid Google OAuth client JSON"))?;
-    let flat = root.client_id.is_some() || root.client_secret.is_some();
+    let flat = root.client_id.is_some()
+        || root.client_secret.is_some()
+        || root.token_uri.is_some()
+        || root.auth_uri.is_some()
+        || root.project_id.is_some()
+        || root.redirect_uris.is_some();
     let (client_type, fields) = match (flat, root.installed.take(), root.web.take()) {
         (_, None, None) => ("flat", root),
         (false, Some(fields), None) => ("installed", *fields),
@@ -366,6 +371,28 @@ fn parse_client_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_rejects_flat_fields_alongside_wrapped_client() {
+        for wrapper in ["installed", "web"] {
+            for (field, value) in [
+                ("client_id", r#""fixture""#),
+                ("client_secret", r#""fixture""#),
+                ("token_uri", r#""https://oauth2.googleapis.com/token""#),
+                ("auth_uri", r#""https://accounts.google.com/o/oauth2/auth""#),
+                ("project_id", r#""fixture""#),
+                ("redirect_uris", "[]"),
+            ] {
+                let input = format!(
+                    r#"{{"{wrapper}":{{"client_id":"123.apps.googleusercontent.com","client_secret":"fixture"}},"{field}":{value}}}"#
+                );
+                assert!(
+                    matches!(parse_client_json(input.as_bytes(), None, false), Err(e) if e.to_string().contains("expected exactly one")),
+                    "{wrapper} with top-level {field}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn parses_installed_web_and_flat_formats() {

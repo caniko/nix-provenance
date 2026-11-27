@@ -452,12 +452,49 @@ fn scan_profile_credential(
     profile: &Path,
     borrow_client: impl FnOnce() -> std::result::Result<ClientMetadata, CliError>,
 ) -> std::result::Result<CanonicalAgyToken, CliError> {
-    #[derive(Deserialize)]
+    #[derive(Default)]
     struct RefreshOnly<'a> {
-        #[serde(borrow)]
-        refresh_token: Option<&'a RawValue>,
-        #[serde(borrow)]
-        token: Option<&'a RawValue>,
+        refresh: Vec<&'a RawValue>,
+        nested: Vec<&'a RawValue>,
+    }
+
+    impl<'de> Deserialize<'de> for RefreshOnly<'de> {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            use serde::de::{IgnoredAny, MapAccess, Visitor};
+
+            #[derive(Deserialize)]
+            #[serde(field_identifier, rename_all = "snake_case")]
+            enum Field {
+                RefreshToken,
+                Token,
+                #[serde(other)]
+                Other,
+            }
+
+            struct RefreshVisitor;
+            impl<'de> Visitor<'de> for RefreshVisitor {
+                type Value = RefreshOnly<'de>;
+
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a profile object")
+                }
+
+                fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                    let mut probe = RefreshOnly::default();
+                    while let Some(field) = map.next_key()? {
+                        match field {
+                            Field::RefreshToken => probe.refresh.push(map.next_value()?),
+                            Field::Token => probe.nested.push(map.next_value()?),
+                            Field::Other => {
+                                map.next_value::<IgnoredAny>()?;
+                            }
+                        }
+                    }
+                    Ok(probe)
+                }
+            }
+            deserializer.deserialize_map(RefreshVisitor)
+        }
     }
 
     let xdg_cache = profile.join("cache");
@@ -514,19 +551,26 @@ fn scan_profile_credential(
             Ok(v) => v,
             Err(_) => continue,
         };
-        let nested = probe.token.and_then(parse_raw_object::<RefreshOnly<'_>>);
-        let mut tokens = [
-            probe.refresh_token,
-            nested.and_then(|token| token.refresh_token),
-        ]
-        .into_iter()
-        .flatten()
-        .filter_map(parse_raw_string);
-        // Count refresh tokens even if the corresponding OAuth metadata cannot be parsed.
-        let Some(first) = tokens.next() else {
+        let mut tokens = Vec::new();
+        // Check every occurrence before typed parsing can reject malformed metadata.
+        for refresh in std::iter::once(probe.refresh).chain(
+            probe
+                .nested
+                .into_iter()
+                .filter_map(parse_raw_object::<RefreshOnly<'_>>)
+                .map(|token| token.refresh),
+        ) {
+            if refresh.len() > 1 {
+                return Err(CliError::validation(
+                    "isolated agy profile contains a duplicate refresh_token key",
+                ));
+            }
+            tokens.extend(refresh.into_iter().filter_map(parse_raw_string));
+        }
+        if tokens.is_empty() {
             continue;
-        };
-        for tok in std::iter::once(first).chain(tokens) {
+        }
+        for tok in tokens {
             let selected = refresh_token.get_or_insert_with(|| Secret(tok.to_string()));
             if selected.0 != tok.as_str() {
                 return Err(CliError::validation(
@@ -1598,7 +1642,7 @@ pub fn strip_ansi_codes(input: &str) -> String {
 }
 
 fn parse_http_status_line(line: &str) -> Option<u64> {
-    let lower = line.to_ascii_lowercase();
+    let lower = Zeroizing::new(line.to_ascii_lowercase());
     let rest = if let Some(after) = lower.strip_prefix("http") {
         let after = if let Some(v) = after.strip_prefix('/') {
             let digits_end = v
@@ -1722,6 +1766,48 @@ pub fn classify_provider_error(stdout: &str, stderr: &str) -> Option<ProviderErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_profile_scan_rejects_duplicate_refresh_token_keys() {
+        let profile = tempfile::tempdir().unwrap();
+        fs::write(
+            profile.path().join("a.json"),
+            r#"{"refresh_token":"first","client_id":"fixture","client_secret":"fixture"}"#,
+        )
+        .unwrap();
+        for duplicate in [
+            r#"{"refresh_token":"first","refresh_token":"second"}"#,
+            r#"{"token":{"refresh_token":"first","refresh_\u0074oken":"first"}}"#,
+            r#"{"refresh_token":"first","refresh_token":null}"#,
+        ] {
+            fs::write(profile.path().join("b.json"), duplicate).unwrap();
+            let result = scan_profile_credential(profile.path(), || panic!("unexpected fallback"));
+            assert!(matches!(result, Err(e) if e.to_string().contains("duplicate refresh_token")));
+        }
+    }
+
+    #[test]
+    fn audit_profile_scan_rejects_conflicts_within_a_file() {
+        let profile = tempfile::tempdir().unwrap();
+        for conflict in [
+            r#"{"refresh_token":"first","token":{"refresh_token":"second"}}"#,
+            r#"{"token":{"refresh_token":"first"},"token":{"refresh_token":"second"}}"#,
+        ] {
+            fs::write(profile.path().join("a.json"), conflict).unwrap();
+            let result = scan_profile_credential(profile.path(), || panic!("unexpected fallback"));
+            assert!(
+                matches!(result, Err(e) if e.to_string().contains("multiple distinct refresh tokens"))
+            );
+        }
+    }
+
+    #[test]
+    fn audit_classifies_mixed_case_http_status_in_stderr() {
+        assert_eq!(
+            classify_provider_error("", "hTtP/2 StAtUs: 429 fixture diagnostic"),
+            ProviderError::http(429)
+        );
+    }
 
     #[test]
     fn audit_profile_scan_counts_tokens_with_malformed_metadata() {
