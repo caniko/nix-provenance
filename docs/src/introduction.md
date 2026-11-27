@@ -37,6 +37,7 @@ not always a Rust crate:
 | `vikunja-provision` | Vikunja teams and memberships via the API | `MIT OR Apache-2.0` |
 | `forgejo-provision` | Forgejo SSH public keys via the administrative API | `MIT OR Apache-2.0` |
 | `github-provision` | GitHub account SSH/OpenPGP public keys and repository collaborators | `MIT OR Apache-2.0` |
+| `provenance-t3-enroll` | Native T3 peer links and a private desktop import document for one existing Unix user | `MIT OR Apache-2.0` |
 
 See [Architecture](./concepts/architecture.md) for the tenant taxonomy and the
 add-a-tenant checklist. See [Licensing](./reference/licensing.md) for the
@@ -44,8 +45,8 @@ mixed-license boundary that keeps the shared core permissive.
 
 ## Flake outputs
 
-- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,github-provision,stalwart016-provision,docs,site}`
-- `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp}`
+- `packages.<system>.{identity-cli,immich-provision,rauthy-provision,vikunja-provision,forgejo-provision,github-provision,stalwart016-provision,provenance-t3-enroll,docs,site}`
+- `nixosModules.{immich,rauthy,vikunja,vikunjaProvision,forgejo,stalwart,stalwart016,kanidmCredentials,externalApp,roborevCredentials,t3codeCredentials,t3Enrollment}`
 - `lib.{immich,rauthy,vikunja,forgejo,stalwart,adapter,passwords}`
 
 ## Key guides
@@ -57,3 +58,5 @@ mixed-license boundary that keeps the shared core permissive.
   libraries.
 - [RFC 0001: Trusted Local Provisioning for Immich](./rfcs/0001-trusted-local-provisioning.md):
   the design for short-lived local provisioning tokens in Immich.
+- [Native T3 Code Environment Enrollment](./guides/t3-native-enrollment.md):
+  the own-user peer-link and desktop-import boundary for native T3 Code.

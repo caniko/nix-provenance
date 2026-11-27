@@ -251,7 +251,9 @@
       # `rauthyServer` (the server service) and `rauthy` (the provisioner)
       # until nixpkgs ships `services.rauthy` on the supported branch.
       nixosModules = {
+        roborevCredentials = import ./nix/modules/adapter/roborev-credentials.nix;
         t3codeCredentials = import ./nix/modules/adapter/t3code-credentials.nix {inherit self;};
+        t3Enrollment = import ./nix/modules/adapter/t3-enrollment.nix {inherit self;};
         # Keyed: every canix enrollment module imports it, so repeats must dedupe.
         oauth = {
           key = "nix-provenance#nixosModules.oauth";

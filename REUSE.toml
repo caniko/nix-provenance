@@ -147,6 +147,25 @@ SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 [[annotations]]
 path = [
+  "nix/modules/adapter/roborev-credentials.nix",
+  "nix/modules/test/roborev-credentials-eval.nix",
+  "docs/src/guides/roborev-credentials.md",
+]
+SPDX-FileCopyrightText = "Can H. Tartanoglu"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
+path = [
+  "crates/provenance-t3-enroll/**",
+  "nix/modules/adapter/t3-enrollment.nix",
+  "nix/modules/test/t3-enrollment-eval.nix",
+  "docs/src/guides/t3-native-enrollment.md",
+]
+SPDX-FileCopyrightText = "Can H. Tartanoglu"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
+path = [
   "flake.nix",
   "flake.lock",
   "Cargo.toml",

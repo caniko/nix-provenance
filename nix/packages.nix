@@ -56,6 +56,7 @@
   githubArgs = mkArgs "github-provision";
   identityArgs = mkArgs "identity-cli";
   oauthArgs = mkArgs "provenance-oauth";
+  t3EnrollArgs = mkArgs "provenance-t3-enroll";
   rbwArgs = mkArgs "provenance-rbw";
   protonVpnAuthArgs = mkArgs "proton-vpn-auth";
   # stalwart016-provision uses explicit version because crateNameFromCargoToml
@@ -80,6 +81,7 @@
   githubDeps = craneLib.buildDepsOnly githubArgs;
   identityDeps = craneLib.buildDepsOnly identityArgs;
   oauthDeps = craneLib.buildDepsOnly oauthArgs;
+  t3EnrollDeps = craneLib.buildDepsOnly t3EnrollArgs;
   rbwDeps = craneLib.buildDepsOnly rbwArgs;
   protonVpnAuthDeps = craneLib.buildDepsOnly protonVpnAuthArgs;
   stalwartProvisionDeps = craneLib.buildDepsOnly stalwartProvisionArgs;
@@ -98,6 +100,7 @@ in {
     github-provision = githubArgs;
     identity-cli = identityArgs;
     provenance-oauth = oauthArgs;
+    provenance-t3-enroll = t3EnrollArgs;
     provenance-rbw = rbwArgs;
     proton-vpn-auth = protonVpnAuthArgs;
     stalwart016-provision = stalwartProvisionArgs;
@@ -117,6 +120,7 @@ in {
     github-provision = githubDeps;
     identity-cli = identityDeps;
     provenance-oauth = oauthDeps;
+    provenance-t3-enroll = t3EnrollDeps;
     provenance-rbw = rbwDeps;
     proton-vpn-auth = protonVpnAuthDeps;
     stalwart016-provision = stalwartProvisionDeps;
@@ -159,6 +163,17 @@ in {
         meta = {
           description = "Host-scoped OAuth enrollment and shared access credentials";
           mainProgram = "provenance-oauth";
+          license = with lib.licenses; [mit asl20];
+          platforms = lib.platforms.linux;
+        };
+      });
+
+    provenance-t3-enroll = craneLib.buildPackage (t3EnrollArgs
+      // {
+        cargoArtifacts = t3EnrollDeps;
+        meta = {
+          description = "Native T3 Code environment enrollment for one existing Unix user";
+          mainProgram = "provenance-t3-enroll";
           license = with lib.licenses; [mit asl20];
           platforms = lib.platforms.linux;
         };
