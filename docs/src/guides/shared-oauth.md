@@ -396,6 +396,47 @@ refresh a copied production grant or edit production expiry timestamps for a dri
 that can rotate credentials behind the live owner's back. Production refresh
 evidence should come from a normal expiry-driven transition and requests afterward.
 
+## Standalone operator subcommands
+
+In addition to the manifest-backed subcommands (which require `--config MANIFEST`),
+`provenance-oauth` provides five standalone operator subcommands. They reject
+`--config` with exit code `2`.
+
+- **`antigravity-capture`**: runs `<agy-bin> acp --login --disable-telemetry` in an
+  isolated `0700` temporary profile (or reads `--token-file <PATH|->`), normalizes
+  the grant to canonical `AgyToken` JSON (borrowing OAuth client metadata from
+   `--client-metadata-from` or deployed manifests in `--manifests-dir` when needed;
+   both sources must target `google/antigravity`),
+  and writes to non-TTY stdout (`--output -`) or atomically with mode `0600` to a file.
+  Exit codes: `0` success, `1` runtime/agy error, `2` validation/TTY-refusal/missing metadata.
+- **`antigravity-check`**: verifies T3's installed `antigravity-acp/acp_token.json`
+  against deployed manifests in `--manifests-dir` and the optional selection record,
+  runs an isolated `<agy-bin> --output-format json models` discovery probe (and
+  optional `--smoke-model` / `--smoke-effort` check), classifies provider failures
+  into redacted `error_code` values without leaking tokens or URLs, and emits
+   structured JSON when `--json` is passed. `--user` must match the effective UID.
+   Both `--models-timeout-secs` and `--smoke-timeout-secs` accept 1–300 seconds;
+   the outer smoke deadline gives `agy` 10 additional seconds to exit.
+   Exit codes: `0` healthy, `3` degraded, `1` failed, `2` invalid grant or arguments.
+- **`opencode-capture`**: runs interactive `opencode auth login openai --method chatgpt-browser`
+  (unless `--skip-login`), verifies a single new credential with a unique
+  case-insensitive `--account <LABEL>`, and writes the bounded (4 MiB) OpenCode
+   export JSON to non-TTY stdout or a `0600` file. The matched entry must be an
+   OAuth credential with a refresh token. Exit codes: `0` success, `1` runtime
+  error, `2` usage/TTY refusal.
+- **`opencode-check`**: inspects local OpenCode OpenAI credentials (`opencode auth list`)
+  or an export file (`--export-file <PATH|->`), optionally verifying export grant
+   metadata (`--verify-export`) without emitting raw tokens. Export checks require
+   an OAuth credential with a refresh token for each matching entry, or for every
+   OpenAI entry when `--account` is omitted. Exit codes: `0` ok, `1` failed.
+- **`google-client-bootstrap`**: validates a bounded (<= 64 KiB) Google OAuth client
+  JSON (`installed`, `web`, or flat) from `--file <PATH|->`, optionally enforces
+  `--expected-client-type` and `--require-project-id`, optionally writes normalized
+  JSON with `--materialize-to <PATH|->`, and prints non-secret metadata without ever
+   echoing `client_secret`. With `--json`, validation and I/O failures emit
+   `{"valid":false,"error":"..."}` on stdout. Exit codes: `0` valid, `1` I/O error,
+   `2` invalid input or TTY refusal.
+
 ## Verification
 
 ```sh

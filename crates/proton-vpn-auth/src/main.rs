@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, SyncSender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{Zeroize, Zeroizing};
 
 const MAX_BYTES: usize = 65_536;
 
@@ -33,6 +33,17 @@ enum AuthCommand {
     Login(Args),
     /// Prompt securely and stream the account document to an encryption consumer.
     Enroll(enrollment::EnrollArgs),
+    /// Report supported subcommands and enrollment capabilities without touching secrets.
+    Capabilities(CapabilitiesArgs),
+    /// Validate a Proton enrollment JSON document on stdin without echoing secrets.
+    Validate(enrollment::ValidateArgs),
+}
+
+#[derive(ClapArgs)]
+struct CapabilitiesArgs {
+    /// Emit capability descriptor as JSON (default output is JSON).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(ClapArgs)]
@@ -54,13 +65,13 @@ struct Args {
     timeout_seconds: u64,
 }
 
-#[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Account {
     username: String,
-    password: String,
+    password: Zeroizing<String>,
     #[serde(default)]
-    totp_secret: Option<String>,
+    totp_secret: Option<Zeroizing<String>>,
 }
 
 struct Failure {
@@ -303,7 +314,7 @@ fn invoke(args: &Args, command: &[&str], mut account: Option<&mut Account>) -> R
                             .stdin
                             .as_mut()
                             .ok_or_else(|| Failure::permanent("Missing Proton input pipe"))?;
-                        writeln!(stdin, "{}", account.password)
+                        writeln!(stdin, "{}", account.password.as_str())
                             .map_err(|_| Failure::permanent("Cannot deliver Proton password"))?;
                         account.password.zeroize();
                         password_sent = true;
@@ -316,7 +327,6 @@ fn invoke(args: &Args, command: &[&str], mut account: Option<&mut Account>) -> R
                     if !totp_sent && prompts.contains("2FA Token: ") {
                         let seed = account.totp_secret.take()
                             .ok_or_else(|| Failure::permanent("Proton requires 2FA; enroll totpSecret in the encrypted credential document"))?;
-                        let seed = Zeroizing::new(seed);
                         let seconds = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map_err(|_| {
@@ -414,12 +424,44 @@ fn run(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn capabilities(_args: &CapabilitiesArgs) -> Result<()> {
+    let descriptor = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "subcommands": ["login", "enroll", "capabilities", "validate"],
+        "enroll": {
+            "stdin": true,
+            "stdout": true,
+            "passwordOnly": true,
+            "rbwJson": true,
+            "maxDocumentBytes": MAX_BYTES,
+        }
+    });
+    let text = serde_json::to_string_pretty(&descriptor)
+        .map_err(|_| Failure::permanent("Cannot encode capability descriptor"))?;
+    println!("{text}");
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
-    let result = protection::Protection::acquire().and_then(|_protection| match cli.command {
-        AuthCommand::Login(args) => run(&args),
-        AuthCommand::Enroll(args) => enrollment::run(&args),
-    });
+    let result = match cli.command {
+        AuthCommand::Capabilities(args) => capabilities(&args),
+        AuthCommand::Login(args) => protection::Protection::acquire().and_then(|_| run(&args)),
+        AuthCommand::Enroll(args) => {
+            protection::Protection::acquire().and_then(|_| enrollment::run(&args))
+        }
+        AuthCommand::Validate(args) => {
+            let outcome =
+                protection::Protection::acquire().and_then(|_| enrollment::validate(&args));
+            if args.json
+                && let Err(error) = &outcome
+            {
+                enrollment::report_validation_error(error);
+                std::process::exit(2);
+            }
+            outcome
+        }
+    };
     if let Err(error) = result {
         eprintln!("proton-vpn-auth: {}", error.message);
         std::process::exit(if error.retry { 75 } else { 2 });

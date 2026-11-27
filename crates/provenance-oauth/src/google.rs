@@ -33,7 +33,7 @@ fn google_token_uri() -> String {
     TOKEN.into()
 }
 
-fn parse_agy_token(bytes: &[u8]) -> Result<Grant> {
+pub(crate) fn parse_agy_token(bytes: &[u8]) -> Result<Grant> {
     let token: AgyToken = serde_json::from_slice(bytes)
         .map_err(|_| anyhow::anyhow!("invalid Antigravity token JSON"))?;
     ensure!(token.token_uri == TOKEN, "invalid Antigravity token_uri");

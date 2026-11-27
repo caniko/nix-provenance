@@ -64,6 +64,30 @@ Vault lookup, field selection, account bindings, encryption, rotation, and rekey
 remain the consuming secret manager's responsibility. The helper only creates
 the document for an existing external Proton account.
 
+## Capabilities, validation, and Bitwarden (`rbw`) JSON projection
+
+`proton-vpn-auth` also provides non-interactive operator helpers:
+
+- **`proton-vpn-auth capabilities [--json]`**: prints a JSON capability descriptor
+  (`version`, `subcommands`, and `enroll` limits/flags) to stdout without reading
+  secrets or requiring a logind session. Exit codes: `0` success, `2` error.
+- **`proton-vpn-auth validate --stdin [--password-only] [--json]`**: reads a bounded
+  (<= 64 KiB) Proton enrollment JSON document from stdin, applies the same username,
+  password, and TOTP seed normalization/validation rules as `enroll`, and prints a
+  non-secret validation report (`valid`, `username`, `hasTotp`, `totpNormalized`,
+  `error`) without echoing `password` or `totpSecret`. With `--json`, failures
+  also produce a JSON report on stdout, even if credential protection could not
+  start. Exit codes: `0` valid, `2` failure.
+- **`proton-vpn-auth enroll --rbw-json [--rbw-map OUTPUT=FIELD]... --stdin --stdout [--password-only]`**:
+  reads an `rbw get --raw` JSON item of up to 1 MiB from stdin. It maps `username`,
+  `password`, and `totpSecret` to `data.username`, `data.password`, and `data.totp`
+  by default. To override a mapping, select `username`, `password`, or `totp` from
+  `data`, `notes` from the top-level item, or `custom:<name>` from the custom fields.
+  For example, use `--rbw-map totpSecret=custom:vpn_totp` or
+  `--rbw-map totpSecret=notes`. Duplicate custom field names are rejected when
+  selected. The helper validates and normalizes the credentials before writing
+  the canonical Proton enrollment JSON to the private stdout pipe.
+
 ## Session authentication
 
 The user service loads only ciphertext using systemd credentials, invokes

@@ -2,16 +2,74 @@
 //! credentials only for OpenAI; Google consumers refresh their own grants.
 
 pub mod age_file;
+pub mod antigravity_cli;
 pub mod budget;
 pub mod google;
+pub mod google_client;
 pub mod openai;
 pub mod opencode;
+pub mod opencode_cli;
 pub mod state;
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{fmt, path::PathBuf, time::SystemTime};
+use std::{fmt, path::PathBuf, process::ExitCode, time::SystemTime};
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// Structured CLI error with an explicit process exit code and optional stderr message.
+#[derive(Debug)]
+pub struct CliError {
+    pub code: u8,
+    pub message: Option<String>,
+}
+
+impl CliError {
+    pub fn runtime(message: impl Into<String>) -> Self {
+        Self {
+            code: 1,
+            message: Some(message.into()),
+        }
+    }
+
+    pub fn validation(message: impl Into<String>) -> Self {
+        Self {
+            code: 2,
+            message: Some(message.into()),
+        }
+    }
+
+    pub fn with_code(code: u8, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: Some(message.into()),
+        }
+    }
+
+    pub fn silent(code: u8) -> Self {
+        Self {
+            code,
+            message: None,
+        }
+    }
+
+    pub fn exit_code(&self) -> ExitCode {
+        ExitCode::from(self.code)
+    }
+}
+
+impl From<anyhow::Error> for CliError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::runtime(format!("{error:#}"))
+    }
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.message.as_deref().unwrap_or("OAuth command failed"))
+    }
+}
+
+impl std::error::Error for CliError {}
 
 #[derive(Clone, Default, Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
 #[serde(transparent)]
@@ -21,6 +79,12 @@ impl Secret {
     fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+}
+
+fn deserialize_optional_secret<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<zeroize::Zeroizing<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(|value| value.map(zeroize::Zeroizing::new))
 }
 
 impl fmt::Debug for Secret {
@@ -120,6 +184,11 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
+        self.validate_state_location()?;
+        age_file::validate_recipients(&self.recovery_recipients)
+    }
+
+    fn validate_state_location(&self) -> Result<()> {
         ensure!(self.version == 1, "unsupported OAuth config version");
         self.target.validate()?;
         ensure!(
@@ -130,7 +199,7 @@ impl Config {
             !self.state_directory.starts_with("/nix/store"),
             "OAuth state must be outside the Nix store"
         );
-        age_file::validate_recipients(&self.recovery_recipients)
+        Ok(())
     }
 }
 
@@ -164,7 +233,11 @@ pub struct OAuthClient {
 
 impl OAuthClient {
     pub fn validate(&self) -> Result<()> {
-        for value in [&self.client_id, &self.client_secret.0] {
+        Self::validate_fields(&self.client_id, &self.client_secret.0)
+    }
+
+    fn validate_fields(client_id: &str, client_secret: &str) -> Result<()> {
+        for value in [client_id, client_secret] {
             ensure!(
                 valid_google_credential(value, b"-_.", 256),
                 "invalid Google client credentials"
