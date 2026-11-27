@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, SyncSender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{Zeroize, Zeroizing};
 
 const MAX_BYTES: usize = 65_536;
 
@@ -65,13 +65,13 @@ struct Args {
     timeout_seconds: u64,
 }
 
-#[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Account {
     username: String,
-    password: String,
+    password: Zeroizing<String>,
     #[serde(default)]
-    totp_secret: Option<String>,
+    totp_secret: Option<Zeroizing<String>>,
 }
 
 struct Failure {
@@ -314,7 +314,7 @@ fn invoke(args: &Args, command: &[&str], mut account: Option<&mut Account>) -> R
                             .stdin
                             .as_mut()
                             .ok_or_else(|| Failure::permanent("Missing Proton input pipe"))?;
-                        writeln!(stdin, "{}", account.password)
+                        writeln!(stdin, "{}", account.password.as_str())
                             .map_err(|_| Failure::permanent("Cannot deliver Proton password"))?;
                         account.password.zeroize();
                         password_sent = true;
@@ -327,7 +327,6 @@ fn invoke(args: &Args, command: &[&str], mut account: Option<&mut Account>) -> R
                     if !totp_sent && prompts.contains("2FA Token: ") {
                         let seed = account.totp_secret.take()
                             .ok_or_else(|| Failure::permanent("Proton requires 2FA; enroll totpSecret in the encrypted credential document"))?;
-                        let seed = Zeroizing::new(seed);
                         let seconds = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map_err(|_| {

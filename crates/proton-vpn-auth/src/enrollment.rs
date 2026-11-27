@@ -56,6 +56,11 @@ fn write_document(account: &Account) -> Result<()> {
         serde_json::to_vec(account)
             .map_err(|_| Failure::permanent("Cannot encode Proton credential document"))?,
     );
+    if bytes.len() > MAX_BYTES {
+        return Err(Failure::permanent(
+            "Proton credential document is too large",
+        ));
+    }
     std::io::stdout()
         .write_all(&bytes)
         .map_err(|_| Failure::permanent("Cannot write Proton credential output"))
@@ -80,7 +85,7 @@ fn decode_parameter(input: &str) -> Result<Zeroizing<String>> {
     Ok(Zeroizing::new(value.to_owned()))
 }
 
-fn normalize_seed(input: &str) -> Result<String> {
+fn normalize_seed(input: &str) -> Result<Zeroizing<String>> {
     let invalid = || Failure::permanent("Invalid or unsupported Proton authenticator URI");
     let mut uri_seed = None;
     if input.starts_with("otpauth:") {
@@ -126,18 +131,16 @@ fn normalize_seed(input: &str) -> Result<String> {
             "Enroll the authenticator seed, not a one-time code",
         ));
     }
-    Ok(canonical.to_string())
+    Ok(canonical)
 }
 
 fn prepare_account(mut account: Account, password_only: bool) -> Result<Account> {
     match (account.totp_secret.take(), password_only) {
         (Some(seed), false) => {
-            let seed = Zeroizing::new(seed);
             account.totp_secret = Some(normalize_seed(&seed)?);
         }
         (None, true) => {}
-        (seed, _) => {
-            let _seed = seed.map(Zeroizing::new);
+        _ => {
             return Err(Failure::permanent(
                 "Enrollment requires a TOTP seed, or explicit --password-only without a seed",
             ));
@@ -270,11 +273,12 @@ fn parse_rbw_account(input: &[u8], rbw_map: &[String], password_only: bool) -> R
     let totp_secret = if password_only {
         None
     } else {
-        lookup_rbw_field(&item, &mapping["totpSecret"])?.map(str::to_owned)
+        lookup_rbw_field(&item, &mapping["totpSecret"])?
+            .map(|value| Zeroizing::new(value.to_owned()))
     };
     Ok(Account {
         username: username.to_owned(),
-        password: password.to_owned(),
+        password: Zeroizing::new(password.to_owned()),
         totp_secret,
     })
 }
@@ -403,8 +407,8 @@ pub(super) fn run(args: &EnrollArgs) -> Result<()> {
     let account = prepare_account(
         Account {
             username: username.to_string(),
-            password: password.to_string(),
-            totp_secret: seed.as_ref().map(|value| value.to_string()),
+            password,
+            totp_secret: seed,
         },
         args.password_only,
     )?;
@@ -419,12 +423,12 @@ mod tests {
     fn password_only_document_preserves_credentials() {
         let account = Account {
             username: "fixture".into(),
-            password: "private fixture".into(),
+            password: Zeroizing::new("private fixture".into()),
             totp_secret: None,
         };
         let account = prepare_account(account, true).unwrap_or_else(|_| panic!("valid account"));
         assert_eq!(account.username, "fixture");
-        assert_eq!(account.password, "private fixture");
+        assert_eq!(account.password.as_str(), "private fixture");
         assert!(account.totp_secret.is_none());
     }
 
@@ -432,8 +436,8 @@ mod tests {
     fn invalid_credentials_are_rejected_before_output() {
         let account = Account {
             username: "fixture".into(),
-            password: "private fixture".into(),
-            totp_secret: Some("invalid!".into()),
+            password: Zeroizing::new("private fixture".into()),
+            totp_secret: Some(Zeroizing::new("invalid!".into())),
         };
         assert!(prepare_account(account, false).is_err());
     }

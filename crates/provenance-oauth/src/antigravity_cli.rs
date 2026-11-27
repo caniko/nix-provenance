@@ -9,7 +9,7 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 use std::{
     collections::BTreeSet,
     fs,
@@ -30,6 +30,7 @@ pub const ACP_TOKEN_REL: &str = "antigravity-acp/acp_token.json";
 const NO_SESSION_BUS: &str = "unix:path=/dev/null/no-session-bus";
 const EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
 const MAX_CREDENTIAL_BYTES: u64 = 512 * 1024;
+const MAX_SELECTION_BYTES: u64 = 64 * 1024;
 const MAX_PROBE_OUTPUT: u64 = 1024 * 1024;
 
 pub const DEFAULT_ANTIGRAVITY_SCOPES: &[&str] = &[
@@ -130,6 +131,9 @@ struct ClientMetadata {
 }
 
 pub fn run_capture(args: AntigravityCaptureArgs) -> std::result::Result<(), CliError> {
+    if let Some(user) = &args.user {
+        require_effective_user(user)?;
+    }
     if args.output == Path::new("-") && std::io::stdout().is_terminal() {
         return Err(CliError::validation(
             "refusing to write Antigravity credentials to a terminal; redirect stdout or pass --output <PATH>",
@@ -448,6 +452,14 @@ fn scan_profile_credential(
     profile: &Path,
     borrow_client: impl FnOnce() -> std::result::Result<ClientMetadata, CliError>,
 ) -> std::result::Result<CanonicalAgyToken, CliError> {
+    #[derive(Deserialize)]
+    struct RefreshOnly<'a> {
+        #[serde(borrow)]
+        refresh_token: Option<&'a RawValue>,
+        #[serde(borrow)]
+        token: Option<&'a RawValue>,
+    }
+
     let xdg_cache = profile.join("cache");
     let mut files = Vec::new();
     let mut directories = vec![profile.to_owned()];
@@ -473,6 +485,7 @@ fn scan_profile_credential(
     files.sort_unstable();
 
     let mut refresh_token: Option<Secret> = None;
+    let mut found_complete_input = false;
     let mut full_acp: Option<CanonicalAgyToken> = None;
     let mut scopes: Option<Vec<String>> = None;
 
@@ -497,22 +510,34 @@ fn scan_profile_credential(
         {
             continue;
         }
-        let mut value: TokenInput = match serde_json::from_slice(&bytes) {
+        let probe: RefreshOnly<'_> = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let (top, nested) = value.refresh_tokens();
-        for tok in top.into_iter().chain(nested) {
-            let selected = refresh_token.get_or_insert_with(|| Secret(tok.to_owned()));
-            if selected.0 != tok {
+        let nested = probe.token.and_then(parse_raw_object::<RefreshOnly<'_>>);
+        let mut tokens = [
+            probe.refresh_token,
+            nested.and_then(|token| token.refresh_token),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(parse_raw_string);
+        // Count refresh tokens even if the corresponding OAuth metadata cannot be parsed.
+        let Some(first) = tokens.next() else {
+            continue;
+        };
+        for tok in std::iter::once(first).chain(tokens) {
+            let selected = refresh_token.get_or_insert_with(|| Secret(tok.to_string()));
+            if selected.0 != tok.as_str() {
                 return Err(CliError::validation(
                     "isolated agy profile contains multiple distinct refresh tokens",
                 ));
             }
         }
-        if top.is_none() && nested.is_none() {
+        let Ok(mut value) = serde_json::from_slice::<TokenInput>(&bytes) else {
             continue;
-        }
+        };
+        found_complete_input = true;
         if value
             .token_uri
             .as_deref()
@@ -532,9 +557,11 @@ fn scan_profile_credential(
         }
     }
 
-    let refresh_token = refresh_token.ok_or_else(|| {
-        CliError::runtime("agy ACP login wrote no refresh token in the isolated profile")
-    })?;
+    let refresh_token = refresh_token
+        .filter(|_| found_complete_input)
+        .ok_or_else(|| {
+            CliError::runtime("agy ACP login wrote no refresh token in the isolated profile")
+        })?;
 
     if let Some(acp) = full_acp {
         return Ok(acp);
@@ -968,28 +995,32 @@ pub fn run_check(args: AntigravityCheckArgs) -> std::result::Result<(), CliError
     }
 }
 
+fn require_effective_user(user: &str) -> std::result::Result<(), CliError> {
+    let output = Command::new("id")
+        .args(["-u", "--", user])
+        .output()
+        .map_err(|err| CliError::runtime(format!("resolve UID for requested --user: {err}")))?;
+    // SAFETY: geteuid takes no arguments and has no failure mode.
+    let uid = unsafe { libc::geteuid() };
+    if !output.status.success()
+        || String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<libc::uid_t>()
+            .ok()
+            != Some(uid)
+    {
+        return Err(CliError::validation(format!(
+            "--user {user:?} does not match the effective UID; run as the requested user"
+        )));
+    }
+    Ok(())
+}
+
 fn execute_check(args: &AntigravityCheckArgs, report: &mut CheckReport) -> Result<()> {
     ensure!(!report.host.is_empty(), "could not resolve local hostname");
     ensure!(!report.user.is_empty(), "could not resolve local user");
     if let Some(user) = &args.user {
-        let output = Command::new("id")
-            .args(["-u", "--", user])
-            .output()
-            .context("resolve UID for requested --user")?;
-        // SAFETY: geteuid takes no arguments and has no failure mode.
-        let uid = unsafe { libc::geteuid() };
-        if !output.status.success()
-            || String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .parse::<libc::uid_t>()
-                .ok()
-                != Some(uid)
-        {
-            return Err(CliError::validation(format!(
-                "--user {user:?} does not match the effective UID; run as the requested user"
-            ))
-            .into());
-        }
+        require_effective_user(user)?;
     }
 
     let selection_path = match &args.selection_file {
@@ -1126,23 +1157,41 @@ fn valid_enrollment_id(id: &str) -> bool {
 }
 
 fn read_selection(path: &Path) -> Result<Option<Selection>> {
-    match fs::read(path) {
-        Ok(bytes) => {
-            let sel: Selection =
-                serde_json::from_slice(&bytes).context("invalid Antigravity selection record")?;
-            ensure!(
-                valid_enrollment_id(&sel.enrollment),
-                "invalid recorded enrollment ID"
-            );
-            ensure!(
-                valid_enrollment_id(&sel.declared),
-                "invalid recorded declaration ID"
-            );
-            Ok(Some(sel))
-        }
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).context("read Antigravity selection record"),
-    }
+    let file = match open_credential(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("open Antigravity selection record"),
+    };
+    let meta = file
+        .metadata()
+        .context("stat Antigravity selection record")?;
+    ensure!(
+        meta.is_file(),
+        "Antigravity selection record must be a regular file"
+    );
+    ensure!(
+        meta.len() <= MAX_SELECTION_BYTES,
+        "Antigravity selection record is too large"
+    );
+    let mut bytes = Vec::new();
+    file.take(MAX_SELECTION_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("read Antigravity selection record")?;
+    ensure!(
+        bytes.len() as u64 <= MAX_SELECTION_BYTES,
+        "Antigravity selection record is too large"
+    );
+    let sel: Selection =
+        serde_json::from_slice(&bytes).context("invalid Antigravity selection record")?;
+    ensure!(
+        valid_enrollment_id(&sel.enrollment),
+        "invalid recorded enrollment ID"
+    );
+    ensure!(
+        valid_enrollment_id(&sel.declared),
+        "invalid recorded declaration ID"
+    );
+    Ok(Some(sel))
 }
 
 fn discover_t3_profile(directory: &Path) -> Result<PathBuf> {
@@ -1592,28 +1641,65 @@ fn parse_http_status_line(line: &str) -> Option<u64> {
     rest[..3].parse().ok()
 }
 
+fn parse_raw_object<'a, T: Deserialize<'a>>(raw: &'a RawValue) -> Option<T> {
+    raw.get()
+        .starts_with('{')
+        .then(|| serde_json::from_str(raw.get()).ok())
+        .flatten()
+}
+
+fn parse_raw_string(raw: &RawValue) -> Option<Zeroizing<String>> {
+    serde_json::from_str::<String>(raw.get())
+        .ok()
+        .map(Zeroizing::new)
+}
+
 pub fn classify_provider_error(stdout: &str, stderr: &str) -> Option<ProviderError> {
+    // Borrow only fields used for classification. Unknown fields (and invalid
+    // types in known fields) must not copy secrets or mask valid signals.
+    #[derive(Deserialize)]
+    struct ErrorFields<'a> {
+        #[serde(borrow)]
+        error: Option<&'a RawValue>,
+        #[serde(borrow)]
+        details: Option<&'a RawValue>,
+        #[serde(borrow)]
+        reason: Option<&'a RawValue>,
+        #[serde(borrow)]
+        status: Option<&'a RawValue>,
+        code: Option<&'a RawValue>,
+    }
+
+    fn classify_reason(raw: &RawValue) -> Option<ProviderError> {
+        ProviderError::reason(&parse_raw_string(raw)?)
+    }
+
     for stream in [stderr, stdout] {
-        let stream = strip_ansi_codes(stream);
+        let stream = Zeroizing::new(strip_ansi_codes(stream));
         for (start, _) in stream.match_indices('{').take(32) {
             let mut json =
-                serde_json::Deserializer::from_str(&stream[start..]).into_iter::<Value>();
-            let Some(Ok(value)) = json.next() else {
+                serde_json::Deserializer::from_str(&stream[start..]).into_iter::<ErrorFields<'_>>();
+            let Some(Ok(envelope)) = json.next() else {
                 continue;
             };
-            let error = value
-                .get("error")
-                .filter(|error| error.is_object())
-                .unwrap_or(&value);
-            let classified = error["details"]
-                .as_array()
+            let nested = envelope.error.and_then(parse_raw_object::<ErrorFields<'_>>);
+            let error = nested.as_ref().unwrap_or(&envelope);
+            let classified = error
+                .details
+                .and_then(|details| serde_json::from_str::<Vec<&RawValue>>(details.get()).ok())
                 .into_iter()
                 .flatten()
-                .find_map(|detail| detail["reason"].as_str().and_then(ProviderError::reason))
-                .or_else(|| error["reason"].as_str().and_then(ProviderError::reason))
-                .or_else(|| error["status"].as_str().and_then(ProviderError::reason))
-                .or_else(|| error["code"].as_u64().and_then(ProviderError::http))
-                .or_else(|| value["error"].as_str().and_then(ProviderError::reason));
+                .filter_map(parse_raw_object::<ErrorFields<'_>>)
+                .find_map(|detail| detail.reason.and_then(classify_reason))
+                .or_else(|| error.reason.and_then(classify_reason))
+                .or_else(|| error.status.and_then(classify_reason))
+                .or_else(|| {
+                    error
+                        .code
+                        .and_then(|code| serde_json::from_str(code.get()).ok())
+                        .and_then(ProviderError::http)
+                })
+                .or_else(|| envelope.error.and_then(classify_reason));
             if classified.is_some() {
                 return classified;
             }
@@ -1636,6 +1722,54 @@ pub fn classify_provider_error(stdout: &str, stderr: &str) -> Option<ProviderErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_profile_scan_counts_tokens_with_malformed_metadata() {
+        let profile = tempfile::tempdir().unwrap();
+        fs::write(
+            profile.path().join("a.json"),
+            r#"{"refresh_token":"first","client_id":"fixture","client_secret":"fixture"}"#,
+        )
+        .unwrap();
+        for malformed in [
+            r#"{"refresh_token":"second","client_id":false}"#,
+            r#"{"token":{"refresh_token":"second","scopes":false}}"#,
+            r#"{"refresh_token":"second","token":false}"#,
+        ] {
+            fs::write(profile.path().join("b.json"), malformed).unwrap();
+            let result = scan_profile_credential(profile.path(), || panic!("unexpected fallback"));
+            assert!(
+                matches!(result, Err(e) if e.to_string().contains("multiple distinct refresh tokens"))
+            );
+        }
+    }
+
+    #[test]
+    fn audit_selection_rejects_oversized_files() {
+        let profile = tempfile::tempdir().unwrap();
+        let selection = profile.path().join("selection");
+        let mut bytes = br#"{"enrollment":"fixture","declared":"fixture"}"#.to_vec();
+        bytes.resize(65_537, b' ');
+        fs::write(&selection, bytes).unwrap();
+        assert!(
+            matches!(read_selection(&selection), Err(e) if e.to_string().contains("too large"))
+        );
+    }
+
+    #[test]
+    fn selection_rejects_fifo_without_waiting_for_a_writer() {
+        let profile = tempfile::tempdir().unwrap();
+        let selection = profile.path().join("fifo");
+        let path = std::ffi::CString::new(selection.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: path is NUL-terminated and kept alive for the call.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(read_selection(&selection)).unwrap());
+        let result = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("blocked on FIFO");
+        assert!(matches!(result, Err(e) if e.to_string().contains("regular file")));
+    }
 
     fn models_fixture(ids: &[&str]) -> String {
         let rows: Vec<_> = ids
@@ -1697,6 +1831,13 @@ mod tests {
         );
         assert_eq!(
             classify_provider_error("", r#"{"error":{"code":404}}"#),
+            Some(ProviderError::NotFound)
+        );
+        assert_eq!(
+            classify_provider_error(
+                "",
+                r#"{"error":{"code":404,"reason":false,"details":[null,{"message":"fixture"}]}}"#
+            ),
             Some(ProviderError::NotFound)
         );
         assert_eq!(

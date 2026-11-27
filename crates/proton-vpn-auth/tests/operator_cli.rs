@@ -315,6 +315,20 @@ fn enroll_rbw_json_rejects_duplicate_and_unprefixed_custom_fields() {
 }
 
 #[test]
+fn audit_rejects_oversized_canonical_enrollment() {
+    let item = json!({"data":{
+        "username":"fixture", "password":"fixture-password", "totp":"A".repeat(65_536)
+    }});
+    let out = run_with_stdin(
+        &["enroll", "--rbw-json", "--stdin", "--stdout"],
+        item.to_string().as_bytes(),
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("document is too large"));
+}
+
+#[test]
 fn enroll_rbw_json_accepts_one_mib_but_keeps_the_proton_document_cap() {
     let mut item =
         br#"{"data":{"username":"fixture","password":"fixture-password"},"history":[""#.to_vec();

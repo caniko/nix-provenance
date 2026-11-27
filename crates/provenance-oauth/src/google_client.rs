@@ -1,7 +1,7 @@
 //! Standalone operator subcommand for validating and materializing Google OAuth
 //! client JSON (`google-client-bootstrap`).
 
-use crate::{CliError, OAuthClient, deserialize_optional_secret, state::atomic_write};
+use crate::{CliError, OAuthClient, state::atomic_write};
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::json;
@@ -75,15 +75,31 @@ struct ParsedClient {
 
 #[derive(Deserialize)]
 struct ClientFields {
+    #[serde(default, deserialize_with = "present_field")]
     client_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_secret")]
+    #[serde(default, deserialize_with = "present_secret")]
     client_secret: Option<Zeroizing<String>>,
     project_id: Option<String>,
     auth_uri: Option<String>,
     token_uri: Option<String>,
     redirect_uris: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "present_field")]
     installed: Option<Box<ClientFields>>,
+    #[serde(default, deserialize_with = "present_field")]
     web: Option<Box<ClientFields>>,
+}
+
+// Missing fields are allowed; explicit nulls are not valid fields or sections.
+fn present_field<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
+}
+
+fn present_secret<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Zeroizing<String>>, D::Error> {
+    String::deserialize(deserializer).map(|value| Some(Zeroizing::new(value)))
 }
 
 impl ParsedClient {
@@ -279,13 +295,14 @@ fn parse_client_json(
     }
     let mut root: ClientFields = serde_json::from_slice(bytes)
         .map_err(|_| CliError::validation("invalid Google OAuth client JSON"))?;
-    let (client_type, fields) = match (root.installed.take(), root.web.take()) {
-        (None, None) => ("flat", root),
-        (Some(fields), None) => ("installed", *fields),
-        (None, Some(fields)) => ("web", *fields),
-        (Some(_), Some(_)) => {
+    let flat = root.client_id.is_some() || root.client_secret.is_some();
+    let (client_type, fields) = match (flat, root.installed.take(), root.web.take()) {
+        (_, None, None) => ("flat", root),
+        (false, Some(fields), None) => ("installed", *fields),
+        (false, None, Some(fields)) => ("web", *fields),
+        _ => {
             return Err(CliError::validation(
-                "invalid Google OAuth client JSON: expected a single `installed` or `web` object",
+                "invalid Google OAuth client JSON: expected exactly one of flat fields, `installed`, or `web`",
             ));
         }
     };

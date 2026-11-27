@@ -90,9 +90,12 @@ fn manifest_backed_subcommands_still_require_config() {
 #[test]
 fn antigravity_capture_normalizes_token_borrows_metadata_and_writes_0600() {
     let dir = tempfile::tempdir().unwrap();
+    let user = Command::new("id").arg("-un").output().unwrap();
+    assert!(user.status.success());
+    let user = std::str::from_utf8(&user.stdout).unwrap().trim();
     let (manifests_dir, manifest_path) = setup_antigravity_enrollment(
         dir.path(),
-        ("testhost", "testuser"),
+        ("testhost", user),
         "google-work",
         "1//old-enrolled-refresh",
         "123.apps.googleusercontent.com",
@@ -157,7 +160,7 @@ fn antigravity_capture_normalizes_token_borrows_metadata_and_writes_0600() {
         .arg(&token_path)
         .args(["--manifests-dir"])
         .arg(&manifests_dir)
-        .args(["--host", "testhost", "--user", "testuser"])
+        .args(["--host", "testhost", "--user", user])
         .output()
         .unwrap();
     assert!(
@@ -177,7 +180,7 @@ fn antigravity_capture_normalizes_token_borrows_metadata_and_writes_0600() {
         .arg(&token_path)
         .args(["--manifests-dir"])
         .arg(&empty_dir)
-        .args(["--host", "testhost", "--user", "testuser"])
+        .args(["--host", "testhost", "--user", user])
         .output()
         .unwrap();
     assert_eq!(missing_meta.status.code(), Some(2));
@@ -241,6 +244,20 @@ fn standalone_commands_reject_config() {
 
 #[test]
 fn antigravity_check_rejects_other_users_and_out_of_range_timeouts() {
+    let capture = Command::new(bin())
+        .args([
+            "antigravity-capture",
+            "--user",
+            "provenance-test-no-such-user",
+            "--token-file",
+            "/nonexistent-token-file",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(capture.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&capture.stderr).contains("effective UID"));
+    assert!(capture.stdout.is_empty());
+
     let out = Command::new(bin())
         .args([
             "antigravity-check",
@@ -280,6 +297,7 @@ fn opencode_check_validates_every_unfiltered_export_entry() {
     for invalid in [
         json!({"type":"oauth"}),
         json!({"type":"api","refresh":"not-oauth"}),
+        json!(["oauth", null, "refresh", null]),
     ] {
         let export = json!([
             {"id":"one","integrationID":"openai","label":"good","value":{"type":"oauth","refresh":"refresh"}},
@@ -322,6 +340,53 @@ fn opencode_check_validates_every_unfiltered_export_entry() {
             .unwrap();
         assert_eq!(out.status.code(), Some(1));
         assert!(out.stdout.is_empty());
+    }
+}
+
+#[test]
+fn audit_opencode_check_requires_matching_export_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("opencode");
+    for (id, label, code) in [("two", "other", 1), ("two", "work", 1), ("one", "work", 0)] {
+        write_executable(
+            &fake,
+            &format!(
+                "#!/bin/sh\nif [ \"$2\" = list ]; then\n  echo '[{{\"id\":\"openai\",\"connections\":[{{\"type\":\"credential\",\"id\":\"one\",\"label\":\"work\"}}]}}]'\nelse\n  echo '[{{\"id\":\"{id}\",\"integrationID\":\"openai\",\"label\":\"{label}\",\"value\":{{\"type\":\"oauth\",\"refresh\":\"fixture\"}}}}]'\nfi\n",
+            ),
+        );
+        let out = Command::new(bin())
+            .args([
+                "opencode-check",
+                "--json",
+                "--verify-export",
+                "--opencode-bin",
+            ])
+            .arg(&fake)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(code));
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["ok"], code == 0);
+    }
+}
+
+#[test]
+fn audit_google_bootstrap_rejects_mixed_client_sections() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.json");
+    let fields = json!({"client_id":"flat-id","client_secret":"fixture"});
+    for section in ["installed", "web"] {
+        let mut mixed = fields.clone();
+        mixed[section] = fields.clone();
+        fs::write(&input, mixed.to_string()).unwrap();
+        let out = Command::new(bin())
+            .args(["google-client-bootstrap", "--json", "--file"])
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["valid"], false);
     }
 }
 

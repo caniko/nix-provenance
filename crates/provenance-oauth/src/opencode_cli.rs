@@ -6,7 +6,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{IsTerminal, Read, Write},
     os::unix::fs::OpenOptionsExt,
@@ -231,6 +231,18 @@ fn build_check_report(args: &OpencodeCheckArgs) -> OpencodeCheckReport {
                     matched && unique,
                     "OpenCode export has no matching unique OpenAI credentials"
                 );
+                if account.is_none() {
+                    fn identities(credentials: &[CredentialInfo]) -> BTreeSet<(&str, &str)> {
+                        credentials
+                            .iter()
+                            .map(|cred| (cred.id.as_str(), cred.label.as_str()))
+                            .collect()
+                    }
+                    ensure!(
+                        identities(&creds) == identities(&exported_credentials),
+                        "OpenCode auth list and export contain different OpenAI credentials"
+                    );
+                }
                 meta
             } else {
                 None
@@ -457,6 +469,10 @@ fn inspect_export_bytes(
 }
 
 fn extract_export_metadata(raw: &RawValue) -> Result<ExportMetadata> {
+    ensure!(
+        raw.get().starts_with('{'),
+        "OpenCode credential value must be a JSON object"
+    );
     #[derive(Deserialize)]
     struct OAuthValue {
         #[serde(rename = "type")]
