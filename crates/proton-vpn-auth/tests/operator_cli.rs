@@ -1,7 +1,7 @@
 mod support;
 
 use serde_json::{Value, json};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::process::{Command, Output, Stdio};
 use support::LogindFixture;
 
@@ -21,12 +21,10 @@ fn run_with_stdin(args: &[&str], stdin_bytes: &[u8]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn proton-vpn-auth");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin_bytes)
-        .expect("write stdin");
+    if let Err(error) = child.stdin.take().unwrap().write_all(stdin_bytes) {
+        // The helper may reject input and close the pipe before the full write.
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe, "write stdin: {error}");
+    }
     child.wait_with_output().expect("wait for proton-vpn-auth")
 }
 
@@ -105,14 +103,45 @@ fn validate_rejects_otp_codes_and_malformed_json_with_exit_2() {
         "totpSecret": "234567"
     })
     .to_string();
-    let out = run_with_stdin(&["validate", "--stdin", "--json"], otp.as_bytes());
+    for (input, error) in [
+        (otp.as_bytes(), "Invalid base32 Proton TOTP seed"),
+        (
+            b"{",
+            "Invalid Proton credential JSON; expected username, password, and optional totpSecret",
+        ),
+    ] {
+        let out = run_with_stdin(&["validate", "--stdin", "--json"], input);
+        assert_validation_error(&out, error);
+    }
+}
+
+fn assert_validation_error(out: &Output, error: &str) {
     assert_eq!(out.status.code(), Some(2));
-    let raw = String::from_utf8_lossy(&out.stdout);
-    assert!(!raw.contains("super-secret-proton-password"));
-    assert!(!raw.contains("234567"));
-    let report: Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(report["valid"], false);
-    assert!(report["error"].as_str().unwrap().contains("seed"));
+    assert!(out.stderr.is_empty());
+    let report: Value = serde_json::from_slice(&out.stdout).expect("validation error JSON");
+    assert_eq!(
+        report,
+        json!({
+            "valid": false,
+            "username": null,
+            "hasTotp": false,
+            "totpNormalized": false,
+            "error": error,
+        })
+    );
+}
+
+#[test]
+fn validate_reports_protection_failure_as_json() {
+    let out = Command::new(bin())
+        .args(["validate", "--stdin", "--json"])
+        .env("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/dev/null")
+        .output()
+        .expect("run validate without a system bus");
+    assert_validation_error(
+        &out,
+        "Cannot contact logind for credential sleep protection",
+    );
 }
 
 #[test]
@@ -163,9 +192,9 @@ fn enroll_rbw_json_projects_default_and_custom_fields() {
             "enroll",
             "--rbw-json",
             "--rbw-map",
-            "username=proton_user",
+            "username=custom:proton_user",
             "--rbw-map",
-            "totpSecret=vpn_totp",
+            "totpSecret=custom:vpn_totp",
             "--stdin",
             "--stdout",
         ],
@@ -221,4 +250,99 @@ fn enroll_rbw_json_projects_default_and_custom_fields() {
     );
     assert_eq!(bad.status.code(), Some(2));
     assert!(bad.stdout.is_empty());
+}
+
+#[test]
+fn enroll_rbw_json_distinguishes_notes_and_custom_password() {
+    let item = br#"{
+        "notes":"gezd gnbv gy3t qojq",
+        "data":{"username":"fixture","password":"built-in","notes":"ignored"},
+        "fields":[{"name":"password","value":"custom-password"}]
+    }"#;
+    let out = run_with_stdin(
+        &[
+            "enroll",
+            "--rbw-json",
+            "--stdin",
+            "--stdout",
+            "--rbw-map",
+            "totpSecret=notes",
+            "--rbw-map",
+            "password=custom:password",
+        ],
+        item,
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {:?}", out.stderr);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["totpSecret"], "GEZDGNBVGY3TQOJQ");
+    assert_eq!(doc["password"], "custom-password");
+}
+
+#[test]
+fn enroll_rbw_json_rejects_duplicate_and_unprefixed_custom_fields() {
+    let duplicate = br#"{
+        "data":{"username":"fixture"},
+        "fields":[{"name":"x","value":null},{"name":"x","value":"val"}]
+    }"#;
+    let unprefixed = br#"{
+        "data":{"username":"fixture"},
+        "fields":[{"name":"x","value":"val"}]
+    }"#;
+    for (selector, item, error) in [
+        (
+            "password=custom:x",
+            &duplicate[..],
+            "Ambiguous duplicate custom field",
+        ),
+        ("password=x", &unprefixed[..], "custom: prefix"),
+    ] {
+        let out = run_with_stdin(
+            &[
+                "enroll",
+                "--rbw-json",
+                "--stdin",
+                "--stdout",
+                "--password-only",
+                "--rbw-map",
+                selector,
+            ],
+            item,
+        );
+        assert_eq!(out.status.code(), Some(2));
+        assert!(out.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&out.stderr).contains(error));
+    }
+}
+
+#[test]
+fn enroll_rbw_json_accepts_one_mib_but_keeps_the_proton_document_cap() {
+    let mut item =
+        br#"{"data":{"username":"fixture","password":"fixture-password"},"history":[""#.to_vec();
+    item.resize(1024 * 1024 - 3, b'x');
+    item.extend_from_slice(br#""]}"#);
+    let args = [
+        "enroll",
+        "--rbw-json",
+        "--stdin",
+        "--stdout",
+        "--password-only",
+    ];
+    let out = run_with_stdin(&args, &item);
+    assert_eq!(out.status.code(), Some(0), "stderr: {:?}", out.stderr);
+
+    item.push(b' ');
+    let out = run_with_stdin(&args, &item);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("input is too large"));
+
+    let mut document = br#"{"username":"fixture","password":"fixture-password"}"#.to_vec();
+    document.resize(65_537, b' ');
+    let out = run_with_stdin(
+        &["enroll", "--stdin", "--stdout", "--password-only"],
+        &document,
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("input is too large"));
 }

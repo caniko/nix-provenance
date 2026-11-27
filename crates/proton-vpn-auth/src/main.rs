@@ -77,7 +77,6 @@ struct Account {
 struct Failure {
     message: &'static str,
     retry: bool,
-    silent: bool,
 }
 
 impl Failure {
@@ -85,15 +84,6 @@ impl Failure {
         Self {
             message,
             retry: false,
-            silent: false,
-        }
-    }
-
-    fn silent_permanent() -> Self {
-        Self {
-            message: "",
-            retry: false,
-            silent: true,
         }
     }
 
@@ -101,7 +91,6 @@ impl Failure {
         Self {
             message,
             retry: true,
-            silent: false,
         }
     }
 }
@@ -463,13 +452,19 @@ fn main() {
             protection::Protection::acquire().and_then(|_| enrollment::run(&args))
         }
         AuthCommand::Validate(args) => {
-            protection::Protection::acquire().and_then(|_| enrollment::validate(&args))
+            let outcome =
+                protection::Protection::acquire().and_then(|_| enrollment::validate(&args));
+            if args.json
+                && let Err(error) = &outcome
+            {
+                enrollment::report_validation_error(error);
+                std::process::exit(2);
+            }
+            outcome
         }
     };
     if let Err(error) = result {
-        if !error.silent {
-            eprintln!("proton-vpn-auth: {}", error.message);
-        }
+        eprintln!("proton-vpn-auth: {}", error.message);
         std::process::exit(if error.retry { 75 } else { 2 });
     }
 }

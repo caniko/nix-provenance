@@ -2,11 +2,12 @@
 use super::{Account, Failure, MAX_BYTES, Result, decode_seed};
 use clap::Args;
 use data_encoding::BASE32_NOPAD;
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Read, Write};
 use zeroize::Zeroizing;
+
+const MAX_RBW_JSON_BYTES: usize = 1024 * 1024;
 
 #[derive(Args)]
 pub(super) struct EnrollArgs {
@@ -20,7 +21,7 @@ pub(super) struct EnrollArgs {
     /// Explicitly enroll an account without TOTP; the default requires its existing seed.
     #[arg(long)]
     pub password_only: bool,
-    /// Parse an `rbw get --raw` JSON item from stdin and project Proton credentials.
+    /// Project Proton credentials from an `rbw get --raw` JSON item (up to 1 MiB).
     #[arg(long, requires = "stdin")]
     pub rbw_json: bool,
     /// Override a projected field's vault source (`OUTPUT=FIELD`, for `username`, `password`, or `totpSecret`).
@@ -146,13 +147,13 @@ fn prepare_account(mut account: Account, password_only: bool) -> Result<Account>
     Ok(account)
 }
 
-fn read_bounded_stdin() -> Result<Zeroizing<Vec<u8>>> {
-    let mut input = Zeroizing::new(Vec::with_capacity(MAX_BYTES + 1));
+fn read_bounded_stdin(limit: usize) -> Result<Zeroizing<Vec<u8>>> {
+    let mut input = Zeroizing::new(Vec::with_capacity(limit + 1));
     std::io::stdin()
-        .take((MAX_BYTES + 1) as u64)
+        .take((limit + 1) as u64)
         .read_to_end(&mut input)
         .map_err(|_| Failure::permanent("Cannot read Proton credential input"))?;
-    if input.len() > MAX_BYTES {
+    if input.len() > limit {
         return Err(Failure::permanent("Proton credential input is too large"));
     }
     Ok(input)
@@ -195,40 +196,73 @@ fn resolve_rbw_mapping(
     Ok(mapping)
 }
 
-fn lookup_rbw_field(item: &Value, field: &str) -> Result<Option<Zeroizing<String>>> {
-    if let Some(value) = item
-        .get("data")
-        .and_then(Value::as_object)
-        .and_then(|data| data.get(field))
-        .and_then(Value::as_str)
-    {
-        return Ok(Some(Zeroizing::new(value.to_owned())));
-    }
-    let mut matched: Option<Zeroizing<String>> = None;
-    if let Some(fields) = item.get("fields").and_then(Value::as_array) {
-        for entry in fields {
-            if entry.get("name").and_then(Value::as_str) == Some(field) {
-                if matched.is_some() {
-                    return Err(Failure::permanent(
-                        "Ambiguous duplicate custom field in rbw item",
-                    ));
-                }
-                if let Some(value) = entry.get("value").and_then(Value::as_str) {
-                    matched = Some(Zeroizing::new(value.to_owned()));
-                }
+fn secret<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Zeroizing<String>>, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.map(Zeroizing::new))
+}
+
+#[derive(Deserialize)]
+struct RbwLogin {
+    #[serde(default, deserialize_with = "secret")]
+    username: Option<Zeroizing<String>>,
+    #[serde(default, deserialize_with = "secret")]
+    password: Option<Zeroizing<String>>,
+    #[serde(default, deserialize_with = "secret")]
+    totp: Option<Zeroizing<String>>,
+}
+
+#[derive(Deserialize)]
+struct RbwCustomField {
+    #[serde(default, deserialize_with = "secret")]
+    name: Option<Zeroizing<String>>,
+    #[serde(default, deserialize_with = "secret")]
+    value: Option<Zeroizing<String>>,
+}
+
+#[derive(Deserialize)]
+struct RbwItem {
+    data: Option<RbwLogin>,
+    #[serde(default, deserialize_with = "secret")]
+    notes: Option<Zeroizing<String>>,
+    #[serde(default)]
+    fields: Vec<RbwCustomField>,
+}
+
+fn lookup_rbw_field<'a>(item: &'a RbwItem, field: &str) -> Result<Option<&'a str>> {
+    let data = item.data.as_ref();
+    let value = match field {
+        "username" => data.and_then(|data| data.username.as_deref()),
+        "password" => data.and_then(|data| data.password.as_deref()),
+        "totp" => data.and_then(|data| data.totp.as_deref()),
+        "notes" => item.notes.as_deref(),
+        field => {
+            let name = field.strip_prefix("custom:").ok_or_else(|| {
+                Failure::permanent("Custom rbw fields require the custom: prefix")
+            })?;
+            let mut matches = item
+                .fields
+                .iter()
+                .filter(|entry| entry.name.as_deref().is_some_and(|value| value == name));
+            let first = matches.next();
+            if matches.next().is_some() {
+                return Err(Failure::permanent(
+                    "Ambiguous duplicate custom field in rbw item",
+                ));
             }
+            first.and_then(|entry| entry.value.as_deref())
         }
-    }
-    Ok(matched)
+    };
+    Ok(value.map(String::as_str))
 }
 
 fn parse_rbw_account(input: &[u8], rbw_map: &[String], password_only: bool) -> Result<Account> {
     let mapping = resolve_rbw_mapping(rbw_map, password_only)?;
-    let item: Value =
-        serde_json::from_slice(input).map_err(|_| Failure::permanent("Invalid rbw JSON item"))?;
-    if !item.is_object() {
+    if !input.trim_ascii_start().starts_with(b"{") {
         return Err(Failure::permanent("Invalid rbw JSON item"));
     }
+    let item: RbwItem =
+        serde_json::from_slice(input).map_err(|_| Failure::permanent("Invalid rbw JSON item"))?;
     let username = lookup_rbw_field(&item, &mapping["username"])?
         .ok_or_else(|| Failure::permanent("Missing username field in rbw item"))?;
     let password = lookup_rbw_field(&item, &mapping["password"])?
@@ -236,11 +270,11 @@ fn parse_rbw_account(input: &[u8], rbw_map: &[String], password_only: bool) -> R
     let totp_secret = if password_only {
         None
     } else {
-        lookup_rbw_field(&item, &mapping["totpSecret"])?.map(|v| v.to_string())
+        lookup_rbw_field(&item, &mapping["totpSecret"])?.map(str::to_owned)
     };
     Ok(Account {
-        username: username.to_string(),
-        password: password.to_string(),
+        username: username.to_owned(),
+        password: password.to_owned(),
         totp_secret,
     })
 }
@@ -251,7 +285,11 @@ fn pipe_document(args: &EnrollArgs) -> Result<()> {
             "Credential document mode requires private stdin/stdout pipes",
         ));
     }
-    let input = read_bounded_stdin()?;
+    let input = read_bounded_stdin(if args.rbw_json {
+        MAX_RBW_JSON_BYTES
+    } else {
+        MAX_BYTES
+    })?;
     let account = if args.rbw_json {
         parse_rbw_account(&input, &args.rbw_map, args.password_only)?
     } else {
@@ -276,61 +314,51 @@ struct ValidateReport {
 }
 
 pub(super) fn validate(args: &ValidateArgs) -> Result<()> {
-    let outcome: Result<Account> = (|| {
-        if std::io::stdin().is_terminal() {
-            return Err(Failure::permanent(
-                "Validation requires a piped Proton credential JSON document on stdin",
-            ));
-        }
-        let input = read_bounded_stdin()?;
-        let account: Account = serde_json::from_slice(&input).map_err(|_| {
-            Failure::permanent(
-                "Invalid Proton credential JSON; expected username, password, and optional totpSecret",
-            )
-        })?;
-        prepare_account(account, args.password_only)
-    })();
-
-    match outcome {
-        Ok(account) => {
-            let has_totp = account.totp_secret.is_some();
-            if args.json {
-                let report = ValidateReport {
-                    valid: true,
-                    username: Some(account.username.clone()),
-                    has_totp,
-                    totp_normalized: has_totp,
-                    error: None,
-                };
-                let text = serde_json::to_string_pretty(&report)
-                    .map_err(|_| Failure::permanent("Cannot encode validation report"))?;
-                println!("{text}");
-            } else {
-                println!(
-                    "Valid Proton credential document for {} (totp: {})",
-                    account.username,
-                    if has_totp { "present" } else { "password-only" }
-                );
-            }
-            Ok(())
-        }
-        Err(err) => {
-            if args.json {
-                let report = ValidateReport {
-                    valid: false,
-                    username: None,
-                    has_totp: false,
-                    totp_normalized: false,
-                    error: Some(err.message),
-                };
-                if let Ok(text) = serde_json::to_string_pretty(&report) {
-                    println!("{text}");
-                }
-                return Err(Failure::silent_permanent());
-            }
-            Err(err)
-        }
+    if std::io::stdin().is_terminal() {
+        return Err(Failure::permanent(
+            "Validation requires a piped Proton credential JSON document on stdin",
+        ));
     }
+    let input = read_bounded_stdin(MAX_BYTES)?;
+    let account: Account = serde_json::from_slice(&input).map_err(|_| {
+        Failure::permanent(
+            "Invalid Proton credential JSON; expected username, password, and optional totpSecret",
+        )
+    })?;
+    let account = prepare_account(account, args.password_only)?;
+    let has_totp = account.totp_secret.is_some();
+    if args.json {
+        return print_validation_report(&ValidateReport {
+            valid: true,
+            username: Some(account.username.clone()),
+            has_totp,
+            totp_normalized: has_totp,
+            error: None,
+        });
+    }
+    println!(
+        "Valid Proton credential document for {} (totp: {})",
+        account.username,
+        if has_totp { "present" } else { "password-only" }
+    );
+    Ok(())
+}
+
+pub(super) fn report_validation_error(error: &Failure) {
+    let _ = print_validation_report(&ValidateReport {
+        valid: false,
+        username: None,
+        has_totp: false,
+        totp_normalized: false,
+        error: Some(error.message),
+    });
+}
+
+fn print_validation_report(report: &ValidateReport) -> Result<()> {
+    let text = serde_json::to_string_pretty(report)
+        .map_err(|_| Failure::permanent("Cannot encode validation report"))?;
+    writeln!(std::io::stdout().lock(), "{text}")
+        .map_err(|_| Failure::permanent("Cannot write validation report"))
 }
 
 pub(super) fn run(args: &EnrollArgs) -> Result<()> {
