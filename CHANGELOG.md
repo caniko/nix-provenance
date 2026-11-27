@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Removed
+
+- `homeModules.paperclip-archive` (`nix-provenance.paperclip-archive`) removed:
+  Paperclip-specific integrations belong in Paperclip or its consumer rather
+  than in `nix-provenance` (matching `AGENTS.md` and `VISION.md`).
+- `nixosModules.wireguardStatus` removed: moved to `canix-toolbelt`.
+- `homeModules.rustdesk-client` removed: moved to `canix-toolbelt`.
+
 ### Added
 
 - `openai/opencode` enrolls and checkpoints a named native ChatGPT login
