@@ -111,6 +111,25 @@ live here. See
 - `nix/lib/`: `usersFromKanidmPersons` per tenant (the immich and rauthy
   variants have opposite semantics; they are not merged).
 
+## Credential-role boundaries
+
+Four credential-adjacent components touch `age`, Bitwarden, or `rbw` for
+intentionally distinct purposes and must not be conflated or merged into a
+single adapter:
+
+| Component | Role | Boundary |
+|-----------|------|----------|
+| `crates/provenance-oauth/src/age_file.rs` | In-process `age` recipient encryption for OAuth grant checkpoints (`checkpoint.age`). | Encrypts live OAuth state payloads directly to public recovery recipients inside `provenance-oauth`; does not manage vaults, sessions, or `agenix` source trees. |
+| `crates/identity-cli/src/bitwarden.rs` | `bw` CLI vault writes and bootstrap administration. | Operator-facing identity administration for writing/bootstrapping Bitwarden vault items through the `bw` CLI; not a host daemon or unattended secret reader. |
+| `crates/provenance-rbw` | `rbw` daemon and login-state lifecycle management. | Keeps an existing user's `rbw` client configuration, agent, and login state durable outside disposable caches across restarts; does not export vault entries into `age` secrets. |
+| `secret-manager/src/rbw.rs` *(external consumer)* | `rbw` vault-to-`age` read/import. | Lives outside `nix-provenance` in the fleet secret-sync consumer; reads entries from an already-enrolled `rbw` session to materialize encrypted `age` sources. |
+
+Keeping these four roles separate preserves clear trust boundaries:
+`provenance-oauth` never shells out to a vault client, `identity-cli` stays
+scoped to administrative `bw` mutations, `provenance-rbw` owns only durable
+client/daemon state, and vault-to-`age` secret import remains consumer-owned in
+`secret-manager`.
+
 ## Adding a tenant
 
 1. Pick the kind: the `nix/modules/<kind>/` directory.

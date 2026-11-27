@@ -137,25 +137,40 @@ impl OpenAi {
     }
 
     pub fn refresh(&self, previous: &Grant) -> Result<Grant> {
+        self.refresh_with_timeout(previous, Duration::from_secs(5))
+    }
+
+    pub fn refresh_with_timeout(&self, previous: &Grant, timeout: Duration) -> Result<Grant> {
         ensure!(
             previous.opencode.is_none(),
             "openai/opencode grants are refreshed only by OpenCode"
         );
-        self.exchange(
+        self.exchange_with_timeout(
             &[
                 ("grant_type", "refresh_token"),
                 ("client_id", CLIENT),
                 ("refresh_token", &previous.refresh_token.0),
             ],
             Some(previous),
+            timeout,
         )
     }
 
     fn exchange(&self, fields: &[(&str, &str)], previous: Option<&Grant>) -> Result<Grant> {
+        self.exchange_with_timeout(fields, previous, Duration::from_secs(5))
+    }
+
+    fn exchange_with_timeout(
+        &self,
+        fields: &[(&str, &str)],
+        previous: Option<&Grant>,
+        timeout: Duration,
+    ) -> Result<Grant> {
         let tokens: Tokens = document(
             self.client
                 .post(format!("{ISSUER}/oauth/token"))
                 .form(fields)
+                .timeout(timeout)
                 .send()
                 .map_err(|_| {
                     anyhow::anyhow!("OpenAI token exchange failed; its outcome may be uncertain")

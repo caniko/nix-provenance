@@ -12,6 +12,7 @@ members = [
   "crates/identity-cli",
   "crates/provenance-oauth",
   "crates/provenance-rbw",
+  "crates/provenance-t3-enroll",
   "crates/stalwart016-provision",
   "crates/stalwart-oauth-bootstrap",
   "crates/proton-vpn-auth",

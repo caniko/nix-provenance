@@ -172,6 +172,7 @@
 
         # Build VM tests only through the KVM-enabled Simit matrix, not `nix flake check`.
         nixosTests = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          oauth-vmtest = import ./nix/modules/test/oauth-vmtest.nix {inherit pkgs self;};
           stalwart016-vmtest = import ./nix/modules/test/stalwart016-vmtest.nix {inherit pkgs self;};
           stalwart016-proxy-vmtest = import ./nix/modules/test/stalwart016-proxy-vmtest.nix {inherit pkgs self;};
           tuwunel-private-rooms-vmtest = import ./nix/modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};
@@ -250,7 +251,9 @@
       # `rauthyServer` (the server service) and `rauthy` (the provisioner)
       # until nixpkgs ships `services.rauthy` on the supported branch.
       nixosModules = {
+        roborevCredentials = import ./nix/modules/adapter/roborev-credentials.nix;
         t3codeCredentials = import ./nix/modules/adapter/t3code-credentials.nix {inherit self;};
+        t3Enrollment = import ./nix/modules/adapter/t3-enrollment.nix {inherit self;};
         # Keyed: every canix enrollment module imports it, so repeats must dedupe.
         oauth = {
           key = "nix-provenance#nixosModules.oauth";

@@ -2,6 +2,7 @@
 //! credentials only for OpenAI; Google consumers refresh their own grants.
 
 pub mod age_file;
+pub mod budget;
 pub mod google;
 pub mod openai;
 pub mod opencode;

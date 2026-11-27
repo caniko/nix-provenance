@@ -12,6 +12,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
+    time::{Duration, Instant},
 };
 
 fn fixture() -> (tempfile::TempDir, Config, age::x25519::Identity) {
@@ -270,4 +271,116 @@ fn private_files_and_symlink_boundaries() {
     assert!(Store::lock(&linked).is_err());
     fs::set_permissions(&config.state_directory, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(Store::lock(&config).is_err());
+}
+
+#[test]
+fn exhausted_access_budget_does_not_dispatch_or_fence_refresh() {
+    let (_dir, config, identity) = fixture();
+    let store = Store::lock(&config).unwrap();
+    store.apply(&enrollment(&config, 100), true).unwrap();
+    // Validation and durable intent are allowed, but the reserve consumes the
+    // remaining exchange window. No potentially rotating request may be sent.
+    let budget =
+        provenance_oauth::budget::AccessBudget::until(Instant::now() + Duration::from_secs(1));
+    assert!(
+        store
+            .access_with_budget(|| Ok(1000), &budget, |_, _| panic!("no dispatch"))
+            .is_err()
+    );
+    assert_eq!(store.status().unwrap()["state"], "enrolled");
+    assert_eq!(decrypt(&config, &identity)["refreshPending"], false);
+    assert_eq!(
+        store.access(|| Ok(1001), rotate).unwrap().access_token.0,
+        "rotated-access"
+    );
+}
+
+#[test]
+fn valid_bearer_retries_reuse_state_until_expiry_or_peer_rotation() {
+    let (_dir, config, _) = fixture();
+    let mut initial = enrollment(&config, 100);
+    initial.grant.expires_at = 120_000;
+    Store::lock(&config).unwrap().apply(&initial, true).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            Store::lock(&config)
+                .unwrap()
+                .access(
+                    || Ok(1000),
+                    |_| panic!("unexpired 401 does not force refresh")
+                )
+                .unwrap()
+                .access_token
+                .0,
+            "initial-access"
+        );
+    }
+    // One consumer reaches the expiry skew. The other must read its committed
+    // rotation rather than replaying either the enrollment or refresh token.
+    assert_eq!(
+        Store::lock(&config)
+            .unwrap()
+            .access(|| Ok(60_000), rotate)
+            .unwrap()
+            .access_token
+            .0,
+        "rotated-access"
+    );
+    assert_eq!(
+        Store::lock(&config)
+            .unwrap()
+            .access(|| Ok(60_001), |_| panic!("peer already refreshed"))
+            .unwrap()
+            .access_token
+            .0,
+        "rotated-access"
+    );
+}
+
+#[test]
+fn lock_contention_consumes_the_same_access_budget() {
+    let (_dir, config, _) = fixture();
+    let held = Store::lock(&config).unwrap();
+    held.apply(&enrollment(&config, 100), true).unwrap();
+    let budget =
+        provenance_oauth::budget::AccessBudget::until(Instant::now() + Duration::from_millis(50));
+    assert!(Store::lock_with_budget(&config, &budget).is_err());
+    assert!(budget.check().is_err());
+    assert_eq!(held.status().unwrap()["state"], "enrolled");
+}
+
+#[test]
+fn late_exchange_is_committed_without_replaying_or_emitting_access() {
+    let (_dir, config, identity) = fixture();
+    let store = Store::lock(&config).unwrap();
+    store.apply(&enrollment(&config, 100), true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let budget = provenance_oauth::budget::AccessBudget::until(deadline);
+    assert!(
+        store
+            .access_with_budget(
+                || Ok(1000),
+                &budget,
+                |grant, timeout| {
+                    assert!(timeout < Duration::from_secs(2));
+                    thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                    rotate(grant)
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(store.status().unwrap()["state"], "enrolled");
+    assert_eq!(store.status().unwrap()["revision"], 1);
+    assert_eq!(
+        decrypt(&config, &identity)["grant"]["refreshToken"],
+        "rotated-refresh"
+    );
+    assert_eq!(
+        store
+            .access(|| Ok(1001), |_| panic!("must not replay"))
+            .unwrap()
+            .access_token
+            .0,
+        "rotated-access"
+    );
 }

@@ -168,6 +168,7 @@ in
     inherit (packages) windmill-provision;
     inherit (packages) n8n-provision;
     inherit (packages) provenance-rbw;
+    inherit (packages) provenance-t3-enroll;
     inherit docs;
     site = docs;
     inherit (packages) forgejo-cli;
@@ -585,6 +586,7 @@ in
     # Lint each crate against its isolated deps.
     identity-clippy = mkClippy "identity-cli";
     oauth-clippy = mkClippy "provenance-oauth";
+    t3-enrollment-clippy = mkClippy "provenance-t3-enroll";
     rbw-clippy = mkClippy "provenance-rbw";
     immich-clippy = mkClippy "immich-provision";
     kanidm-state-render-clippy = mkClippy "kanidm-state-render";
@@ -610,6 +612,9 @@ in
     );
     oauth-test = craneLib.cargoTest (
       args.provenance-oauth // {cargoArtifacts = cargoArtifacts.provenance-oauth;}
+    );
+    t3-enrollment-test = craneLib.cargoTest (
+      args.provenance-t3-enroll // {cargoArtifacts = cargoArtifacts.provenance-t3-enroll;}
     );
     oauth-adapters = runCommand "oauth-adapters-test" {nativeBuildInputs = [pkgs.nodejs];} ''
       node --test ${../adapters/oauth}/adapters.test.mjs
@@ -658,6 +663,33 @@ in
           touch $out
         '';
     oauth-home-module-eval = import ./modules/test/oauth-home-eval.nix {inherit pkgs self;};
+    t3-enrollment-module-eval = let
+      result = import ./modules/test/t3-enrollment-eval.nix {inherit pkgs;};
+      rendered = builtins.fromJSON result.manifest;
+      ownerRendered = builtins.fromJSON result.ownerManifest;
+    in
+      assert result.pass;
+      assert rendered.user == "alice";
+      assert rendered.baseDir == "/var/lib/t3-enroll";
+      assert rendered.desktop == "/run/current-system/sw/bin/t3-code";
+      assert builtins.length rendered.peers == 1;
+      assert (builtins.head rendered.peers).environmentId == "env_atlas";
+      assert (builtins.head rendered.peers).access == "approval-required";
+      assert (builtins.head rendered.peers).desktop.ssh.credentialFile == "/run/credentials/provenance-t3-enroll.service/atlas-ssh-token";
+      assert (builtins.head ownerRendered.peers).owner.baseDir == "/var/lib/t3-owner";
+      assert (builtins.head ownerRendered.peers).desktop.bearer.credentialFile == null;
+        runCommand "t3-enrollment-module-eval" {} ''
+          test -f ${result.manifestFile}
+          grep -Fq ${lib.escapeShellArg "/run/credentials/provenance-t3-enroll.service/atlas-code"} ${result.manifestFile}
+          grep -Fq ${lib.escapeShellArg "/run/credentials/provenance-t3-enroll.service/atlas-ssh-token"} ${result.manifestFile}
+          grep -Fq 'env_atlas' ${result.manifestFile}
+          ! grep -Fq 'super-secret-token' ${result.manifestFile}
+          touch $out
+        '';
+    roborev-credentials-module-eval = let
+      result = import ./modules/test/roborev-credentials-eval.nix {inherit pkgs;};
+    in
+      assert result.pass; pkgs.writeText "roborev-credentials-module-eval.json" result.manifest;
     claude-code-home-module-eval = assert (import ./modules/test/claude-code-home-eval.nix {inherit pkgs;}).pass;
       pkgs.writeText "claude-code-home-module-eval" "ok";
     t3code-credentials-module-eval = let

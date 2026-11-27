@@ -4,9 +4,17 @@ No shortcuts. Never fabricate, synthesize, or silently substitute missing requir
 
 ## Identity And Credential Boundary
 
-nix-provenance is an opinionated identity flake. It does not manage per-app local user credentials for downstream services.
+nix-provenance is an opinionated identity flake. It does not manage per-app local user credentials for downstream services, except for the native T3 Code environment enrollment and the narrow no-OIDC/SSO service exception described below.
 
 Internal human credentials are owned by Kanidm. Internal users authenticate to downstream services through OIDC, either directly from Kanidm or through Rauthy when Rauthy is the outward-facing IdP.
+
+### Native T3 Code environment enrollment
+
+Native T3 Code is an explicit exception to the OIDC-only application model. Each environment runs as one existing Unix user with separate state, environment identity, and provider credentials. Enrollment may connect only that user's own environments; it must not create application-local users, passwords, principals, or a shared multi-user server.
+
+nix-provenance may reconcile native T3 peer links and supply registration input to a supported native desktop import mechanism. T3 owns pairing, session issuance, credential storage, and desktop keyring encryption. Use its native interfaces, verify the destination environment identity and declared SSH/TLS trust, and never rewrite or decrypt its connection catalog externally. Keep credentials in private runtime files or pipes, never Nix-rendered configuration, the Nix store, argv, logs, or environment variables. Preserve unrelated manual connections and retry offline peers without granting broader access.
+
+Fleet membership, users, endpoints, LAN/VPN route preference, and nightly selection remain consumer policy. Paperclip-specific integration belongs entirely in Paperclip. This exception does not authorize other applications' local credential provisioning or change the Kanidm/Rauthy identity model.
 
 External user password initialization is owned by Rauthy. Use Rauthy's email-based set-password flow for external users who do not have Kanidm identities.
 
