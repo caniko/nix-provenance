@@ -1,9 +1,9 @@
 # Shared provider OAuth
 
-`provenance-oauth` manages named provider enrollments for a Linux host and local user.
-Compatible applications obtain access credentials through supported plugin or
-command interfaces. The supported profiles are `openai/chatgpt`, `openai/opencode`,
-`google/drive-file`, `google/drive`, and `google/antigravity`.
+`provenance-oauth` manages named enrollments per Linux host and local user.
+Compatible apps get access credentials through plugins or commands. Profiles:
+`openai/chatgpt`, `openai/opencode`, `google/drive-file`, `google/drive`, and
+`google/antigravity`.
 
 ## Google profiles
 
@@ -28,11 +28,11 @@ below:
   --pending-directory "$pending"
 ```
 
-Authorize the displayed device code. Only a fresh authorization (the first
-run, or `--reauth`) opens the client JSON; a retry of the same pending
-transaction still takes the flag but does not read the file. Delete the file
-after enrollment; the helper leaves it in place. Deploy and initialize the enrollment
-as described below.
+Authorize the displayed device code. Only the first run or `--reauth` reads
+the client JSON; to resume a pending transaction, pass `--client-file` again
+(the helper does not reopen it), and use `--reauth` only for a fresh
+authorization. Delete the file after enrollment (the helper leaves it), then
+deploy and initialize.
 For a root backup service, render its private runtime rclone configuration with:
 
 ```sh
@@ -77,11 +77,10 @@ recipients. Enroll from the fleet checkout:
   --pending-directory "$pending"
 ```
 
-The helper checks the `cloud-platform` scope and uses a one-time token exchange
-to look up the Google account. It stores the refresh grant, not the access
-token. To pin a specific Google account, set the manifest's `account` to the
-expected Google subject (`sub`) and pass the same value as `--account`. As with
-Drive, resuming an existing pending transaction does not reread the input file.
+The helper checks `cloud-platform`, exchanges a token once to identify the
+Google account, and stores the refresh grant, not the access token. To pin the
+account, set manifest `account` and `--account` to the expected Google `sub`.
+Resuming a pending transaction does not reread the input.
 
 Deploy and initialize with `provenance-oauth-can-google-initialize.service` as
 described below. In Home Manager, import `homeModules.antigravity` and enable
@@ -150,12 +149,11 @@ For `openai/chatgpt` this keeps one refresh owner without introducing a network 
 applications. Stock OpenCode and OMP continue to own model catalogs, inference,
 and their normal request protocols.
 
-The state directory is `/var/lib/provenance-oauth-USER-ID`, owned by the
-declared user with mode `0700`; state and lock files have mode `0600`. This is
-isolation between local users. Applications running as the same UID are trusted
-and can read that user's files. OpenAI adapters return only access tokens,
-account IDs, and expiry times. The Google exports include a refresh token and
-client credentials so rclone and agy can refresh independently.
+The declared user owns `/var/lib/provenance-oauth-USER-ID` (`0700`); state
+and lock files use `0600`. This isolates users, not apps with the same UID:
+those apps are trusted and can read the files. OpenAI adapters return only
+access tokens, account IDs, and expiry times. Google exports include a refresh
+token and client credentials so rclone and agy can refresh independently.
 
 An agenix enrollment is a bootstrap artifact, not the current token store:
 
@@ -224,11 +222,10 @@ provider and profile from NixOS. Set those explicitly with standalone Home Manag
 
 ## Authorize, deploy, and finalize
 
-Run authorization from the fleet flake directory where `agenix edit` is
-configured. The manifest must match the requested host, user, provider, profile,
-and account. Keep the pending directory outside source control in a private
-operator-owned parent. For example, after resolving `manifest`, `helper`,
-`secret`, and `pending` to those actual paths:
+Authorize from the fleet flake directory configured for `agenix edit`. Match
+the manifest to the host, user, provider, profile, and account. Keep the
+pending directory in a private operator-owned parent outside source control.
+Resolve `manifest`, `helper`, `secret`, and `pending` before running:
 
 ```sh
 "$helper" --config "$manifest" authorize atlas openai --user can \
@@ -268,10 +265,9 @@ operator's pending plaintext, recording a public receipt for idempotent retries:
   --generation "$verified_generation"
 ```
 
-Finalization is the operator's acknowledgement of verified deployment. It does
-not contact the target. It refuses a mismatched generation and never changes
-live host state. Subsequent `authorize` retries report `finalized`; `--reauth`
-starts a new generation.
+Finalization acknowledges verified deployment locally. It rejects a mismatched
+generation and never contacts or changes the target. Later `authorize`
+retries report `finalized`; `--reauth` starts a new generation.
 
 ## Consumers
 
@@ -355,12 +351,11 @@ plugin hangs or process suspension; a crash during dispatch still requires
 reauthorization. Checkpoint encryption must therefore be verified unattended on
 the target with its actual recovery plugins.
 
-The shared adapters each expose one provider. They bind only
-`nix-provenance.oauth.accounts.openai` with the `openai/chatgpt` profile.
-These adapters do not import existing app-local credentials.
-After verifying shared-model requests, remove obsolete grants through each application's supported logout
-interface if they are no longer needed. Applications may cache an access token
-until expiry; local removal does not revoke already issued provider tokens.
+Each adapter exposes one provider, binds only `nix-provenance.oauth.accounts.openai`
+with `openai/chatgpt`, and imports no app-local credentials. Verify shared-model
+requests before using the application's supported logout to remove obsolete
+grants. Apps may cache access tokens until expiry: local removal doesn't revoke
+issued provider tokens.
 
 ## Removal and recovery
 
@@ -398,9 +393,8 @@ evidence should come from a normal expiry-driven transition and requests afterwa
 
 ## Standalone operator subcommands
 
-In addition to the manifest-backed subcommands (which require `--config MANIFEST`),
-`provenance-oauth` provides five standalone operator subcommands. They reject
-`--config` with exit code `2`.
+Manifest-backed commands require `--config MANIFEST`. The five standalone
+`provenance-oauth` commands reject `--config` with exit code `2`.
 
 - **`antigravity-capture`**: runs `<agy-bin> acp --login --disable-telemetry` in an
   isolated `0700` temporary profile (or reads `--token-file <PATH|->`), normalizes

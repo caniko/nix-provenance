@@ -14,11 +14,11 @@ repository root.
 | `crates/provenance-core/**` | `MIT OR Apache-2.0` | nix-provenance (shared core) |
 | `crates/provenance-t3-enroll/**`, `nix/modules/adapter/t3-enrollment.nix`, `nix/modules/test/t3-enrollment-eval.nix`, `docs/src/guides/t3-native-enrollment.md` | `MIT OR Apache-2.0` | nix-provenance |
 | `nix/modules/adapter/roborev-credentials.nix`, `nix/modules/test/roborev-credentials-eval.nix`, `docs/src/guides/roborev-credentials.md` | `MIT OR Apache-2.0` | nix-provenance |
-| `nix/lib/immich.nix`, `nix/modules/service-oidc/immich.nix`, `nix/modules/test/immich-eval.nix`, `docs/kanidm-oidc-migration.md`, `docs/src/guides/kanidm-oidc-migration.md`, `docs/src/rfcs/**` | `AGPL-3.0-only` | immich-provision |
+| `nix/lib/immich.nix`, `nix/modules/service-oidc/immich.nix`, `nix/modules/test/immich-eval.nix`, `docs/src/guides/kanidm-oidc-migration.md`, `docs/src/rfcs/**` | `AGPL-3.0-only` | immich-provision |
 | `nix/lib/rauthy.nix`, `nix/modules/idp/rauthy.nix` | `MIT OR Apache-2.0` | rauthy-provision |
 | `nix/modules/service-oidc/vikunja.nix`, `nix/modules/test/vikunja-provision-eval.nix` | `MIT OR Apache-2.0` | vikunja-provision |
-| `docs/adapter-external-apps.md`, `docs/src/guides/external-apps.md` | `MIT OR Apache-2.0` | nix-provenance |
-| everything else (`flake.nix`, `nix/lib/default.nix`, `nix/packages.nix`, `nix/checks.nix`, root files, `docs/book.toml`, `docs/architecture.md`, `docs/src/{SUMMARY.md,introduction.md,getting-started/**,concepts/**,reference/**}`, `.forgejo/**`) | `MIT OR Apache-2.0` | nix-provenance |
+| `docs/src/guides/external-apps.md` | `MIT OR Apache-2.0` | nix-provenance |
+| everything else (`flake.nix`, `nix/lib/default.nix`, `nix/packages.nix`, `nix/checks.nix`, root files, `docs/book.toml`, `docs/src/{SUMMARY.md,introduction.md,getting-started/**,concepts/**,reference/**}`, `.forgejo/**`) | `MIT OR Apache-2.0` | nix-provenance |
 
 ## The permissive-core rule
 

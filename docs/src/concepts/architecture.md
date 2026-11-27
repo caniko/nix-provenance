@@ -8,13 +8,11 @@ their NixOS modules. Every tenant shares one **spine**:
 > ordered `after` the system it provisions, with the credential resolved from a
 > runtime file/env, never a Nix store path.
 
-The spine does not imply that every upstream field is in scope. Credentials are
-owned by explicit runtime sources: Kanidm for internal humans, Rauthy's
-set-password email flow for external users, and agenix-style password files for
-declared platform-local passwords. Service-side modules may manage passwords
-only by passing runtime file paths through systemd credentials and persisting
-rotation-marker hashes; PINs, reset-link flows, and notification emails remain
-out of scope. The field-level contract is documented in
+Kanidm owns internal human credentials. Rauthy sends set-password emails to
+external users. Service modules may manage declared platform-local passwords
+only through runtime files (for example agenix) passed as systemd credentials;
+in their own rotation state, reconcilers store only rotation-marker hashes.
+PINs, reset-link flows, and notification emails are out of scope; see
 [Per-user Fields](../reference/per-user-fields.md).
 
 Reconcilers share the same control shape:
@@ -40,16 +38,15 @@ kind:
 | `config-only/` | service OIDC via **shared Nix only** | none | Vikunja SSO |
 | `ldap/` | **LDAP**-backed services | none (not the HTTP spine) | Stalwart |
 | `service-bootstrap/` | a service **without OIDC** whose app-local admin and API credentials are bootstrapped through a trusted local path | Rust crate | `windmill-provision`, `n8n-provision` |
-| `adapter/` | a **non-tenant** third-party app's users plus OIDC client, into kanidm or rauthy | none (writes the IdP's own provisioner) | pink-raven (consumer) |
+| `adapter/` | a **non-tenant** third-party app's users plus OIDC client, into kanidm or rauthy | none (writes the IdP's own provisioner) | third-party web app |
 
-Stalwart has two module surfaces because 0.16 changed the configuration model
-from the nixpkgs 0.15 TOML service to a JSON datastore bootstrap plus registry
-objects applied over JMAP. `nixosModules.stalwart016` owns the 0.16 mail
-transport: it renders `/etc/stalwart016/config.json`, runs the server as
+Stalwart 0.16 replaced nixpkgs' 0.15 TOML config with a JSON datastore
+bootstrap and Stalwart registry objects applied over JMAP.
+`nixosModules.stalwart016` renders `/etc/stalwart016/config.json`, runs
 `stalwart.service`, and uses `stalwart-cli apply` in recovery mode for
-NetworkListener and migration/registry documents. `nixosModules.stalwart`
-remains the Kanidm LDAP directory helper that emits the 0.16 `Ldap` registry
-object consumed by the transport module or by a host-specific registry plan.
+NetworkListener and migration/registry documents. `nixosModules.stalwart` emits
+Stalwart's `Ldap` registry object for the Kanidm directory, targeting that
+transport or a host-specific registry plan.
 
 The Kanidm LDAP helper deliberately keeps `bindDn = "dn=token"` and
 `bindAuthentication = true`: Stalwart must search with a Kanidm service-account
@@ -87,19 +84,18 @@ service's own consumption:
   (content from a file) and variables (value from a systemd credential, read at
   run time) go over the same loopback API, and n8n workflows are imported the
   same way with their credential references bound to provisioned credentials;
-  none of these produce a file on disk.
+  none of these produce a file on disk. An `n8n-deactivate` oneshot unpublishes
+  workflows declared `active = false`. It loads only the owner password and
+  inactive names, so a missing credential file or corrupt registry cannot
+  leave an old webhook serving.
 
-The `adapter/` kind is the inverse of the others: instead of giving a system a
-tenant, it lets an **out-of-scope app reuse existing tenants** (rauthy and/or
-kanidm) from a uniform, backend-agnostic user schema, so a closed-source app
-like pink-raven integrates its users without earning a module, lib, or crate
-here. It is pure-Nix wiring on top of `services.rauthy.provision` /
-`services.kanidm.provision`; it owns no reconciler. The reusable
-`passwordInitByEmail` credential primitive (Rauthy's emailed set-password flow,
-requiring SMTP such as Stalwart) and the `passwordFromFile` primitive
-(Rauthy-native initial password from an agenix-style file, create-time only)
-live here. See
-[Third-party External Apps](../guides/external-apps.md).
+The `adapter/` lets out-of-scope apps reuse rauthy or kanidm
+without adding a module, lib, or crate. It maps one user schema to
+`services.rauthy.provision` / `services.kanidm.provision` in Nix, with no
+reconciler. The [external apps guide](../guides/external-apps.md) covers
+`passwordInitByEmail` (Rauthy's set-password email, requiring SMTP such as
+Stalwart) and `passwordFromFile` (Rauthy's create-time initial password from an
+agenix-style file).
 
 ## Shared code
 
@@ -113,9 +109,7 @@ live here. See
 
 ## Credential-role boundaries
 
-Four credential-adjacent components touch `age`, Bitwarden, or `rbw` for
-intentionally distinct purposes and must not be conflated or merged into a
-single adapter:
+Keep these `age`, Bitwarden, and `rbw` roles separate:
 
 | Component | Role | Boundary |
 |-----------|------|----------|
@@ -124,11 +118,8 @@ single adapter:
 | `crates/provenance-rbw` | `rbw` daemon and login-state lifecycle management. | Keeps an existing user's `rbw` client configuration, agent, and login state durable outside disposable caches across restarts; does not export vault entries into `age` secrets. |
 | `secret-manager/src/rbw.rs` *(external consumer)* | `rbw` vault-to-`age` read/import. | Lives outside `nix-provenance` in the fleet secret-sync consumer; reads entries from an already-enrolled `rbw` session to materialize encrypted `age` sources. |
 
-Keeping these four roles separate preserves clear trust boundaries:
-`provenance-oauth` never shells out to a vault client, `identity-cli` stays
-scoped to administrative `bw` mutations, `provenance-rbw` owns only durable
-client/daemon state, and vault-to-`age` secret import remains consumer-owned in
-`secret-manager`.
+`provenance-oauth` never shells out to a vault client. Vault-to-`age` import
+belongs to `secret-manager`, not `provenance-rbw` or `identity-cli`.
 
 ## Adding a tenant
 
@@ -136,12 +127,12 @@ client/daemon state, and vault-to-`age` secret import remains consumer-owned in
 2. **Crate tenants** (`idp` / `service-oidc`):
    - `crates/<name>/`: depend on `provenance-core`; keep service-specific
      request-building and reconcile bodies local; keep `reqwest` TLS features
-     per-crate.
+     per-crate, not in `[workspace.dependencies]`.
    - add the member to the root `Cargo.toml`.
-   - `nix/modules/<kind>/<name>.nix`: render the option tree to a `toJSON`
+   - `nix/modules/<kind>/<name>.nix`: render `services.<svc>.provision` to a `toJSON`
      state file run by a oneshot unit.
    - `nix/modules/test/<name>-eval.nix` plus a `*-module-eval` check.
-   - add `packages.<name>` and the crate's checks.
+   - Add `packages.<name>` with isolated `cargoArtifacts`, and the crate's checks.
    - tag releases as `<name>-vX`.
 3. **Config-only / LDAP tenants:** add only the `nix/modules/<kind>/<name>.nix`
    wiring unless the upstream service also needs a packaged binary or overlay.

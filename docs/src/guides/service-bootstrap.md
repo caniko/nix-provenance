@@ -1,9 +1,9 @@
 # Windmill and n8n Bootstrap
 
-`nixosModules.windmillProvision` and `nixosModules.n8nProvision` give two
-services without SSO a declared admin login and API credentials, with no UI
-step. Secrets come only from runtime files (for example
-`config.age.secrets.<name>.path`) loaded as systemd credentials.
+`nixosModules.windmillProvision` and `nixosModules.n8nProvision` declare admin
+logins and API credentials for services without SSO, without a UI step.
+Load secrets only as systemd credentials from runtime files such as
+`config.age.secrets.<name>.path`.
 
 ## Windmill
 
@@ -45,23 +45,20 @@ services.windmill = {
 
 - `windmill-server` gets `SUPERADMIN_SECRET` from a root-owned 0600
   `EnvironmentFile` rendered by `ExecStartPre=+` (Windmill has no `_FILE`
-  variant); see the service-root-secret exception in the architecture document.
+  variant); see the [service-root-secret exception](../concepts/architecture.md).
 - `windmill-provision.service` runs after the server. The open-source server
   rejects user creation and password changes over HTTP, so users are written to
   the local `password` table as argon2id hashes (via `psql` as `postgres`,
   hash on stdin) when their password file changes; the stock
   `admin@windmill.dev` account is locked when `disableDefaultAdmin` is set
   (default, requires an `admin = true` user). Workspaces and membership use the
-  superadmin bearer token. Open-source Windmill allows two workspaces besides
-  `admins`.
+  superadmin bearer token.
 - Scripts are keyed by full Windmill path (`f/<folder>/<name>`,
   `u/<user>/<name>` or `g/<group>/<name>`; alphanumerics, `_` and `-`).
-  `contentFile` is code, so a store path (a path literal, or
-  `"''${pkgs.writeText ...}"`) is normal; a path literal is interpolated, so
-  the file enters the closure and editing it changes the state file (and the
-  units' restart trigger). The reconciler reads the latest deployed version and
-  calls `scripts/create` only when the content, language or `tag` differs, so
-  Windmill's version history stays one entry per real change. `tag` (for
+  `contentFile` is code: use a path literal or `"''${pkgs.writeText ...}"`.
+  Interpolation adds the file to the closure; edits change the state file and
+  units' restart trigger. The reconciler reads the latest deployed version and
+  calls `scripts/create` only when content, language or `tag` differs. `tag` (for
   example `hub`) routes runs and the lock job to a worker pool that listens for
   it; leaving it null keeps the deployed tag, because a new version does not
   inherit its parent's. Windmill 1.839.0 also applies a `// tag <name>` badge
@@ -148,11 +145,10 @@ services.n8n = {
 };
 ```
 
-- The owner is env-managed: the root `n8n-owner-env` oneshot (required by n8n; it runs
-  at its own start or restart, not on every n8n start) writes the bcrypt hash of
-  the password file to `/run/n8n-provision/owner.env` (0600). The hash is kept
-  in `/var/lib/n8n-owner-env/owner.bcrypt` (root-only, 0700) and reused while the password is
-  unchanged.
+- n8n requires the root `n8n-owner-env` oneshot. On its own start or restart
+  (not every n8n start), it writes the owner password's bcrypt hash to
+  `/run/n8n-provision/owner.env` (0600). It reuses the hash in
+  `/var/lib/n8n-owner-env/owner.bcrypt` (root-only, 0700) until the password changes.
 - `n8n-provision.service` logs in as the owner and upserts credentials by name
   through the internal REST API (n8n's public API has no credential list).
   A digest marker per credential keeps reruns from rewriting unchanged
@@ -224,9 +220,9 @@ services.n8n = {
   unit repeats the deactivation for a workflow reactivated out of band.
   Deactivation is the only removal: a workflow dropped from the declaration is
   left in n8n.
-- A transient failure does not need a manual start. `Requires=` keeps the
-  pre-pass fail-closed, but systemd cancels the provisioning job before it runs
-  when that dependency fails, which no `Restart=` on either unit can observe.
+- `Requires=` keeps the pre-pass fail-closed, but systemd cancels the
+  provisioning job before it starts when that dependency fails, which no
+  `Restart=` on either unit can observe.
   `n8n-provision-retry.timer` therefore re-runs the pair once a minute while
   provisioning is not active (a start job pulls the failed pre-pass in with it),
   and goes idle as soon as it is. A declaration that is genuinely broken stays

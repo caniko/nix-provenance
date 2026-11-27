@@ -1,31 +1,21 @@
 # Kanidm OIDC Migration for Existing Immich Deployments
 
-Reference for cutting an already-populated Immich instance over from
-local-account auth to Kanidm OIDC without detaching photo libraries.
-
-The reconciler and NixOS module in this repo handle the steady state once the
-cutover is done. The notes below cover the **first-time migration** of an
-Immich instance that already has local accounts with attached photo libraries.
+Use this guide for the first migration from local Immich accounts with photo
+libraries to Kanidm OIDC. The reconciler and NixOS module handle steady state.
 
 ## Linking semantic is undocumented upstream
 
-Immich's OAuth admin docs
-(<https://docs.immich.app/administration/oauth/>) describe the OAuth
-configuration surface but do **not** specify what happens when an OIDC identity
-logs in with an email that matches an existing local account. The semantic
-observed in practice, `oauthId` is set on the existing account on first login
-when `oauthId` was empty and email matches, is implementation behavior, not a
-documented guarantee.
+Immich's [OAuth settings documentation](https://docs.immich.app/administration/oauth/)
+doesn't say what happens when an OIDC login matches a local account by email.
+In practice, the first matching login sets `oauthId` if that field was empty.
 
-Any migration of pre-existing photo libraries must verify this behavior against
-the exact Immich version being deployed **before** flipping OIDC on for the
-production users.
+On an instance with existing user libraries, verify this with the **exact Immich
+version** before enabling OIDC for production users.
 
 ## Pre-cutover verification recipe (blocking)
 
-Use this throwaway test on the target Immich version before migrating any user
-with attached libraries. The reconciler must not be involved in this step. It
-is purely a behavioral check against Immich plus Kanidm.
+Test Immich and Kanidm directly with throwaway accounts. Do not run the
+reconciler for this test.
 
 1. Create a throwaway Kanidm person and a matching local Immich account with
    the same email:
@@ -39,7 +29,7 @@ is purely a behavioral check against Immich plus Kanidm.
    In the Immich admin UI, create a local account with email
    `test-oidc@example.com` and username `test-oidc`. Note the Immich user ID.
 
-2. Create a throwaway Kanidm OAuth2 system for the verification:
+2. Create a throwaway Kanidm OAuth2 system; do not reuse the production client:
 
    ```sh
    kanidm system oauth2 create test-oidc-client "Test OIDC" \
@@ -58,8 +48,8 @@ is purely a behavioral check against Immich plus Kanidm.
 | Case | Behavior | Decision |
 |------|----------|----------|
 | A | Existing `test-oidc` account is logged in; no duplicate appears; library state intact | Auto-link by email, safe to proceed |
-| B | A new Immich user appears; original local account untouched | Duplicate. Decide between deleting local accounts pre-cutover and re-attaching libraries, or a one-time DB merge |
-| C | OIDC completes but Immich refuses login with an "account exists with this email" error | Block the cutover on this Immich version |
+| B | A new Immich user appears, possibly with a Kanidm-derived name; original account untouched | Get operator approval for either pre-cutover deletion and library reattachment, or a one-time database merge from local `user_id` to OIDC `user_id` |
+| C | OIDC completes but Immich refuses login with an "account exists with this email" error | Defer until an upstream fix or a separate re-onboarding plan |
 
 5. Capture the Immich version the verification was performed against:
 
@@ -89,10 +79,10 @@ Skipping this verification risks detaching existing user libraries on cutover.
 | `Enabled` | `true` | Flips OIDC on |
 | `issuer_url` | `https://<kanidm-domain>/oauth2/openid/<client_id>` | Kanidm well-known endpoint |
 | `client_id` | matches the Kanidm OAuth2 system name | Reconciler relies on this for email-link behavior |
-| `client_secret` | from agenix, passed by file path | Never written to the Nix store |
+| `client_secret` | from agenix, passed by file path | Never written to the Nix store or directly to the Immich DB through Nix |
 | `scope` | `openid email profile` | `profile` provides the storage-label fallback |
-| `Storage Label Claim` | `preferred_username` | Decides on-disk library directory for new users |
-| `Auto Register` | `true` | New OIDC subjects get an Immich account |
+| `Storage Label Claim` | `preferred_username` (Immich default) | Sets the on-disk library directory for new users |
+| `Auto Register` | `true` (Immich default) | New OIDC subjects get an Immich account |
 | Mobile redirect | `https://<immich-domain>/api/oauth/mobile-redirect` | Needed only when mobile clients are in scope |
 
 For users that already exist locally, `Auto Register` is irrelevant. The
@@ -100,7 +90,8 @@ linking step happens via email match and empty `oauthId`.
 
 ## Redirect URI shape
 
-The Kanidm OAuth2 system origin URLs that work with Immich:
+Set the Kanidm OAuth2 origins for web login, web settings (re-link or sign-in),
+the mobile callback, and the mobile redirect helper, respectively:
 
 ```text
 https://<immich-domain>/auth/login
@@ -113,6 +104,9 @@ The mobile custom scheme requires Immich's "Mobile Redirect URI" toggle on.
 Web-only deployments can drop the last two.
 
 ## NixOS wiring pattern
+
+The `immich-provision` examples below are historical; refer to your fleet's
+current Immich and Kanidm host configurations for live wiring.
 
 Immich host:
 
@@ -182,13 +176,11 @@ Kanidm host:
 }
 ```
 
-Two important properties of the layout:
-
-- The OIDC client secret is a **module secret**, not a host secret, and it
-  rekeys to both the Immich host and the Kanidm host from one source.
-- The patched Immich package is built by overriding `services.immich.package`
-  on the Immich host. The reconciler relies on the patch to mint short-lived
-  provisioning tokens.
+- Use one **module secret**, not a host secret. The legacy source
+  `age/secrets/modules/immich-oidc-client-secret.age` was rekeyed for `immich`
+  and `kanidm`; current canix uses the `oauth` module secret.
+- Override `services.immich.package` on the Immich host. The reconciler needs
+  `0001-add-trusted-local-provision-token.patch` for short-lived tokens.
 
 ## Acceptance gate for any deployment
 
