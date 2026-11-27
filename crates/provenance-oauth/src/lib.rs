@@ -2,16 +2,66 @@
 //! credentials only for OpenAI; Google consumers refresh their own grants.
 
 pub mod age_file;
+pub mod antigravity_cli;
 pub mod budget;
 pub mod google;
+pub mod google_client;
 pub mod openai;
 pub mod opencode;
+pub mod opencode_cli;
 pub mod state;
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{fmt, path::PathBuf, time::SystemTime};
+use std::{fmt, path::PathBuf, process::ExitCode, time::SystemTime};
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// Structured CLI error with an explicit process exit code and optional stderr message.
+#[derive(Debug)]
+pub struct CliError {
+    pub code: u8,
+    pub message: Option<String>,
+}
+
+impl CliError {
+    pub fn runtime(message: impl Into<String>) -> Self {
+        Self {
+            code: 1,
+            message: Some(message.into()),
+        }
+    }
+
+    pub fn validation(message: impl Into<String>) -> Self {
+        Self {
+            code: 2,
+            message: Some(message.into()),
+        }
+    }
+
+    pub fn with_code(code: u8, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: Some(message.into()),
+        }
+    }
+
+    pub fn silent(code: u8) -> Self {
+        Self {
+            code,
+            message: None,
+        }
+    }
+
+    pub fn exit_code(&self) -> ExitCode {
+        ExitCode::from(self.code)
+    }
+}
+
+impl From<anyhow::Error> for CliError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::runtime(format!("{error:#}"))
+    }
+}
 
 #[derive(Clone, Default, Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
 #[serde(transparent)]

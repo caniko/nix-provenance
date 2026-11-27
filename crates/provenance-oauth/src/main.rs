@@ -4,12 +4,15 @@ use clap::{
     builder::{PathBufValueParser, TypedValueParser},
 };
 use provenance_oauth::{
-    Config, Enrollment, OAuthClient, Secret, Target,
+    CliError, Config, Enrollment, OAuthClient, Secret, Target,
+    antigravity_cli::{self, AntigravityCaptureArgs, AntigravityCheckArgs},
     budget::AccessBudget,
     google::{Google, write_agy_token},
+    google_client::{self, GoogleClientBootstrapArgs},
     now,
     openai::OpenAi,
     opencode,
+    opencode_cli::{self, OpencodeCaptureArgs, OpencodeCheckArgs},
     state::{Store, atomic_write, read_json},
 };
 use serde::{Deserialize, Serialize};
@@ -28,9 +31,9 @@ use zeroize::Zeroizing;
     about = "Host-scoped OAuth authorization and access credentials"
 )]
 struct Cli {
-    /// Public manifest emitted by services.provenance.oauth.
+    /// Public manifest emitted by services.provenance.oauth (required for manifest-backed subcommands).
     #[arg(long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Action,
 }
@@ -119,26 +122,53 @@ enum Action {
         #[arg(long)]
         checkpoint: PathBuf,
     },
+    /// Capture or normalize a Google Antigravity OAuth credential via isolated `agy acp --login`.
+    AntigravityCapture(AntigravityCaptureArgs),
+    /// Check local Google Antigravity enrollment health, model discovery, and optional smoke inference.
+    AntigravityCheck(AntigravityCheckArgs),
+    /// Capture and export an OpenCode OpenAI credential with unique label verification.
+    OpencodeCapture(OpencodeCaptureArgs),
+    /// Inspect local OpenCode OpenAI credentials or an export file without outputting tokens.
+    OpencodeCheck(OpencodeCheckArgs),
+    /// Validate and optionally materialize a Google OAuth client JSON file without echoing client_secret.
+    GoogleClientBootstrap(GoogleClientBootstrapArgs),
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    match run_cli(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("provenance-oauth: {error:#}");
-            ExitCode::FAILURE
+            if let Some(message) = &error.message {
+                eprintln!("provenance-oauth: {message}");
+            }
+            error.exit_code()
         }
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run_cli(cli: Cli) -> std::result::Result<(), CliError> {
+    match cli.command {
+        Action::AntigravityCapture(args) => return antigravity_cli::run_capture(args),
+        Action::AntigravityCheck(args) => return antigravity_cli::run_check(args),
+        Action::OpencodeCapture(args) => return opencode_cli::run_capture(args),
+        Action::OpencodeCheck(args) => return opencode_cli::run_check(args),
+        Action::GoogleClientBootstrap(args) => return google_client::run_bootstrap(args),
+        _ => {}
+    }
+    let config_path = cli
+        .config
+        .ok_or_else(|| CliError::validation("--config <PATH> is required for this subcommand"))?;
+    run(config_path, cli.command).map_err(CliError::from)
+}
+
+fn run(config_path: PathBuf, command: Action) -> Result<()> {
     let budget = AccessBudget::default();
-    let config: Config = read_json(&cli.config, false)?;
+    let config: Config = read_json(&config_path, false)?;
     config.validate()?;
     if let Action::Finalize {
         pending_directory,
         generation,
-    } = &cli.command
+    } = &command
     {
         let pending_config = Config {
             state_directory: pending_directory.clone(),
@@ -186,7 +216,7 @@ fn run(cli: Cli) -> Result<()> {
         reauth,
         agenix,
         rekey,
-    } = cli.command
+    } = command
     {
         ensure!(
             config.target
@@ -362,27 +392,27 @@ fn run(cli: Cli) -> Result<()> {
     }
     verify_local_target(&config.target)?;
     // Refuse requests for another refresh owner before opening state.
-    if matches!(cli.command, Action::Access { .. }) {
+    if matches!(command, Action::Access { .. }) {
         config.target.require_access()?;
     }
     ensure!(
         !matches!(
-            cli.command,
+            command,
             Action::OpencodeSync { .. } | Action::OpencodeInstall { .. }
         ) || config.target.profile == "opencode",
         "command requires openai/opencode"
     );
     ensure!(
-        !matches!(cli.command, Action::AgyToken)
+        !matches!(command, Action::AgyToken)
             || (config.target.provider == "google" && config.target.profile == "antigravity"),
         "agy-token requires google/antigravity"
     );
     ensure!(
-        !matches!(cli.command, Action::RcloneConfig { .. })
+        !matches!(command, Action::RcloneConfig { .. })
             || matches!(config.target.profile.as_str(), "drive-file" | "drive"),
         "rclone config requires google/drive-file or google/drive"
     );
-    if matches!(cli.command, Action::AgyKeyringEntry) {
+    if matches!(command, Action::AgyKeyringEntry) {
         ensure!(
             config.target.provider == "google" && config.target.profile == "antigravity",
             "agy-keyring-entry requires google/antigravity"
@@ -395,12 +425,12 @@ fn run(cli: Cli) -> Result<()> {
             "Antigravity keyring credentials must be consumed through a pipe"
         );
     }
-    let store = if matches!(cli.command, Action::Access { .. }) {
+    let store = if matches!(command, Action::Access { .. }) {
         Store::lock_with_budget(&config, &budget)?
     } else {
         Store::lock(&config)?
     };
-    match cli.command {
+    match command {
         Action::Apply {
             enrollment,
             initialize,
@@ -468,7 +498,13 @@ fn run(cli: Cli) -> Result<()> {
             store.restore(&checkpoint)?;
             println!("{}", store.status()?);
         }
-        Action::Authorize { .. } | Action::Finalize { .. } => unreachable!(),
+        Action::Authorize { .. }
+        | Action::Finalize { .. }
+        | Action::AntigravityCapture(_)
+        | Action::AntigravityCheck(_)
+        | Action::OpencodeCapture(_)
+        | Action::OpencodeCheck(_)
+        | Action::GoogleClientBootstrap(_) => unreachable!(),
     }
     Ok(())
 }
