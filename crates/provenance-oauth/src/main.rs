@@ -147,6 +147,24 @@ fn main() -> ExitCode {
 }
 
 fn run_cli(cli: Cli) -> std::result::Result<(), CliError> {
+    if cli.config.is_some()
+        && matches!(
+            cli.command,
+            Action::AntigravityCapture(_)
+                | Action::AntigravityCheck(_)
+                | Action::OpencodeCapture(_)
+                | Action::OpencodeCheck(_)
+                | Action::GoogleClientBootstrap(_)
+        )
+    {
+        let error = CliError::validation("--config is not supported by standalone subcommands");
+        if let Action::GoogleClientBootstrap(args) = &cli.command
+            && args.json
+        {
+            google_client::print_bootstrap_error(&error);
+        }
+        return Err(error);
+    }
     match cli.command {
         Action::AntigravityCapture(args) => return antigravity_cli::run_capture(args),
         Action::AntigravityCheck(args) => return antigravity_cli::run_check(args),

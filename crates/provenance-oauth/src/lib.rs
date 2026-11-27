@@ -63,6 +63,14 @@ impl From<anyhow::Error> for CliError {
     }
 }
 
+impl fmt::Display for CliError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.message.as_deref().unwrap_or("OAuth command failed"))
+    }
+}
+
+impl std::error::Error for CliError {}
+
 #[derive(Clone, Default, Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
 #[serde(transparent)]
 pub struct Secret(pub String);
@@ -71,6 +79,12 @@ impl Secret {
     fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+}
+
+fn deserialize_optional_secret<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<zeroize::Zeroizing<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(|value| value.map(zeroize::Zeroizing::new))
 }
 
 impl fmt::Debug for Secret {
@@ -170,6 +184,11 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
+        self.validate_state_location()?;
+        age_file::validate_recipients(&self.recovery_recipients)
+    }
+
+    fn validate_state_location(&self) -> Result<()> {
         ensure!(self.version == 1, "unsupported OAuth config version");
         self.target.validate()?;
         ensure!(
@@ -180,7 +199,7 @@ impl Config {
             !self.state_directory.starts_with("/nix/store"),
             "OAuth state must be outside the Nix store"
         );
-        age_file::validate_recipients(&self.recovery_recipients)
+        Ok(())
     }
 }
 
@@ -214,7 +233,11 @@ pub struct OAuthClient {
 
 impl OAuthClient {
     pub fn validate(&self) -> Result<()> {
-        for value in [&self.client_id, &self.client_secret.0] {
+        Self::validate_fields(&self.client_id, &self.client_secret.0)
+    }
+
+    fn validate_fields(client_id: &str, client_secret: &str) -> Result<()> {
+        for value in [client_id, client_secret] {
             ensure!(
                 valid_google_credential(value, b"-_.", 256),
                 "invalid Google client credentials"

@@ -2,8 +2,8 @@
 //! `antigravity-check`).
 
 use crate::{
-    CliError, Config, Grant, OAuthClient, Secret,
-    google::CLOUD_PLATFORM_SCOPE,
+    CliError, Config, Grant, OAuthClient, Secret, deserialize_optional_secret,
+    google::{CLOUD_PLATFORM_SCOPE, parse_agy_token},
     state::{Store, atomic_write, read_json},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -13,8 +13,11 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     fs,
-    io::{BufRead, BufReader, ErrorKind, IsTerminal, Read, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    io::{ErrorKind, IsTerminal, Read, Write},
+    os::unix::{
+        fs::{OpenOptionsExt, PermissionsExt},
+        process::CommandExt,
+    },
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     time::{Duration, Instant},
@@ -99,10 +102,10 @@ pub struct AntigravityCheckArgs {
     #[arg(long, default_value = "agy")]
     pub agy_bin: PathBuf,
     /// Timeout in seconds for `agy models` discovery.
-    #[arg(long, default_value_t = 35)]
+    #[arg(long, default_value_t = 35, value_parser = clap::value_parser!(u64).range(1..=300))]
     pub models_timeout_secs: u64,
     /// Timeout in seconds for the optional smoke inference test.
-    #[arg(long, default_value_t = 25)]
+    #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(u64).range(1..=300))]
     pub smoke_timeout_secs: u64,
     /// Emit structured JSON output.
     #[arg(long)]
@@ -133,17 +136,23 @@ pub fn run_capture(args: AntigravityCaptureArgs) -> std::result::Result<(), CliE
         ));
     }
 
+    let manifest = args
+        .client_metadata_from
+        .as_deref()
+        .map(read_client_manifest)
+        .transpose()?;
+    let borrow_client = || borrow_client_metadata(&args, manifest.as_ref());
     let token = if let Some(token_file) = &args.token_file {
         let bytes = read_bounded_input(token_file, MAX_CREDENTIAL_BYTES)?;
-        normalize_token_bytes(&bytes, || borrow_client_metadata(&args))?
+        normalize_token_bytes(&bytes, borrow_client)?
     } else {
-        capture_interactive(&args)?
+        capture_interactive(&args, borrow_client)?
     };
 
-    let encoded = Zeroizing::new(
-        serde_json::to_vec(&token)
-            .map_err(|_| CliError::runtime("could not encode Antigravity token JSON"))?,
-    );
+    let mut encoded = Zeroizing::new(Vec::new());
+    serde_json::to_writer(&mut *encoded, &token)
+        .map_err(|_| CliError::runtime("could not encode Antigravity token JSON"))?;
+    parse_agy_token(&encoded).map_err(|e| CliError::validation(e.to_string()))?;
 
     if args.output == Path::new("-") {
         let mut stdout = std::io::stdout().lock();
@@ -174,7 +183,7 @@ fn read_bounded_input(
             .read_to_end(&mut bytes)
             .map_err(|e| CliError::runtime(format!("could not read token from stdin: {e}")))?;
     } else {
-        let file = fs::File::open(path).map_err(|e| {
+        let file = open_credential(path).map_err(|e| {
             CliError::runtime(format!("could not open token file {}: {e}", path.display()))
         })?;
         let meta = file.metadata().map_err(|e| {
@@ -200,8 +209,16 @@ fn read_bounded_input(
     Ok(bytes)
 }
 
+fn open_credential(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+}
+
 fn capture_interactive(
     args: &AntigravityCaptureArgs,
+    borrow_client: impl FnOnce() -> std::result::Result<ClientMetadata, CliError>,
 ) -> std::result::Result<CanonicalAgyToken, CliError> {
     let runtime =
         std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
@@ -230,13 +247,25 @@ fn capture_interactive(
         .env_remove("GEMINI_API_KEY")
         .env_remove("GOOGLE_API_KEY");
 
-    let status = run_attended(&mut command)?;
-    if !status.success() {
-        return Err(CliError::runtime(
-            "agy ACP login failed; no credential was captured",
-        ));
+    let result = run_attended(&mut command).and_then(|status| {
+        if !status.success() {
+            return Err(CliError::runtime(
+                "agy ACP login failed; no credential was captured",
+            ));
+        }
+        scan_profile_credential(home, borrow_client)
+    });
+    if let Err(error) = profile.close() {
+        let cleanup = format!(
+            "could not remove isolated agy login directory: {:?}",
+            error.kind()
+        );
+        return Err(match result {
+            Err(original) => CliError::with_code(original.code, format!("{original}; {cleanup}")),
+            Ok(_) => CliError::runtime(cleanup),
+        });
     }
-    scan_profile_credential(home, || borrow_client_metadata(args))
+    result
 }
 
 pub(crate) fn run_attended(command: &mut Command) -> std::result::Result<ExitStatus, CliError> {
@@ -263,44 +292,94 @@ pub(crate) fn run_attended(command: &mut Command) -> std::result::Result<ExitSta
         .map_err(|e| CliError::runtime(format!("failed to execute interactive command: {e}")))
 }
 
-fn nonempty_string(value: &Value) -> Option<&str> {
-    value.as_str().filter(|s| !s.trim().is_empty())
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Scopes {
+    List(Vec<String>),
+    Text(String),
 }
 
-fn extract_scopes(value: &Value) -> std::result::Result<Option<Vec<String>>, CliError> {
-    let raw = [
-        &value["scopes"],
-        &value["token"]["scopes"],
-        &value["scope"],
-        &value["token"]["scope"],
-    ]
-    .into_iter()
-    .find(|v| !v.is_null());
+#[derive(Deserialize)]
+struct TokenFields {
+    #[serde(default, deserialize_with = "deserialize_optional_secret")]
+    refresh_token: Option<Zeroizing<String>>,
+    scopes: Option<Scopes>,
+    scope: Option<Scopes>,
+}
 
-    match raw {
-        None => Ok(None),
-        Some(Value::String(s)) => {
-            let scopes: Vec<String> = s.split_whitespace().map(str::to_owned).collect();
-            if scopes.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(scopes))
-            }
+#[derive(Deserialize)]
+struct TokenInput {
+    // Keep secrets out of serde's generic flatten/untagged buffers.
+    #[serde(default, deserialize_with = "deserialize_optional_secret")]
+    refresh_token: Option<Zeroizing<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_secret")]
+    client_secret: Option<Zeroizing<String>>,
+    client_id: Option<String>,
+    token_uri: Option<String>,
+    project_id: Option<String>,
+    scopes: Option<Scopes>,
+    scope: Option<Scopes>,
+    token: Option<TokenFields>,
+}
+
+impl TokenInput {
+    fn refresh_tokens(&self) -> (Option<&str>, Option<&str>) {
+        (
+            self.refresh_token.as_deref().map(String::as_str),
+            self.token
+                .as_ref()
+                .and_then(|t| t.refresh_token.as_deref())
+                .map(String::as_str),
+        )
+    }
+
+    fn extract_scopes(&mut self) -> std::result::Result<Option<Vec<String>>, CliError> {
+        let nested = self.token.as_mut();
+        let (nested_scopes, nested_scope) =
+            nested.map_or((None, None), |t| (t.scopes.take(), t.scope.take()));
+        let scopes = match self
+            .scopes
+            .take()
+            .or(nested_scopes)
+            .or(self.scope.take())
+            .or(nested_scope)
+        {
+            None => return Ok(None),
+            Some(Scopes::Text(text)) => text.split_whitespace().map(str::to_owned).collect(),
+            Some(Scopes::List(scopes)) => scopes,
+        };
+        if scopes.iter().any(|scope| scope.trim().is_empty()) {
+            return Err(CliError::validation(
+                "invalid scope entry in agy credential",
+            ));
         }
-        Some(Value::Array(arr)) => {
-            let mut scopes = Vec::with_capacity(arr.len());
-            for item in arr {
-                let s = nonempty_string(item)
-                    .ok_or_else(|| CliError::validation("invalid scope entry in agy credential"))?;
-                scopes.push(s.to_owned());
+        Ok(Some(scopes))
+    }
+
+    fn client(
+        &mut self,
+        borrow_client: impl FnOnce() -> std::result::Result<ClientMetadata, CliError>,
+    ) -> std::result::Result<ClientMetadata, CliError> {
+        match (self.client_id.take(), self.client_secret.take()) {
+            (Some(client_id), Some(secret)) => Ok(ClientMetadata {
+                client_id,
+                client_secret: Secret(secret.to_string()),
+                token_uri: self
+                    .token_uri
+                    .take()
+                    .unwrap_or_else(|| GOOGLE_TOKEN_URI.to_owned()),
+            }),
+            (None, None) => {
+                let mut client = borrow_client()?;
+                if let Some(uri) = self.token_uri.take() {
+                    client.token_uri = uri;
+                }
+                Ok(client)
             }
-            if scopes.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(scopes))
-            }
+            _ => Err(CliError::validation(
+                "incomplete Antigravity OAuth client metadata",
+            )),
         }
-        Some(_) => Err(CliError::validation("invalid scopes in agy credential")),
     }
 }
 
@@ -315,16 +394,26 @@ fn normalize_token_bytes(
     bytes: &[u8],
     borrow_client: impl FnOnce() -> std::result::Result<ClientMetadata, CliError>,
 ) -> std::result::Result<CanonicalAgyToken, CliError> {
-    let value: Value = serde_json::from_slice(bytes)
+    let value: TokenInput = serde_json::from_slice(bytes)
         .map_err(|_| CliError::validation("input is not valid Antigravity token JSON"))?;
-    if !value.is_object() {
+    if !bytes
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|&byte| byte == b'{')
+    {
         return Err(CliError::validation(
             "Antigravity token input must be a JSON object",
         ));
     }
 
-    let top = nonempty_string(&value["refresh_token"]);
-    let nested = nonempty_string(&value["token"]["refresh_token"]);
+    normalize_token(value, borrow_client)
+}
+
+fn normalize_token(
+    mut value: TokenInput,
+    borrow_client: impl FnOnce() -> std::result::Result<ClientMetadata, CliError>,
+) -> std::result::Result<CanonicalAgyToken, CliError> {
+    let (top, nested) = value.refresh_tokens();
     let refresh_token = match (top, nested) {
         (Some(a), Some(b)) if a != b => {
             return Err(CliError::validation(
@@ -340,37 +429,18 @@ fn normalize_token_bytes(
         }
     };
 
-    let scopes = extract_scopes(&value)?.unwrap_or_else(default_scopes);
-    let project_id = nonempty_string(&value["project_id"]).map(str::to_owned);
-
-    let (client_id, client_secret, token_uri) = match (
-        nonempty_string(&value["client_id"]),
-        nonempty_string(&value["client_secret"]),
-    ) {
-        (Some(id), Some(secret)) => (
-            id.to_owned(),
-            Secret(secret.to_owned()),
-            nonempty_string(&value["token_uri"])
-                .unwrap_or(GOOGLE_TOKEN_URI)
-                .to_owned(),
-        ),
-        _ => {
-            let borrowed = borrow_client()?;
-            (
-                borrowed.client_id,
-                borrowed.client_secret,
-                borrowed.token_uri,
-            )
-        }
-    };
+    let scopes = value.extract_scopes()?.unwrap_or_else(default_scopes);
+    let client = value.client(borrow_client)?;
 
     Ok(CanonicalAgyToken {
-        client_id,
-        client_secret,
-        token_uri,
+        client_id: client.client_id,
+        client_secret: client.client_secret,
+        token_uri: client.token_uri,
         refresh_token,
         scopes,
-        project_id,
+        project_id: value
+            .project_id
+            .filter(|project| !project.trim().is_empty()),
     })
 }
 
@@ -407,37 +477,31 @@ fn scan_profile_credential(
     let mut scopes: Option<Vec<String>> = None;
 
     for path in &files {
-        let relative = path.strip_prefix(profile).unwrap_or(path);
-        let len = fs::metadata(path)
-            .map_err(|e| CliError::runtime(format!("stat agy profile file {relative:?}: {e}")))?
-            .len();
-        if len > MAX_CREDENTIAL_BYTES {
+        let file = open_credential(path)
+            .map_err(|e| CliError::runtime(format!("open isolated agy profile file: {e}")))?;
+        let metadata = file
+            .metadata()
+            .map_err(|e| CliError::runtime(format!("stat isolated agy profile file: {e}")))?;
+        if !metadata.is_file() || metadata.len() > MAX_CREDENTIAL_BYTES {
             continue;
         }
-        let file = fs::File::open(path)
-            .map_err(|e| CliError::runtime(format!("open agy profile file {relative:?}: {e}")))?;
-        let mut reader = BufReader::new(file);
-        let head = reader
-            .fill_buf()
-            .map_err(|e| CliError::runtime(format!("read agy profile file {relative:?}: {e}")))?;
-        if !head
-            .iter()
-            .find(|byte| !byte.is_ascii_whitespace())
-            .is_some_and(|byte| *byte == b'{')
+        let mut bytes = Zeroizing::new(Vec::new());
+        file.take(MAX_CREDENTIAL_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| CliError::runtime(format!("read isolated agy profile file: {e}")))?;
+        if bytes.len() as u64 > MAX_CREDENTIAL_BYTES
+            || !bytes
+                .iter()
+                .find(|byte| !byte.is_ascii_whitespace())
+                .is_some_and(|byte| *byte == b'{')
         {
             continue;
         }
-        let value: Value = match serde_json::from_reader(reader) {
+        let mut value: TokenInput = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
-            Err(err) if err.is_io() => {
-                return Err(CliError::runtime(format!(
-                    "could not read agy profile file {relative:?}"
-                )));
-            }
             Err(_) => continue,
         };
-        let top = nonempty_string(&value["refresh_token"]);
-        let nested = nonempty_string(&value["token"]["refresh_token"]);
+        let (top, nested) = value.refresh_tokens();
         for tok in top.into_iter().chain(nested) {
             let selected = refresh_token.get_or_insert_with(|| Secret(tok.to_owned()));
             if selected.0 != tok {
@@ -449,37 +513,27 @@ fn scan_profile_credential(
         if top.is_none() && nested.is_none() {
             continue;
         }
-        if top.is_some()
-            && let (Some(cid), Some(csec)) = (
-                nonempty_string(&value["client_id"]),
-                nonempty_string(&value["client_secret"]),
-            )
-            && value["scopes"].is_array()
+        if value
+            .token_uri
+            .as_deref()
+            .is_some_and(|uri| uri != GOOGLE_TOKEN_URI)
         {
-            let parsed_scopes = extract_scopes(&value)?.unwrap_or_else(default_scopes);
-            full_acp.get_or_insert(CanonicalAgyToken {
-                client_id: cid.to_owned(),
-                client_secret: Secret(csec.to_owned()),
-                token_uri: nonempty_string(&value["token_uri"])
-                    .unwrap_or(GOOGLE_TOKEN_URI)
-                    .to_owned(),
-                refresh_token: Secret(top.unwrap().to_owned()),
-                scopes: parsed_scopes,
-                project_id: nonempty_string(&value["project_id"]).map(str::to_owned),
-            });
+            return Err(CliError::validation("invalid Antigravity token URI"));
+        }
+        if value.client_id.is_some() || value.client_secret.is_some() {
+            let token = normalize_token(value, || {
+                Err(CliError::validation(
+                    "missing Antigravity OAuth client metadata",
+                ))
+            })?;
+            full_acp.get_or_insert(token);
         } else if scopes.is_none() {
-            scopes = extract_scopes(&value)?;
+            scopes = value.extract_scopes()?;
         }
     }
 
     let refresh_token = refresh_token.ok_or_else(|| {
-        let names: Vec<_> = files
-            .iter()
-            .filter_map(|p| p.strip_prefix(profile).ok())
-            .collect();
-        CliError::runtime(format!(
-            "agy ACP login wrote no refresh token in the isolated profile; files: {names:?}"
-        ))
+        CliError::runtime("agy ACP login wrote no refresh token in the isolated profile")
     })?;
 
     if let Some(acp) = full_acp {
@@ -498,7 +552,7 @@ fn scan_profile_credential(
 }
 
 fn export_grant_in_process(config: &Config) -> Result<Option<Grant>> {
-    let store = match Store::lock(config) {
+    let store = match Store::lock_for_inspection(config) {
         Ok(s) => s,
         Err(_) => return Ok(None),
     };
@@ -508,26 +562,35 @@ fn export_grant_in_process(config: &Config) -> Result<Option<Grant>> {
     }
 }
 
+fn read_client_manifest(manifest_path: &Path) -> std::result::Result<Config, CliError> {
+    let config: Config = read_json(manifest_path, false).map_err(|e| {
+        CliError::validation(format!(
+            "invalid --client-metadata-from manifest {}: {e:#}",
+            manifest_path.display()
+        ))
+    })?;
+    if config.target.provider != "google" || config.target.profile != "antigravity" {
+        return Err(CliError::validation(
+            "--client-metadata-from requires a google/antigravity manifest",
+        ));
+    }
+    config
+        .validate_state_location()
+        .map_err(|e| CliError::validation(format!("invalid manifest config: {e:#}")))?;
+    Ok(config)
+}
+
 fn borrow_client_metadata(
     args: &AntigravityCaptureArgs,
+    manifest: Option<&Config>,
 ) -> std::result::Result<ClientMetadata, CliError> {
-    if let Some(manifest_path) = &args.client_metadata_from {
-        let config: Config = read_json(manifest_path, false).map_err(|e| {
-            CliError::validation(format!(
-                "invalid --client-metadata-from manifest {}: {e:#}",
-                manifest_path.display()
-            ))
-        })?;
-        config
-            .validate()
-            .map_err(|e| CliError::validation(format!("invalid manifest config: {e:#}")))?;
-        let grant = export_grant_in_process(&config)
+    if let Some(config) = manifest {
+        let grant = export_grant_in_process(config)
             .map_err(|e| CliError::runtime(format!("read manifest grant: {e:#}")))?
             .ok_or_else(|| {
-                CliError::validation(format!(
-                    "manifest {} has no initialized Antigravity grant to borrow client metadata from",
-                    manifest_path.display()
-                ))
+                CliError::validation(
+                    "--client-metadata-from manifest has no initialized Antigravity grant to borrow client metadata from",
+                )
             })?;
         let client: OAuthClient = grant.client.ok_or_else(|| {
             CliError::validation("borrowed grant is missing OAuth client metadata")
@@ -609,8 +672,7 @@ fn discover_agy_manifests(
     };
     let prefix = format!("{user}-");
     let mut paths = Vec::new();
-    for entry in entries {
-        let entry = entry?;
+    for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(id_from_name) = name
             .to_str()
@@ -624,18 +686,21 @@ fn discover_agy_manifests(
 
     let mut matched = Vec::new();
     for (id_from_name, path) in paths {
-        let config: Config = read_json(&path, false)
-            .with_context(|| format!("invalid deployed OAuth manifest {:?}", path.file_name()))?;
+        let Ok(config) = read_json::<Config>(&path, false) else {
+            continue;
+        };
         if config.target.host != host
             || config.target.user != user
             || config.target.provider != "google"
             || config.target.profile != "antigravity"
+            || config.validate_state_location().is_err()
         {
             continue;
         }
-        config.validate()?;
         let id = config.target.enrollment.clone().unwrap_or(id_from_name);
-        matched.push((id, config));
+        if valid_enrollment_id(&id) {
+            matched.push((id, config));
+        }
     }
     Ok(matched)
 }
@@ -779,7 +844,7 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
-#[derive(Deserialize, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct AgyGrant {
     client_id: String,
     client_secret: String,
@@ -796,15 +861,8 @@ impl Drop for AgyGrant {
 
 impl AgyGrant {
     fn parse(bytes: &[u8]) -> Result<Self> {
-        let grant: Self =
-            serde_json::from_slice(bytes).map_err(|_| anyhow::anyhow!("invalid ACP grant JSON"))?;
-        ensure!(
-            [&grant.client_id, &grant.client_secret, &grant.refresh_token]
-                .iter()
-                .all(|v| !v.trim().is_empty()),
-            "ACP grant is missing client or refresh fields"
-        );
-        Ok(grant)
+        let grant = parse_agy_token(bytes)?;
+        Self::from_grant(&grant).context("ACP grant is missing OAuth client metadata")
     }
 
     fn from_grant(grant: &Grant) -> Option<Self> {
@@ -835,6 +893,11 @@ pub fn run_check(args: AntigravityCheckArgs) -> std::result::Result<(), CliError
     };
 
     let result = execute_check(&args, &mut report);
+    let failure_code = result.as_ref().err().map_or(1, |error| {
+        error
+            .downcast_ref::<CliError>()
+            .map_or(1, |error| error.code)
+    });
 
     if args.json {
         let payload = report.to_json(&result);
@@ -845,7 +908,7 @@ pub fn run_check(args: AntigravityCheckArgs) -> std::result::Result<(), CliError
         return match result {
             Ok(()) => Ok(()),
             Err(_) if report.health == CheckHealth::Degraded => Err(CliError::silent(3)),
-            Err(_) => Err(CliError::silent(1)),
+            Err(_) => Err(CliError::silent(failure_code)),
         };
     }
 
@@ -901,13 +964,33 @@ pub fn run_check(args: AntigravityCheckArgs) -> std::result::Result<(), CliError
         Err(e) if report.health == CheckHealth::Degraded => {
             Err(CliError::with_code(3, format!("{e:#}")))
         }
-        Err(e) => Err(CliError::runtime(format!("{e:#}"))),
+        Err(e) => Err(CliError::with_code(failure_code, format!("{e:#}"))),
     }
 }
 
 fn execute_check(args: &AntigravityCheckArgs, report: &mut CheckReport) -> Result<()> {
     ensure!(!report.host.is_empty(), "could not resolve local hostname");
     ensure!(!report.user.is_empty(), "could not resolve local user");
+    if let Some(user) = &args.user {
+        let output = Command::new("id")
+            .args(["-u", "--", user])
+            .output()
+            .context("resolve UID for requested --user")?;
+        // SAFETY: geteuid takes no arguments and has no failure mode.
+        let uid = unsafe { libc::geteuid() };
+        if !output.status.success()
+            || String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<libc::uid_t>()
+                .ok()
+                != Some(uid)
+        {
+            return Err(CliError::validation(format!(
+                "--user {user:?} does not match the effective UID; run as the requested user"
+            ))
+            .into());
+        }
+    }
 
     let selection_path = match &args.selection_file {
         Some(p) => p.clone(),
@@ -943,10 +1026,9 @@ fn execute_check(args: &AntigravityCheckArgs, report: &mut CheckReport) -> Resul
     };
 
     let token_path = profile.join(ACP_TOKEN_REL);
-    let bytes = Zeroizing::new(
-        fs::read(&token_path).context("read T3's Antigravity ACP grant; agy probe not run")?,
-    );
-    let grant = AgyGrant::parse(&bytes)?;
+    let bytes = read_bounded_input(&token_path, MAX_CREDENTIAL_BYTES)
+        .context("read T3's Antigravity ACP grant; agy probe not run")?;
+    let grant = AgyGrant::parse(&bytes).map_err(|e| CliError::validation(e.to_string()))?;
 
     report.active_enrollment = match_active_enrollment(&manifests, &grant)?;
     let active = require_matching_enrollment(
@@ -1001,7 +1083,7 @@ fn execute_check(args: &AntigravityCheckArgs, report: &mut CheckReport) -> Resul
             &args.agy_bin,
             &cmd_args,
             &grant,
-            Duration::from_secs(args.smoke_timeout_secs),
+            Duration::from_secs(args.smoke_timeout_secs + 10),
             "smoke test",
         )?;
         let stripped = strip_ansi_codes(&response);
@@ -1099,8 +1181,8 @@ fn enrollment_state(manifests: &[(String, Config)], id: &str) -> Result<String> 
     let Some((_, config)) = manifests.iter().find(|(candidate, _)| candidate == id) else {
         return Ok("not deployed".into());
     };
-    let store =
-        Store::lock(config).with_context(|| format!("cannot read enrollment {id} status"))?;
+    let store = Store::lock_for_inspection(config)
+        .with_context(|| format!("cannot read enrollment {id} status"))?;
     let status = store
         .status()
         .with_context(|| format!("cannot read enrollment {id} status"))?;
@@ -1185,12 +1267,18 @@ fn write_probe_credential(directory: &Path, grant: &AgyGrant) -> Result<()> {
     Ok(())
 }
 
-struct ChildGuard(Child);
+struct ChildGuard {
+    child: Child,
+    reaped: bool,
+}
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if !self.reaped {
+            // SAFETY: the unreaped child is the leader of its own process group.
+            unsafe { libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL) };
+            let _ = self.child.wait();
+        }
     }
 }
 
@@ -1208,7 +1296,30 @@ fn run_agy_probe(
         .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(runtime)
         .context("prepare a fresh agy probe directory")?;
-    let directory = temp.path();
+    let result = run_isolated_probe(temp.path(), agy_bin, args, grant, timeout, probe_name);
+    match temp.close() {
+        Ok(()) => result,
+        Err(err) => {
+            let cleanup = format!(
+                "could not remove isolated agy probe directory: {:?}",
+                err.kind()
+            );
+            match result {
+                Ok(_) => Err(anyhow::anyhow!(cleanup)),
+                Err(error) => Err(error.context(cleanup)),
+            }
+        }
+    }
+}
+
+fn run_isolated_probe(
+    directory: &Path,
+    agy_bin: &Path,
+    args: &[&str],
+    grant: &AgyGrant,
+    timeout: Duration,
+    probe_name: &str,
+) -> Result<(Zeroizing<String>, Zeroizing<String>)> {
     write_probe_credential(directory, grant)
         .context("prepare the private agy credential snapshot")?;
 
@@ -1218,6 +1329,7 @@ fn run_agy_probe(
     let mut command = Command::new(agy_bin);
     command
         .args(args)
+        .process_group(0)
         .current_dir(directory)
         .stdin(Stdio::null())
         .stdout(stdout_file.reopen()?)
@@ -1250,15 +1362,17 @@ fn run_agy_probe(
         .env("DBUS_SESSION_BUS_ADDRESS", NO_SESSION_BUS)
         .env("BROWSER", "false");
 
-    let mut child = ChildGuard(command.spawn().context("start agy")?);
+    let mut child = ChildGuard {
+        child: command.spawn().context("start agy")?,
+        reaped: false,
+    };
     let deadline = Instant::now() + timeout;
     let status = loop {
-        if let Some(status) = child.0.try_wait().context("wait for agy")? {
+        if let Some(status) = child.child.try_wait().context("wait for agy")? {
+            child.reaped = true;
             break status;
         }
         if Instant::now() >= deadline {
-            let _ = child.0.kill();
-            let _ = child.0.wait();
             return Err(anyhow::Error::new(ProviderError::Timeout)
                 .context(format!("agy {probe_name} failed")));
         }
@@ -1421,9 +1535,10 @@ pub fn strip_ansi_codes(input: &str) -> String {
                         i += 1;
                     }
                 }
-                _ => {
+                0x20..=0x7e => {
                     i += 2;
                 }
+                _ => i += 1,
             }
         } else {
             out.push(bytes[i]);

@@ -9,6 +9,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{IsTerminal, Read, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -222,7 +223,14 @@ fn build_check_report(args: &OpencodeCheckArgs) -> OpencodeCheckReport {
         list_openai_credentials(&args.opencode_bin).and_then(|creds| {
             let meta = if args.verify_export {
                 let exported = export_openai(&args.opencode_bin)?;
-                let (_, meta) = inspect_export_bytes(&exported, account.as_deref())?;
+                let (exported_credentials, meta) =
+                    inspect_export_bytes(&exported, account.as_deref())?;
+                let (matched, unique) =
+                    check_label_uniqueness(&exported_credentials, account.as_deref());
+                ensure!(
+                    matched && unique,
+                    "OpenCode export has no matching unique OpenAI credentials"
+                );
                 meta
             } else {
                 None
@@ -242,13 +250,9 @@ fn build_check_report(args: &OpencodeCheckArgs) -> OpencodeCheckReport {
                 } else if !unique {
                     error = Some(format!("OpenAI credential label {acc:?} is ambiguous"));
                     false
-                } else if (args.export_file.is_some() || args.verify_export)
-                    && !metadata
-                        .as_ref()
-                        .is_some_and(|m| m.has_refresh_token && m.has_access_token)
-                {
+                } else if (args.export_file.is_some() || args.verify_export) && metadata.is_none() {
                     error = Some(format!(
-                        "OpenAI credential {acc:?} is missing valid OAuth tokens in export"
+                        "no OpenAI credential labelled {acc:?} found in export"
                     ));
                     false
                 } else {
@@ -377,7 +381,11 @@ fn read_export_file(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     if path == Path::new("-") {
         read_bounded_export(std::io::stdin().lock())
     } else {
-        let file = fs::File::open(path).context("cannot open OpenCode export file")?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .context("cannot open OpenCode export file")?;
         let meta = file.metadata()?;
         ensure!(
             meta.is_file() && meta.len() <= MAX_EXPORT_BYTES,
@@ -428,7 +436,7 @@ fn inspect_export_bytes(
         .map_err(|_| anyhow::anyhow!("invalid OpenCode auth export JSON"))?;
 
     let mut credentials = Vec::new();
-    let mut matched_raw: Option<&RawValue> = None;
+    let mut metadata = None;
 
     for entry in &entries {
         if entry.integration != "openai" {
@@ -439,22 +447,20 @@ fn inspect_export_bytes(
             label: entry.label.clone(),
             provider: entry.integration.clone(),
         });
-        if let Some(acc) = account {
-            if entry.label == acc && matched_raw.is_none() {
-                matched_raw = Some(entry.value);
-            }
-        } else if matched_raw.is_none() {
-            matched_raw = Some(entry.value);
+        if account.is_none_or(|acc| entry.label == acc) {
+            let entry_metadata = extract_export_metadata(entry.value)?;
+            metadata.get_or_insert(entry_metadata);
         }
     }
 
-    let metadata = matched_raw.map(extract_export_metadata).transpose()?;
     Ok((credentials, metadata))
 }
 
 fn extract_export_metadata(raw: &RawValue) -> Result<ExportMetadata> {
     #[derive(Deserialize)]
     struct OAuthValue {
+        #[serde(rename = "type")]
+        kind: String,
         #[serde(default)]
         access: Option<crate::Secret>,
         #[serde(default)]
@@ -465,8 +471,19 @@ fn extract_export_metadata(raw: &RawValue) -> Result<ExportMetadata> {
 
     let parsed: OAuthValue = serde_json::from_str(raw.get())
         .map_err(|_| anyhow::anyhow!("OpenCode credential value is not valid OAuth JSON"))?;
+    ensure!(
+        parsed.kind == "oauth",
+        "OpenCode export entry is not an OAuth credential"
+    );
+    ensure!(
+        parsed
+            .refresh
+            .as_ref()
+            .is_some_and(|s| !s.0.trim().is_empty()),
+        "OpenCode OAuth export entry is missing a refresh token"
+    );
     Ok(ExportMetadata {
-        has_refresh_token: parsed.refresh.as_ref().is_some_and(|s| !s.0.is_empty()),
+        has_refresh_token: true,
         has_access_token: parsed.access.as_ref().is_some_and(|s| !s.0.is_empty()),
         expires_at: parsed.expires.filter(|&e| e > 0),
     })

@@ -110,6 +110,7 @@ fn antigravity_capture_normalizes_token_borrows_metadata_and_writes_0600() {
     });
     let out_file = dir.path().join("captured.json");
     let mut child = Command::new(bin())
+        .current_dir(dir.path())
         .args([
             "antigravity-capture",
             "--token-file",
@@ -118,7 +119,7 @@ fn antigravity_capture_normalizes_token_borrows_metadata_and_writes_0600() {
         ])
         .arg(&manifest_path)
         .arg("--output")
-        .arg(&out_file)
+        .arg("captured.json")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -184,6 +185,172 @@ fn antigravity_capture_normalizes_token_borrows_metadata_and_writes_0600() {
 }
 
 #[test]
+fn antigravity_capture_rejects_invalid_grant_and_wrong_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let token = dir.path().join("token.json");
+    let manifest = dir.path().join("manifest.json");
+    let capture = |extra: &[&Path]| {
+        Command::new(bin())
+            .args(["antigravity-capture", "--token-file"])
+            .arg(&token)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    fs::write(&token, r#"{"client_id":"123.apps.googleusercontent.com","client_secret":"secret","refresh_token":"1//refresh","token_uri":"https://untrusted.example/token"}"#).unwrap();
+    let out = capture(&[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+
+    let (_, valid) = setup_antigravity_enrollment(
+        dir.path(),
+        ("testhost", "testuser"),
+        "google-work",
+        "1//refresh",
+        "123.apps.googleusercontent.com",
+        "secret",
+        None,
+    );
+    let mut config: Value = serde_json::from_slice(&fs::read(valid).unwrap()).unwrap();
+    config["target"]["profile"] = json!("drive");
+    fs::write(&manifest, config.to_string()).unwrap();
+    fs::write(&token, r#"{"refresh_token":"1//refresh"}"#).unwrap();
+    let out = capture(&[Path::new("--client-metadata-from"), &manifest]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("google/antigravity"));
+}
+
+#[test]
+fn standalone_commands_reject_config() {
+    for (command, flags) in [
+        ("antigravity-capture", &["--token-file", "missing"][..]),
+        ("antigravity-check", &[]),
+        ("opencode-capture", &["--account", "work", "--skip-login"]),
+        ("opencode-check", &["--export-file", "missing"]),
+        ("google-client-bootstrap", &["--file", "missing"]),
+    ] {
+        let out = Command::new(bin())
+            .args(["--config", "unused.json", command])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{command}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("--config"));
+    }
+}
+
+#[test]
+fn antigravity_check_rejects_other_users_and_out_of_range_timeouts() {
+    let out = Command::new(bin())
+        .args([
+            "antigravity-check",
+            "--json",
+            "--user",
+            "provenance-test-no-such-user",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(report["error"].as_str().unwrap().contains("effective UID"));
+    for flag in ["--models-timeout-secs", "--smoke-timeout-secs"] {
+        for invalid in ["0", "301"] {
+            let out = Command::new(bin())
+                .args(["antigravity-check", flag, invalid])
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(2));
+            assert!(String::from_utf8_lossy(&out.stderr).contains("1..=300"));
+        }
+    }
+}
+
+#[test]
+fn opencode_check_validates_every_unfiltered_export_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("export.json");
+    let fake = dir.path().join("opencode");
+    write_executable(
+        &fake,
+        &format!(
+            "#!/bin/sh\nif [ \"$2\" = list ]; then\n  echo '[{{\"id\":\"openai\",\"connections\":[{{\"type\":\"credential\",\"id\":\"two\",\"label\":\"bad\"}}]}}]'\nelse\n  cat '{}'\nfi\n",
+            path.display()
+        ),
+    );
+    for invalid in [
+        json!({"type":"oauth"}),
+        json!({"type":"api","refresh":"not-oauth"}),
+    ] {
+        let export = json!([
+            {"id":"one","integrationID":"openai","label":"good","value":{"type":"oauth","refresh":"refresh"}},
+            {"id":"two","integrationID":"openai","label":"bad","value":invalid}
+        ]);
+        fs::write(&path, export.to_string()).unwrap();
+        let out = Command::new(bin())
+            .args(["opencode-check", "--json", "--export-file"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["ok"], false);
+
+        let out = Command::new(bin())
+            .args([
+                "opencode-check",
+                "--json",
+                "--verify-export",
+                "--opencode-bin",
+            ])
+            .arg(&fake)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["ok"], false);
+
+        let out = Command::new(bin())
+            .args([
+                "opencode-capture",
+                "--account",
+                "bad",
+                "--skip-login",
+                "--opencode-bin",
+            ])
+            .arg(&fake)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        assert!(out.stdout.is_empty());
+    }
+}
+
+#[test]
+fn google_bootstrap_reports_validation_and_io_errors_as_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.json");
+    fs::write(&input, r#"{"client_secret":"must-not-appear"}"#).unwrap();
+    for (path, code) in [(input, 2), (dir.path().join("missing"), 1)] {
+        let out = Command::new(bin())
+            .args(["google-client-bootstrap", "--json", "--file"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(code));
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["valid"], false);
+        assert!(report["error"].is_string());
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("must-not-appear"));
+    }
+}
+
+#[test]
+fn ansi_stripping_preserves_utf8_after_escape() {
+    use provenance_oauth::antigravity_cli::strip_ansi_codes;
+    assert_eq!(strip_ansi_codes("a\x1bé\x1b[32m界\x1b[0m!"), "aé界!");
+}
+
+#[test]
 fn antigravity_capture_refuses_tty_stdout() {
     let script = r#"
 import os, pty, sys
@@ -205,17 +372,28 @@ sys.exit(os.waitstatus_to_exitcode(status))
 #[test]
 fn antigravity_check_handles_healthy_degraded_smoke_and_redacted_errors() {
     let dir = tempfile::tempdir().unwrap();
+    let user = String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout).unwrap();
+    let user = user.trim();
     let refresh = "1//super-secret-refresh-token";
     let secret = "super-secret-client-secret";
-    let (manifests_dir, _) = setup_antigravity_enrollment(
+    let (manifests_dir, manifest) = setup_antigravity_enrollment(
         dir.path(),
-        ("testhost", "testuser"),
+        ("testhost", user),
         "google-work",
         refresh,
         "123.apps.googleusercontent.com",
         secret,
         Some("proj-1"),
     );
+    fs::write(
+        manifests_dir.join(format!("{user}-broken.json")),
+        "not JSON",
+    )
+    .unwrap();
+    fs::create_dir(manifests_dir.join(format!("{user}-unreadable.json"))).unwrap();
+    let mut config: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    config["recoveryRecipients"] = json!(["age1unknown-plugin-recipient"]);
+    fs::write(&manifest, config.to_string()).unwrap();
 
     let profile_dir = dir.path().join("t3-profile");
     let acp_path = profile_dir.join("antigravity-acp/acp_token.json");
@@ -226,6 +404,7 @@ fn antigravity_check_handles_healthy_degraded_smoke_and_redacted_errors() {
             "client_id": "123.apps.googleusercontent.com",
             "client_secret": secret,
             "refresh_token": refresh,
+            "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
             "project_id": "proj-1",
             "access_token": "cached-old-access-token"
         })
@@ -242,6 +421,7 @@ fn antigravity_check_handles_healthy_degraded_smoke_and_redacted_errors() {
 
     let mode_file = dir.path().join("agy-mode");
     let smoke_fail_file = dir.path().join("agy-smoke-fail");
+    let grandchild_pid = dir.path().join("grandchild.pid");
     let fake_agy = dir.path().join("fake-agy");
     write_executable(
         &fake_agy,
@@ -277,7 +457,9 @@ if [ "$1" = "--output-format" ]; then
       exit 1
       ;;
     timeout)
-      sleep 5
+      sleep 30 &
+      echo "$!" > "{}"
+      wait
       exit 0
       ;;
   esac
@@ -287,10 +469,18 @@ if [ -f "{}" ]; then
   printf 'NOT_OK\n'
   exit 0
 fi
+while [ "$#" -gt 1 ]; do
+  if [ "$1" = "--print-timeout" ] && [ "$2" = "1s" ]; then
+    sleep 2
+    break
+  fi
+  shift
+done
 printf '\033[32mOK\033[0m\n'
 exit 0
 "#,
             mode_file.display(),
+            grandchild_pid.display(),
             smoke_fail_file.display()
         ),
     );
@@ -304,7 +494,7 @@ exit 0
                 "--host",
                 "testhost",
                 "--user",
-                "testuser",
+                user,
                 "--enrollment",
                 "google-work",
             ])
@@ -315,13 +505,22 @@ exit 0
             .args(["--agy-bin"])
             .arg(&fake_agy)
             .args(extra)
+            .env("XDG_RUNTIME_DIR", dir.path())
             .env("GEMINI_API_KEY", "must-be-stripped")
             .env("GOOGLE_API_KEY", "must-be-stripped");
         cmd.output().unwrap()
     };
 
     // 1. Healthy + smoke test with normalized effort
-    let out = run_check("healthy", &["--smoke-model", "gemini-4-neon-medium"]);
+    let out = run_check(
+        "healthy",
+        &[
+            "--smoke-model",
+            "gemini-4-neon-medium",
+            "--smoke-timeout-secs",
+            "1",
+        ],
+    );
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -376,6 +575,39 @@ exit 0
     assert_eq!(out.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["error_code"], "TIMEOUT");
+    let pid: libc::pid_t = fs::read_to_string(&grandchild_pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = || {
+        fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(") ")
+                    .and_then(|(_, state)| state.chars().next())
+            })
+            .is_some_and(|state| state != 'Z' && state != 'X')
+    };
+    for _ in 0..20 {
+        if !alive() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let survived = alive();
+    if survived {
+        // Clean up the test process if timeout handling regresses.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    assert!(!survived, "grandchild survived the probe timeout");
+    assert!(fs::read_dir(dir.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("provenance-agy-check-")
+    }));
 
     // 5. Smoke failure -> exit 1
     fs::write(&mode_file, "healthy").unwrap();
@@ -383,7 +615,7 @@ exit 0
     let mut cmd = Command::new(bin());
     cmd.args(["antigravity-check", "--json", "--manifests-dir"])
         .arg(&manifests_dir)
-        .args(["--host", "testhost", "--user", "testuser", "--profile-dir"])
+        .args(["--host", "testhost", "--user", user, "--profile-dir"])
         .arg(&profile_dir)
         .args(["--selection-file"])
         .arg(&selection_path)
@@ -394,6 +626,18 @@ exit 0
     assert_eq!(out.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["check"]["smoke"]["passed"], false);
+
+    let mut bad_token: Value = serde_json::from_slice(&fs::read(&acp_path).unwrap()).unwrap();
+    bad_token["token_uri"] = json!("https://untrusted.example/token");
+    fs::write(acp_path, bad_token.to_string()).unwrap();
+    let out = run_check("healthy", &[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .contains("token_uri")
+    );
 }
 
 #[test]

@@ -1,13 +1,14 @@
 //! Standalone operator subcommand for validating and materializing Google OAuth
 //! client JSON (`google-client-bootstrap`).
 
-use crate::{CliError, OAuthClient, Secret, state::atomic_write};
+use crate::{CliError, OAuthClient, deserialize_optional_secret, state::atomic_write};
 use clap::{Args, ValueEnum};
-use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde::{Deserialize, Serialize, Serializer};
+use serde_json::json;
 use std::{
     fs,
     io::{IsTerminal, Read, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 use zeroize::Zeroizing;
@@ -65,35 +66,72 @@ pub struct ClientBootstrapReport {
 struct ParsedClient {
     client_type: String,
     client_id: String,
-    client_secret: Secret,
+    client_secret: Zeroizing<String>,
     project_id: Option<String>,
     auth_uri: String,
     token_uri: String,
     redirect_uris: Vec<String>,
 }
 
+#[derive(Deserialize)]
+struct ClientFields {
+    client_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_secret")]
+    client_secret: Option<Zeroizing<String>>,
+    project_id: Option<String>,
+    auth_uri: Option<String>,
+    token_uri: Option<String>,
+    redirect_uris: Option<Vec<String>>,
+    installed: Option<Box<ClientFields>>,
+    web: Option<Box<ClientFields>>,
+}
+
 impl ParsedClient {
-    fn normalized_json(&self) -> Value {
-        let mut inner = Map::new();
-        inner.insert("client_id".into(), json!(self.client_id));
-        inner.insert("client_secret".into(), json!(self.client_secret.0));
-        if let Some(project_id) = &self.project_id {
-            inner.insert("project_id".into(), json!(project_id));
+    fn normalized_json(&self) -> serde_json::Result<Zeroizing<Vec<u8>>> {
+        #[derive(Serialize)]
+        struct Fields<'a> {
+            client_id: &'a str,
+            client_secret: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            project_id: Option<&'a str>,
+            auth_uri: &'a str,
+            token_uri: &'a str,
+            #[serde(skip_serializing_if = "<[String]>::is_empty")]
+            redirect_uris: &'a [String],
         }
-        inner.insert("auth_uri".into(), json!(self.auth_uri));
-        inner.insert("token_uri".into(), json!(self.token_uri));
-        if !self.redirect_uris.is_empty() {
-            inner.insert("redirect_uris".into(), json!(self.redirect_uris));
-        }
+        let fields = Fields {
+            client_id: &self.client_id,
+            client_secret: &self.client_secret,
+            project_id: self.project_id.as_deref(),
+            auth_uri: &self.auth_uri,
+            token_uri: &self.token_uri,
+            redirect_uris: &self.redirect_uris,
+        };
+        let mut bytes = Zeroizing::new(Vec::new());
+        let serializer = &mut serde_json::Serializer::new(&mut *bytes);
         match self.client_type.as_str() {
-            "installed" => json!({ "installed": inner }),
-            "web" => json!({ "web": inner }),
-            _ => Value::Object(inner),
+            "flat" => fields.serialize(serializer)?,
+            kind => serializer.collect_map([(kind, fields)])?,
         }
+        Ok(bytes)
     }
 }
 
 pub fn run_bootstrap(args: GoogleClientBootstrapArgs) -> std::result::Result<(), CliError> {
+    let result = bootstrap(&args);
+    if args.json
+        && let Err(error) = &result
+    {
+        print_bootstrap_error(error);
+    }
+    result
+}
+
+pub fn print_bootstrap_error(error: &CliError) {
+    println!("{}", json!({"valid": false, "error": error.to_string()}));
+}
+
+fn bootstrap(args: &GoogleClientBootstrapArgs) -> std::result::Result<(), CliError> {
     let materialize_stdout = args
         .materialize_to
         .as_deref()
@@ -115,10 +153,9 @@ pub fn run_bootstrap(args: GoogleClientBootstrapArgs) -> std::result::Result<(),
 
     let mut materialized_path = None;
     if let Some(dest) = &args.materialize_to {
-        let normalized = Zeroizing::new(
-            serde_json::to_vec(&parsed.normalized_json())
-                .map_err(|_| CliError::runtime("could not serialize normalized client JSON"))?,
-        );
+        let normalized = parsed
+            .normalized_json()
+            .map_err(|_| CliError::runtime("could not serialize normalized client JSON"))?;
         if dest == Path::new("-") {
             let mut stdout = std::io::stdout().lock();
             stdout
@@ -177,12 +214,16 @@ fn read_client_input(path: &Path) -> std::result::Result<Zeroizing<Vec<u8>>, Cli
                 CliError::runtime(format!("could not read client JSON from stdin: {e}"))
             })?;
     } else {
-        let file = fs::File::open(path).map_err(|e| {
-            CliError::runtime(format!(
-                "could not open client file {}: {e}",
-                path.display()
-            ))
-        })?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|e| {
+                CliError::runtime(format!(
+                    "could not open client file {}: {e}",
+                    path.display()
+                ))
+            })?;
         let meta = file.metadata().map_err(|e| {
             CliError::runtime(format!(
                 "could not stat client file {}: {e}",
@@ -209,9 +250,9 @@ fn read_client_input(path: &Path) -> std::result::Result<Zeroizing<Vec<u8>>, Cli
     Ok(bytes)
 }
 
-fn nonempty_str(obj: &Map<String, Value>, key: &str) -> Option<String> {
-    obj.get(key)
-        .and_then(Value::as_str)
+fn nonempty_str(value: Option<String>) -> Option<String> {
+    value
+        .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
@@ -226,31 +267,27 @@ fn parse_client_json(
     expected_type: Option<ExpectedClientType>,
     require_project_id: bool,
 ) -> std::result::Result<ParsedClient, CliError> {
-    let document: Value = serde_json::from_slice(bytes)
-        .map_err(|_| CliError::validation("invalid Google OAuth client JSON"))?;
-    let root = document
-        .as_object()
-        .ok_or_else(|| CliError::validation("Google OAuth client JSON must be an object"))?;
-
-    let (client_type, fields) = if root.contains_key("client_id")
-        || root.contains_key("client_secret")
+    if bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        != Some(b'{')
     {
-        ("flat", root)
-    } else {
-        let mut entries = root
-            .iter()
-            .filter_map(|(k, v)| v.as_object().map(|o| (k.as_str(), o)));
-        let Some((kind, obj)) = entries.next() else {
-            return Err(CliError::validation(
-                "invalid Google OAuth client JSON: missing installed/web section or client fields",
-            ));
-        };
-        if entries.next().is_some() || !matches!(kind, "installed" | "web") {
+        return Err(CliError::validation(
+            "Google OAuth client JSON must be an object",
+        ));
+    }
+    let mut root: ClientFields = serde_json::from_slice(bytes)
+        .map_err(|_| CliError::validation("invalid Google OAuth client JSON"))?;
+    let (client_type, fields) = match (root.installed.take(), root.web.take()) {
+        (None, None) => ("flat", root),
+        (Some(fields), None) => ("installed", *fields),
+        (None, Some(fields)) => ("web", *fields),
+        (Some(_), Some(_)) => {
             return Err(CliError::validation(
                 "invalid Google OAuth client JSON: expected a single `installed` or `web` object",
             ));
         }
-        (kind, obj)
     };
 
     if let Some(expected) = expected_type
@@ -262,29 +299,25 @@ fn parse_client_json(
         )));
     }
 
-    let client_id = nonempty_str(fields, "client_id")
+    let client_id = nonempty_str(fields.client_id)
         .ok_or_else(|| CliError::validation("missing or empty client_id"))?;
-    let client_secret = Secret(
-        nonempty_str(fields, "client_secret")
-            .ok_or_else(|| CliError::validation("missing or empty client_secret"))?,
-    );
-    OAuthClient {
-        client_id: client_id.clone(),
-        client_secret: client_secret.clone(),
-    }
-    .validate()
-    .map_err(|_| CliError::validation("invalid Google OAuth client_id or client_secret"))?;
+    let client_secret = fields
+        .client_secret
+        .filter(|secret| !secret.trim().is_empty())
+        .ok_or_else(|| CliError::validation("missing or empty client_secret"))?;
+    let client_secret = Zeroizing::new(client_secret.trim().to_owned());
+    OAuthClient::validate_fields(&client_id, &client_secret)
+        .map_err(|_| CliError::validation("invalid Google OAuth client_id or client_secret"))?;
 
-    let project_id = nonempty_str(fields, "project_id");
+    let project_id = nonempty_str(fields.project_id);
     if require_project_id && project_id.is_none() {
         return Err(CliError::validation(
             "Google OAuth client JSON is missing required project_id",
         ));
     }
 
-    let auth_uri = nonempty_str(fields, "auth_uri").unwrap_or_else(|| DEFAULT_AUTH_URI.to_owned());
-    let token_uri =
-        nonempty_str(fields, "token_uri").unwrap_or_else(|| DEFAULT_TOKEN_URI.to_owned());
+    let auth_uri = nonempty_str(fields.auth_uri).unwrap_or_else(|| DEFAULT_AUTH_URI.to_owned());
+    let token_uri = nonempty_str(fields.token_uri).unwrap_or_else(|| DEFAULT_TOKEN_URI.to_owned());
     if !valid_https_uri(&auth_uri) {
         return Err(CliError::validation("invalid auth_uri (must be https://)"));
     }
@@ -292,26 +325,15 @@ fn parse_client_json(
         return Err(CliError::validation("invalid token_uri (must be https://)"));
     }
 
-    let redirect_uris = match fields.get("redirect_uris") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(arr)) => {
-            let mut uris = Vec::with_capacity(arr.len());
-            for item in arr {
-                let s = item
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| CliError::validation("invalid entry in redirect_uris"))?;
-                uris.push(s.to_owned());
-            }
-            uris
-        }
-        Some(_) => {
-            return Err(CliError::validation(
-                "redirect_uris must be an array of strings",
-            ));
-        }
-    };
+    let redirect_uris = fields
+        .redirect_uris
+        .unwrap_or_default()
+        .into_iter()
+        .map(|uri| {
+            nonempty_str(Some(uri))
+                .ok_or_else(|| CliError::validation("invalid entry in redirect_uris"))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     Ok(ParsedClient {
         client_type: client_type.to_owned(),

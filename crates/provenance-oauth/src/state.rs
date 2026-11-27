@@ -90,6 +90,11 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .context("OAuth output needs a parent directory")?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     temp.as_file()
         .set_permissions(fs::Permissions::from_mode(0o600))?;
@@ -107,6 +112,15 @@ impl<'a> Store<'a> {
 
     pub fn lock_with_budget(config: &'a Config, budget: &AccessBudget) -> Result<Self> {
         config.validate()?;
+        Self::lock_state(config, budget)
+    }
+
+    pub(crate) fn lock_for_inspection(config: &'a Config) -> Result<Self> {
+        config.validate_state_location()?;
+        Self::lock_state(config, &AccessBudget::default())
+    }
+
+    fn lock_state(config: &'a Config, budget: &AccessBudget) -> Result<Self> {
         budget.check()?;
         // Nix/systemd supplies the parent; never create a broad tree with secret
         // material under unchecked, potentially shared parent permissions.
