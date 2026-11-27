@@ -172,6 +172,7 @@
 
         # Build VM tests only through the KVM-enabled Simit matrix, not `nix flake check`.
         nixosTests = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          oauth-vmtest = import ./nix/modules/test/oauth-vmtest.nix {inherit pkgs self;};
           stalwart016-vmtest = import ./nix/modules/test/stalwart016-vmtest.nix {inherit pkgs self;};
           stalwart016-proxy-vmtest = import ./nix/modules/test/stalwart016-proxy-vmtest.nix {inherit pkgs self;};
           tuwunel-private-rooms-vmtest = import ./nix/modules/test/tuwunel-private-rooms-vmtest.nix {inherit pkgs self;};

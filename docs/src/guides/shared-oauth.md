@@ -338,6 +338,23 @@ stock Codex models and protocol. OMP invalidates its command cache on an auth
 retry, then invokes the shared helper again. A custom launcher must preserve
 extension discovery or explicitly load this extension.
 
+Retries pick up an expiry-driven refresh or a rotation already committed by a
+peer. They do not force refresh merely because an HTTP bearer was rejected.
+A still-unexpired rejected bearer may be returned unchanged; repeated rejection
+requires a fresh authorization. The stock HTTP 401 fixture proves command-cache
+invalidation, not general provider-rejection recovery.
+
+Access uses one monotonic eight-second admission budget, including manifest
+validation and lock waiting. After checkpointing refresh intent, the helper caps
+the exchange timeout at the remaining budget minus a one-second persistence
+reserve (and at five seconds). Insufficient time fails before dispatch and clears
+the known-undispatched intent. Late committed results remain reusable but are not
+emitted after the budget. OpenCode's outer limit is nine seconds; stock OMP's is
+ten. This bounds ordinary contention and HTTP latency, not arbitrary disk stalls,
+plugin hangs or process suspension; a crash during dispatch still requires
+reauthorization. Checkpoint encryption must therefore be verified unattended on
+the target with its actual recovery plugins.
+
 The shared adapters each expose one provider. They bind only
 `nix-provenance.oauth.accounts.openai` with the `openai/chatgpt` profile.
 These adapters do not import existing app-local credentials.
@@ -371,12 +388,29 @@ live state, a different target, and an uncertain refresh checkpoint. If the
 latest recoverable checkpoint is uncertain, obtain a fresh authorization and
 resolve the missing-state recovery explicitly; do not replay the old grant.
 
+Recovery requires the latest completed checkpoint after every refresh, removal
+and enrollment change. An off-host copy older than that transition is insufficient;
+obtain a fresh authorization if its freshness cannot be established. Run crash,
+rollback, state-loss and removal drills with isolated test-only enrollments. Never
+refresh a copied production grant or edit production expiry timestamps for a drill:
+that can rotate credentials behind the live owner's back. Production refresh
+evidence should come from a normal expiry-driven transition and requests afterward.
+
 ## Verification
 
 ```sh
 cargo test --locked -p provenance-oauth --jobs 2
 cargo clippy --locked -p provenance-oauth --all-targets --jobs 2 -- --deny warnings
 node --test adapters/oauth/adapters.test.mjs
+```
+
+The opt-in `nixosTests.x86_64-linux.oauth-vmtest` exercises the actual systemd
+credential boundary, UID isolation, reboot reconciliation, removal tombstones
+and missing-state bootstrap refusal. Its credentials are generated inside the
+isolated VM at runtime. On Canix, run it through the test-aware build route:
+
+```sh
+canix cache binary build .#nixosTests.x86_64-linux.oauth-vmtest --include-tests
 ```
 
 The opt-in `adapters/oauth/stock-contract.test.mjs` runs the actual installed

@@ -139,6 +139,7 @@ path = [
   "nix/modules/home/oauth.nix",
   "nix/modules/test/oauth-eval.nix",
   "nix/modules/test/oauth-home-eval.nix",
+  "nix/modules/test/oauth-vmtest.nix",
   "docs/src/guides/shared-oauth.md",
 ]
 SPDX-FileCopyrightText = "Can H. Tartanoglu"

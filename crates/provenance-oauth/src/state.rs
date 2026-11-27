@@ -1,3 +1,4 @@
+use crate::budget::AccessBudget;
 use crate::{Access, Config, Enrollment, Grant, Target, age_file};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -101,7 +102,12 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 impl<'a> Store<'a> {
     pub fn lock(config: &'a Config) -> Result<Self> {
+        Self::lock_with_budget(config, &AccessBudget::default())
+    }
+
+    pub fn lock_with_budget(config: &'a Config, budget: &AccessBudget) -> Result<Self> {
         config.validate()?;
+        budget.check()?;
         // Nix/systemd supplies the parent; never create a broad tree with secret
         // material under unchecked, potentially shared parent permissions.
         match fs::DirBuilder::new()
@@ -131,9 +137,7 @@ impl<'a> Store<'a> {
             meta.is_file() && meta.uid() == uid && meta.mode() & 0o077 == 0 && meta.nlink() == 1,
             "invalid OAuth state lock"
         );
-        // Allow a peer's five-second token exchange to finish within the stock
-        // consumer's ten-second command budget.
-        let deadline = Instant::now() + Duration::from_secs(6);
+        let deadline = Instant::now() + budget.remaining().min(Duration::from_secs(6));
         loop {
             match lock.try_lock() {
                 Ok(()) => break,
@@ -227,7 +231,17 @@ impl<'a> Store<'a> {
         clock: impl Fn() -> Result<u64>,
         refresh: impl FnOnce(&Grant) -> Result<Grant>,
     ) -> Result<Access> {
+        self.access_with_budget(clock, &AccessBudget::default(), |grant, _| refresh(grant))
+    }
+
+    pub fn access_with_budget(
+        &self,
+        clock: impl Fn() -> Result<u64>,
+        budget: &AccessBudget,
+        refresh: impl FnOnce(&Grant, Duration) -> Result<Grant>,
+    ) -> Result<Access> {
         self.config.target.require_access()?;
+        budget.check()?;
         let now = clock()?;
         let mut state = self.load()?;
         ensure!(
@@ -252,7 +266,18 @@ impl<'a> Store<'a> {
                 return Err(error)
                     .context("could not checkpoint refresh intent; no exchange was sent");
             }
-            let next = refresh(grant)?;
+            let timeout = match budget.exchange_timeout() {
+                Ok(timeout) => timeout,
+                Err(error) => {
+                    // No HTTP exchange happened: make the live intent retryable.
+                    state.refresh_pending = false;
+                    self.save(&state)
+                        .context("could not clear undispatched refresh intent")?;
+                    self.checkpoint(&state)?;
+                    return Err(error);
+                }
+            };
+            let next = refresh(grant, timeout)?;
             next.validate_for(&self.config.target)?;
             ensure!(
                 next.account_id == grant.account_id,
@@ -273,6 +298,7 @@ impl<'a> Store<'a> {
         // Also repairs a previous interrupted checkpoint publication, without
         // repeating the already committed refresh.
         self.checkpoint(&state)?;
+        budget.check()?;
         let grant = state.grant.context("OAuth enrollment has been removed")?;
         ensure!(
             grant.expires_at > clock()?.saturating_add(60_000),

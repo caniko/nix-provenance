@@ -5,6 +5,7 @@ use clap::{
 };
 use provenance_oauth::{
     Config, Enrollment, OAuthClient, Secret, Target,
+    budget::AccessBudget,
     google::{Google, write_agy_token},
     now,
     openai::OpenAi,
@@ -131,6 +132,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    let budget = AccessBudget::default();
     let config: Config = read_json(&cli.config, false)?;
     config.validate()?;
     if let Action::Finalize {
@@ -393,7 +395,11 @@ fn run(cli: Cli) -> Result<()> {
             "Antigravity keyring credentials must be consumed through a pipe"
         );
     }
-    let store = Store::lock(&config)?;
+    let store = if matches!(cli.command, Action::Access { .. }) {
+        Store::lock_with_budget(&config, &budget)?
+    } else {
+        Store::lock(&config)?
+    };
     match cli.command {
         Action::Apply {
             enrollment,
@@ -409,7 +415,9 @@ fn run(cli: Cli) -> Result<()> {
             );
             // Construct the client before access can persist refresh intent.
             let provider = OpenAi::new()?;
-            let access = store.access(now, |previous| provider.refresh(previous))?;
+            let access = store.access_with_budget(now, &budget, |previous, timeout| {
+                provider.refresh_with_timeout(previous, timeout)
+            })?;
             let mut stdout = std::io::stdout().lock();
             if raw {
                 writeln!(stdout, "{}", access.access_token.0)?;
