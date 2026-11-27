@@ -39,9 +39,14 @@ provisioner re-decides how passwords are handled and where they leak.
 
 Reconcilers `immich-provision`, `rauthy-provision`, `vikunja-provision`,
 `forgejo-provision`, `provenance-oauth` (host/user-scoped OAuth enrollment,
-refresh, and access-only adapters), plus `nixosModules`, `homeModules.fj` and
+refresh, and access-only adapters), `provenance-t3-enroll` (native T3 Code
+own-user enrollment), plus `nixosModules`, `homeModules.fj` and
 `homeModules.oauth`, and `lib` helpers such as `usersFromKanidmPersons`,
-`kanidmOAuth2System`, and `passwords`.
+`kanidmOAuth2System`, and `passwords`. Credential-adjacent roles stay strictly
+separated (`provenance-oauth` in-process `age` checkpoints, `identity-cli` `bw`
+vault writes/bootstrap, `provenance-rbw` daemon/login-state lifecycle, and
+consumer-owned `secret-manager` vault-to-`age` import; see
+`docs/src/concepts/architecture.md`).
 
 ## Non-goals
 
