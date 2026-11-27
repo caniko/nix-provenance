@@ -52,7 +52,6 @@
   tuwunelEval = evalSystem ./modules/test/tuwunel-eval.nix;
   windmillEval = evalSystem ./modules/test/windmill-provision-eval.nix;
   n8nEval = evalSystem ./modules/test/n8n-provision-eval.nix;
-  wireguardStatusEval = evalSystem ./modules/test/wireguard-status-eval.nix;
   identityCliEval = evalSystem ./modules/test/identity-cli-eval.nix;
   stalwartOauthBootstrapPasswordFile = "\${XDG_RUNTIME_DIR}/agenix/stalwart_account_can";
 
@@ -605,7 +604,6 @@ in
     rbw-test = craneLib.cargoTest (
       args.provenance-rbw // {cargoArtifacts = cargoArtifacts.provenance-rbw;}
     );
-    paperclip-archive-module-eval = import ./modules/test/paperclip-archive-eval.nix {inherit pkgs;};
     rbw-home-module-eval = import ./modules/test/rbw-home-eval.nix {inherit pkgs self;};
     identity-test = craneLib.cargoTest (
       args.identity-cli // {cargoArtifacts = cargoArtifacts.identity-cli;}
@@ -1207,20 +1205,6 @@ in
 
     stalwart016-proxy-eval = import ./modules/test/stalwart016-proxy-eval.nix {inherit pkgs self;};
     stalwart016-peer-eval = import ./modules/test/stalwart016-peer-eval.nix {inherit pkgs self;};
-
-    wireguard-status-module-eval = let
-      exporter = wireguardStatusEval.config.services.prometheus.exporters.wireguard;
-      artifact = wireguardStatusEval.config.environment.etc."nix-provenance/wireguard-status.json".text;
-    in
-      runCommand "wireguard-status-module-eval" {} ''
-        test ${lib.escapeShellArg (toString exporter.enable)} = 1
-        test ${lib.escapeShellArg exporter.listenAddress} = 127.0.0.1
-        test ${lib.escapeShellArg (toString exporter.port)} = 19586
-        test ${lib.escapeShellArg (builtins.toJSON exporter.interfaces)} = '["wg-home"]'
-        printf '%s' ${lib.escapeShellArg artifact} | grep -q '"schemaVersion":1'
-        printf '%s' ${lib.escapeShellArg artifact} | grep -q '127.0.0.1:19586/metrics'
-        touch $out
-      '';
 
     # Only email-provisioned users reach the CLI state, in the snake_case
     # subset identity-cli reads.

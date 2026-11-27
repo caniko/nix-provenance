@@ -270,7 +270,6 @@
         stalwart016 = import ./nix/modules/mail/stalwart016.nix {inherit self;};
         kanidmCredentials = import ./nix/modules/kanidm/credentials.nix {inherit self;};
         externalApp = import ./nix/modules/adapter/external-app.nix {inherit self;};
-        wireguardStatus = import ./nix/modules/adapter/wireguard-status.nix;
         identityCli = import ./nix/modules/adapter/identity-cli.nix {inherit self;};
         tuwunel = import ./nix/modules/config-only/tuwunel.nix {inherit self;};
         windmillProvision = import ./nix/modules/service-bootstrap/windmill.nix {inherit self;};
@@ -286,8 +285,6 @@
           key = "nix-provenance#homeModules.oauth";
           imports = [(import ./nix/modules/home/oauth.nix {inherit self;})];
         };
-        rustdesk-client = import ./nix/modules/home/rustdesk-client.nix;
-        paperclip-archive = import ./nix/modules/home/paperclip-archive.nix;
         fj = import ./nix/modules/home/fj.nix {inherit self;};
         stalwart-oauth-bootstrap = import ./nix/modules/home/stalwart-oauth-bootstrap.nix {inherit self;};
         github = import ./nix/modules/home/github.nix {inherit self;};
