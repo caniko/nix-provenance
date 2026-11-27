@@ -14,10 +14,10 @@ repo-wide license. Per-path SPDX is machine-readable in
 | `crates/github-provision/**`, `nix/modules/home/github.nix`, `docs/src/guides/github-accounts.md` | `MIT OR Apache-2.0` | github-provision |
 | `crates/provenance-core/**` | `MIT OR Apache-2.0` | nix-provenance (shared core) |
 | `crates/provenance-oauth/**`, `adapters/oauth/**`, OAuth Nix modules, shared OAuth guide | `MIT OR Apache-2.0` | nix-provenance (shared provider OAuth) |
-| `nix/lib/immich.nix`, `nix/modules/service-oidc/immich.nix`, `nix/modules/test/immich-eval.nix`, `docs/kanidm-oidc-migration.md`, `docs/src/guides/kanidm-oidc-migration.md`, `docs/src/rfcs/**` | `AGPL-3.0-only` | immich-provision |
+| `nix/lib/immich.nix`, `nix/modules/service-oidc/immich.nix`, `nix/modules/test/immich-eval.nix`, `docs/src/guides/kanidm-oidc-migration.md`, `docs/src/rfcs/**` | `AGPL-3.0-only` | immich-provision |
 | `nix/lib/rauthy.nix`, `nix/modules/idp/rauthy.nix`, `nix/modules/test/rauthy-eval.nix` | `MIT OR Apache-2.0` | rauthy-provision |
-| `docs/adapter-external-apps.md`, `docs/src/guides/external-apps.md` | `MIT OR Apache-2.0` | nix-provenance |
-| everything else (`flake.nix`, `nix/lib/default.nix`, `nix/lib/passwords.nix`, `nix/packages.nix`, `nix/checks.nix`, root files, `.gitkeep` placeholders, `docs/book.toml`, `docs/architecture.md`, `docs/planning/**`, `docs/src/{SUMMARY.md,introduction.md,getting-started/**,concepts/**,reference/**}`, `.forgejo/**`) | `MIT OR Apache-2.0` | nix-provenance |
+| `docs/src/guides/external-apps.md` | `MIT OR Apache-2.0` | nix-provenance |
+| everything else (`flake.nix`, `nix/lib/default.nix`, `nix/lib/passwords.nix`, `nix/packages.nix`, `nix/checks.nix`, root files, `.gitkeep` placeholders, `docs/book.toml`, `docs/planning/**`, `docs/src/{SUMMARY.md,introduction.md,getting-started/**,concepts/**,reference/**}`, `.forgejo/**`) | `MIT OR Apache-2.0` | nix-provenance |
 
 ## The permissive-core rule
 

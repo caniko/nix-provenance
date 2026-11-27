@@ -1,10 +1,9 @@
 # Native T3 Code environment enrollment
 
-`provenance-t3-enroll` reconciles one existing Unix user's own native T3 Code
-environments. It is the T3 exception described in the repository identity
-boundary: it may link that user's peers and hand a private document to T3's
-native desktop import, but T3 owns pairing, session issuance, credential
-storage, catalog ownership, and desktop keyring encryption.
+`provenance-t3-enroll` links one existing Unix user's own T3 Code peers and
+passes a private document to native desktop import. This is the T3 exception
+to the repository's identity boundary. T3 owns pairing, sessions, credential
+storage, its catalog, and keyring encryption.
 
 The helper never reads, rewrites, or decrypts T3's connection catalog, secret
 store, or database. It creates no T3 users, principals, passwords, or shared
@@ -21,13 +20,10 @@ The helper drives two native T3 surfaces:
 - The desktop app's `--version --json` capability document and
   `--import-connections FILE` entry point.
 
-A build without these surfaces is unsupported. The helper does not emulate
-them, rewrite the catalog, or fall back to a broader route. An older CLI fails
-its command. Before any pairing code is read or exchanged, an older desktop is
-rejected by its plain `--version` output (even when passed `--json`), so the
-helper never starts the GUI and never invokes the import entry point on that
-build. The consumer pins the T3 build; this repository does not encode a fork
-revision.
+The consumer pins a build with both surfaces; this repo pins no fork revision.
+An older CLI fails its command. Plain `--version` output, even with `--json`,
+fails before reading or exchanging a pairing code and never starts the GUI or
+invokes import. There is no emulation, catalog rewrite, or broader-route fallback.
 
 The destination environment must have Linked environments enabled (Settings →
 Labs). Both ends must be T3 versions whose peer links enforce the link limits;
@@ -75,8 +71,8 @@ private runtime paths and never serialized into this file.
 }
 ```
 
-- `user` must be the manifest process's effective Unix user. There is no user
-  switching or privilege elevation.
+- `user` must match the process's effective Unix user: no user switching or
+  privilege elevation.
 - `baseDir` is the required explicit local T3 data directory. It must already
   exist as a real directory owned by the effective user, not group/other
   writable, and outside the Nix store. Every local list/link passes
@@ -85,11 +81,9 @@ private runtime paths and never serialized into this file.
   so it cannot select a different state. Canix owns creating it (for example a
   user service `StateDirectory`); the helper never initializes a foreign or
   missing path.
-- `urls` are bare origins, most preferred first. The order is policy: a verified
-  link must keep the declared order, and an offline primary may leave an
-  ordered subset of those origins, never an extra or reordered route. Plain
-  `http` is accepted only for loopback or Tailscale addresses; anything else
-  must be `https`.
+- `urls` are bare origins, preferred first. A verified link keeps that order;
+  an offline primary may leave an ordered subset, never an extra or reordered
+  route. Use `https` except on loopback or Tailscale, where `http` is allowed.
 - `access` is the exact T3 `AuthMcpClientAccess` level (`read-only`,
   `approval-required`, `auto-accept-edits`, `auto`, `full-access`) and is never
   defaulted or widened.
@@ -193,11 +187,10 @@ policy.
    managed sessions; they remain until the native `30d` expiry. There is no
    namespace-wide revocation or session ledger.
 
-The import document contains only the declared `targets`, `profiles`, and
-`credentials`. T3's native merge preserves unrelated manual connections; the
-helper never rewrites the catalog itself. An `app-running` or keyring-unavailable
-failure is retried with the same document and bounded timeout, then reported;
-it never falls back to another store or a manual catalog edit.
+The import includes only declared `targets`, `profiles`, and `credentials`.
+T3's merge preserves unrelated manual connections. For `app-running` or an
+unavailable keyring, the helper retries the same document with a bounded timeout,
+then reports failure. It never switches stores or edits the catalog.
 
 ## NixOS module
 
@@ -266,9 +259,9 @@ code; retries never broaden access.
 
 ## Owner executor limits
 
-`owner` selects the automatic path; without it the existing manual file mode is
-unchanged. Remote execution is only the fixed native commands below over the
-existing OpenSSH client:
+`owner` selects automatic mode; omit it for manual files. The helper uses the
+existing OpenSSH client only for owner and path checks and the fixed native
+commands below:
 
 - `id -un` owner check.
 - `t3 environment describe --json --base-dir PATH`.
@@ -299,11 +292,10 @@ routing, and build; provenance owns owner discovery and native minting.
 
 ## Qualification boundary
 
-The crate tests use fake `t3`, SSH, and desktop adapters to prove trust/input
-boundaries, private-file handling, idempotency, ordered route checks, capability
-preflight, SSH owner binding, wrong-owner/environment mint refusal, fresh-code
-retry, and the exact import document shape. They are not live acceptance. Real
-proof needs the signed T3 build with the native surfaces above, a real
-already-trusted SSH path, the user's keyring, and consumer-owned service wiring;
-the consumer must verify imported entries and that manual connections survive.
+Fake `t3`, SSH, and desktop adapters test trust and input boundaries, private
+files, idempotency, route order, capability preflight, SSH owner binding,
+mint refusal on owner/environment mismatch, fresh-code retry, and import shape.
+For live acceptance, use a signed T3 build with both native surfaces, an
+already-trusted SSH path, the user's keyring, and consumer-owned wiring. Verify
+imported entries and preservation of manual connections.
 No upstream PR is made until maintainer approval.

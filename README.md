@@ -6,16 +6,15 @@
 
 <!-- simit:badges:end -->
 
-Declarative identity & OIDC provisioning for NixOS, Kanidm, and Rauthy — a DRY
-monorepo of reconcilers and NixOS modules.
+NixOS modules and reconcilers for declarative identity and OIDC provisioning
+with Kanidm and Rauthy.
 
 ## Identity model
 
-nix-provenance is intentionally opinionated about credentials. Internal human
-credentials live in Kanidm, and internal users reach downstream services through
-OIDC either directly from Kanidm or through Rauthy when Rauthy fronts external
-apps. External users without Kanidm identities are initialized through Rauthy's
-email-based set-password flow.
+Kanidm owns internal human credentials. Internal users sign in to downstream
+services over OIDC, directly through Kanidm or through Rauthy when it fronts
+external apps. External users without Kanidm identities set passwords through
+Rauthy's email flow.
 
 Downstream service provisioners manage app-side users, profile metadata, roles,
 groups, OIDC claims, and service configuration. App/platform-local passwords
@@ -35,9 +34,8 @@ public keys plus repository collaborator invitations and their acceptance.
 Private keys, tokens, and all password-like material remain outside this
 repository's state.
 
-Each **tenant** reconciles one system from a Nix-rendered JSON state file via a
-`Type=oneshot` systemd unit ordered after that system. A tenant is not always a
-Rust crate — the directory taxonomy makes that explicit:
+Each **tenant** reconciles one system from Nix-rendered JSON in a `Type=oneshot`
+unit ordered after that system. Not every tenant needs a Rust crate:
 
 | Kind | Provisions | Tenants |
 |------|-----------|---------|
@@ -46,7 +44,7 @@ Rust crate — the directory taxonomy makes that explicit:
 | **config-only** (`nix/modules/config-only/`) | service OIDC via shared Nix only, no crate | Vikunja SSO |
 | **service bootstrap** (`nix/modules/service-bootstrap/`) | a no-OIDC service's app-local admin and API credentials via a trusted local path | `windmill-provision`, `n8n-provision` |
 | **LDAP** (`nix/modules/ldap/`) | LDAP-backed services | Stalwart, Stalwart 0.16 transport |
-| **adapter** (`nix/modules/adapter/`) | a non-tenant third-party app's users + OIDC client, into kanidm or rauthy | pink-raven (consumer) |
+| **adapter** (`nix/modules/adapter/`) | a non-tenant third-party app's users + OIDC client, into kanidm or rauthy | third-party web app |
 
 ## Crates
 
@@ -61,9 +59,9 @@ Rust crate — the directory taxonomy makes that explicit:
 | [`n8n-provision`](crates/n8n-provision) | n8n env-managed owner and named credentials | `MIT OR Apache-2.0` |
 | [`provenance-oauth`](crates/provenance-oauth) | Host/user-scoped OAuth enrollment, refresh, and access-only app adapters | `MIT OR Apache-2.0` |
 
-See [LICENSING.md](LICENSING.md) for the per-path SPDX map and the
-permissive-core rule. See [docs/architecture.md](docs/architecture.md) for the
-tenant taxonomy and the add-a-tenant checklist.
+See [LICENSING.md](LICENSING.md) for the per-path SPDX map and permissive-core
+rule, and [Architecture](docs/src/concepts/architecture.md) for the tenant
+taxonomy and checklist.
 
 ## Flake outputs
 
@@ -153,11 +151,9 @@ transitions. The fixture generates its credentials inside the test VM.
 
 ## Third-party adapter (`lib.adapter` / `nixosModules.externalApp`)
 
-For **non-OSS or out-of-scope apps that should not earn a tenant** here (e.g.
-pink-raven), the adapter lets a third-party flake integrate its own users +
-OIDC client into **kanidm or rauthy** from a uniform, backend-agnostic schema —
-no module/lib/crate added per app. Each user is tagged with a credential
-strategy:
+Closed-source or out-of-scope apps can use one schema to
+declare users and an OIDC client in Kanidm or Rauthy, without a tenant or a
+per-app module, library, or crate. Choose a credential strategy for each user:
 
 - `adapter.kanidmLogin` — the user already has a kanidm identity (federated;
   nothing emailed). On the rauthy backend this is a passwordless auto-link user.
@@ -170,26 +166,26 @@ strategy:
   changes warn and update only the marker hash. Rauthy-backend only.
 
 ```nix
-services.provenance.externalApps.pink-raven = {
+services.provenance.externalApps.example-app = {
   backend = "rauthy";                                  # outward-facing → Rauthy
-  loginUrl = "https://raven.tartanoglu.com/login";
-  redirectUris = ["https://raven.tartanoglu.com/auth/callback"];
-  postLogoutRedirectUris = ["https://raven.tartanoglu.com/"];
-  allowedOrigins = ["https://raven.tartanoglu.com"];
+  loginUrl = "https://app.example.com/login";
+  redirectUris = ["https://app.example.com/auth/callback"];
+  postLogoutRedirectUris = ["https://app.example.com/"];
+  allowedOrigins = ["https://app.example.com"];
   users = {
-    can.email = "can@tartanoglu.com";
-    can.credential = inputs.nix-provenance.lib.adapter.kanidmLogin;        # canix
-    eric = { email = "efirley@protonmail.com";
-             credential = inputs.nix-provenance.lib.adapter.passwordInitByEmail {}; };
-    caroline = { email = "carolinestahl@gmx.net";
-                 credential = inputs.nix-provenance.lib.adapter.passwordInitByEmail {}; };
+    alice.email = "alice@example.com";
+    alice.credential = inputs.nix-provenance.lib.adapter.kanidmLogin;      # federated
+    bob = { email = "bob@example.com";
+            credential = inputs.nix-provenance.lib.adapter.passwordInitByEmail {}; };
+    carol = { email = "carol@example.com";
+              credential = inputs.nix-provenance.lib.adapter.passwordInitByEmail {}; };
   };
 };
 ```
 
 See the [Third-party External Apps guide](docs/src/guides/external-apps.md) for
-the full surface, the `accessGroup` option, the kanidm backend, and the canix
-consumer wiring.
+the full surface, the `accessGroup` option, the kanidm backend, and consumer
+federation wiring.
 
 ## Development
 

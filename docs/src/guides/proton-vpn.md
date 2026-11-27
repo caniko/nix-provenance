@@ -16,41 +16,35 @@ nix-provenance.proton-vpn = {
 age.secrets.proton-account.enable = false;
 ```
 
-`encryptedFile` is a rekeyed age ciphertext containing a JSON document with fields
-`username`, `password`, and optionally `totpSecret`. The last field is the base32
-authenticator seed for Proton's SHA-1/six-digit/30-second TOTP profile. Populate
-real credentials through your secret manager; never render their values in Nix.
-The username/password must belong to the existing Proton account, not its
-OpenVPN credentials. This integration authenticates clients; it does not create
-or reset Proton accounts.
-Interpolate a Nix path as shown so the ciphertext retains its store context and
-belongs to the home closure even while agenix plaintext installation is disabled.
+`encryptedFile` holds rekeyed age ciphertext for JSON fields `username`,
+`password`, and optional `totpSecret` (the base32 seed for Proton's
+SHA-1/six-digit/30-second TOTP). Use the secret manager, never Nix, to populate
+credentials. Use an existing Proton account, not its OpenVPN credentials.
+This module neither creates nor resets accounts. Interpolate the Nix path to
+keep the ciphertext in the home closure with agenix plaintext installation off.
 
 ## Interactive credential enrollment
 
-The package also installs `proton-vpn-auth enroll --stdout`, for a consuming
-secret manager to capture through a private pipe and encrypt immediately.
-It prompts on the controlling terminal with echo disabled for the existing
-username, password and password confirmation, then the existing base32
-authenticator seed and seed confirmation. `--password-only` explicitly omits
-TOTP for an account without that second factor. Credential values have no CLI
-flags and are never printed to the terminal. The helper disables core dumps and
-dumpability, locks credential memory, and acquires a logind sleep inhibitor
-before prompting. Regular-file output, terminal output and the former `--out`
-interface are rejected. The consuming secret manager must encrypt the document
-without persisting plaintext; nix-provenance owns neither downstream
-account selection nor encrypted source storage. Canix exposes this workflow as
-`canix secret proton-vpn enroll ACCOUNT` and performs streaming encryption and rekey.
+Capture `proton-vpn-auth enroll --stdout` on a private pipe and encrypt it
+immediately without persisting plaintext. Before prompting, the helper disables
+core dumps and dumpability, locks credential memory, and acquires a logind sleep
+inhibitor. It prompts without echo on the controlling terminal: username,
+password and confirmation, then base32 seed and confirmation. Use
+`--password-only` for accounts without TOTP. Credential values have no CLI flags
+and are never printed to the terminal; regular-file output, terminal output and
+`--out` are rejected. The secret manager selects the account and stores the
+ciphertext. `canix secret proton-vpn enroll ACCOUNT` streams encryption and
+rekey.
 
 ## Pipe-only credential documents
 
-Secret-manager integrations can invoke `proton-vpn-auth enroll --stdin --stdout`
-with private pipes. Input is one JSON object containing `username`, `password`,
-and `totpSecret`; stdout contains only the validated canonical account document.
-This mode needs no runtime directory and creates no plaintext file. It refuses
-terminal input/output, unknown JSON fields, and input over 64 KiB. Child callers
-must bound execution and output, suppress arbitrary diagnostics, and encrypt the
-returned bytes before persisting anything.
+Use `proton-vpn-auth enroll --stdin --stdout` with private pipes. Send one JSON
+object with `username`, `password`, and `totpSecret`; stdout contains only the
+validated canonical document. This mode needs no runtime directory and creates
+no plaintext file.
+The helper rejects terminal input/output, unknown fields, and input over 64 KiB.
+Callers must bound execution and output, suppress arbitrary diagnostics, and
+encrypt the result before persisting it.
 
 `totpSecret` accepts a base32 seed or an `otpauth://totp/` URI. Enrollment
 normalizes the seed to uppercase unpadded base32. URI parameters must select
@@ -128,9 +122,8 @@ and when the credential document changes. It does not automatically connect the
 VPN. A CAPTCHA or unsupported second-factor challenge remains a login failure;
 it is never bypassed or reported as success.
 
-Each Home Manager user selects an encrypted credential file. Consumers can rekey
-the same encrypted source for multiple users to share an account without copying
-the source or sharing their mutable local session stores.
+Each Home Manager user selects a ciphertext file. Rekey one source for multiple
+users to share the account without copying the source or sharing session stores.
 
 Verify `nix-provenance-proton-vpn-login.service`, run `protonvpn info` with the
 GUI closed, then open `protonvpn-app` separately to verify cross-client account
