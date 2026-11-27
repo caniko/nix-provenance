@@ -2,7 +2,9 @@
 use super::{Account, Failure, MAX_BYTES, Result, decode_seed};
 use clap::Args;
 use data_encoding::BASE32_NOPAD;
-use std::collections::BTreeSet;
+use serde::Serialize;
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Read, Write};
 use zeroize::Zeroizing;
 
@@ -18,6 +20,25 @@ pub(super) struct EnrollArgs {
     /// Explicitly enroll an account without TOTP; the default requires its existing seed.
     #[arg(long)]
     pub password_only: bool,
+    /// Parse an `rbw get --raw` JSON item from stdin and project Proton credentials.
+    #[arg(long, requires = "stdin")]
+    pub rbw_json: bool,
+    /// Override a projected field's vault source (`OUTPUT=FIELD`, for `username`, `password`, or `totpSecret`).
+    #[arg(long, requires = "rbw_json", value_name = "OUTPUT=FIELD")]
+    pub rbw_map: Vec<String>,
+}
+
+#[derive(Args)]
+pub(super) struct ValidateArgs {
+    /// Read a bounded Proton enrollment JSON document from stdin.
+    #[arg(long, required = true)]
+    pub stdin: bool,
+    /// Require an account without TOTP (`totpSecret` absent).
+    #[arg(long)]
+    pub password_only: bool,
+    /// Emit structured JSON validation output (never echoes password or totpSecret).
+    #[arg(long)]
+    pub json: bool,
 }
 
 fn prompt(label: &str) -> Result<Zeroizing<String>> {
@@ -125,12 +146,7 @@ fn prepare_account(mut account: Account, password_only: bool) -> Result<Account>
     Ok(account)
 }
 
-fn pipe_document(password_only: bool) -> Result<()> {
-    if std::io::stdin().is_terminal() || std::io::stdout().is_terminal() {
-        return Err(Failure::permanent(
-            "Credential document mode requires private stdin/stdout pipes",
-        ));
-    }
+fn read_bounded_stdin() -> Result<Zeroizing<Vec<u8>>> {
     let mut input = Zeroizing::new(Vec::with_capacity(MAX_BYTES + 1));
     std::io::stdin()
         .take((MAX_BYTES + 1) as u64)
@@ -139,13 +155,182 @@ fn pipe_document(password_only: bool) -> Result<()> {
     if input.len() > MAX_BYTES {
         return Err(Failure::permanent("Proton credential input is too large"));
     }
-    let account: Account = serde_json::from_slice(&input).map_err(|_| {
-        Failure::permanent(
-            "Invalid Proton credential JSON; expected username, password, and optional totpSecret",
-        )
-    })?;
-    let account = prepare_account(account, password_only)?;
+    Ok(input)
+}
+
+fn resolve_rbw_mapping(
+    rbw_map: &[String],
+    password_only: bool,
+) -> Result<BTreeMap<&'static str, String>> {
+    let mut mapping: BTreeMap<&'static str, String> = BTreeMap::from([
+        ("username", "username".into()),
+        ("password", "password".into()),
+    ]);
+    if !password_only {
+        mapping.insert("totpSecret", "totp".into());
+    }
+    let mut overridden = BTreeSet::new();
+    for entry in rbw_map {
+        let Some((output, field)) = entry.split_once('=') else {
+            return Err(Failure::permanent("rbw mappings require OUTPUT=FIELD"));
+        };
+        if field.trim().is_empty() {
+            return Err(Failure::permanent("rbw field name must not be empty"));
+        }
+        let key: &'static str = match output {
+            "username" => "username",
+            "password" => "password",
+            "totpSecret" if !password_only => "totpSecret",
+            _ => {
+                return Err(Failure::permanent(
+                    "rbw mappings must select username, password, or an enabled totpSecret",
+                ));
+            }
+        };
+        if !overridden.insert(key) {
+            return Err(Failure::permanent("Duplicate rbw output mapping"));
+        }
+        mapping.insert(key, field.to_owned());
+    }
+    Ok(mapping)
+}
+
+fn lookup_rbw_field(item: &Value, field: &str) -> Result<Option<Zeroizing<String>>> {
+    if let Some(value) = item
+        .get("data")
+        .and_then(Value::as_object)
+        .and_then(|data| data.get(field))
+        .and_then(Value::as_str)
+    {
+        return Ok(Some(Zeroizing::new(value.to_owned())));
+    }
+    let mut matched: Option<Zeroizing<String>> = None;
+    if let Some(fields) = item.get("fields").and_then(Value::as_array) {
+        for entry in fields {
+            if entry.get("name").and_then(Value::as_str) == Some(field) {
+                if matched.is_some() {
+                    return Err(Failure::permanent(
+                        "Ambiguous duplicate custom field in rbw item",
+                    ));
+                }
+                if let Some(value) = entry.get("value").and_then(Value::as_str) {
+                    matched = Some(Zeroizing::new(value.to_owned()));
+                }
+            }
+        }
+    }
+    Ok(matched)
+}
+
+fn parse_rbw_account(input: &[u8], rbw_map: &[String], password_only: bool) -> Result<Account> {
+    let mapping = resolve_rbw_mapping(rbw_map, password_only)?;
+    let item: Value =
+        serde_json::from_slice(input).map_err(|_| Failure::permanent("Invalid rbw JSON item"))?;
+    if !item.is_object() {
+        return Err(Failure::permanent("Invalid rbw JSON item"));
+    }
+    let username = lookup_rbw_field(&item, &mapping["username"])?
+        .ok_or_else(|| Failure::permanent("Missing username field in rbw item"))?;
+    let password = lookup_rbw_field(&item, &mapping["password"])?
+        .ok_or_else(|| Failure::permanent("Missing password field in rbw item"))?;
+    let totp_secret = if password_only {
+        None
+    } else {
+        lookup_rbw_field(&item, &mapping["totpSecret"])?.map(|v| v.to_string())
+    };
+    Ok(Account {
+        username: username.to_string(),
+        password: password.to_string(),
+        totp_secret,
+    })
+}
+
+fn pipe_document(args: &EnrollArgs) -> Result<()> {
+    if std::io::stdin().is_terminal() || std::io::stdout().is_terminal() {
+        return Err(Failure::permanent(
+            "Credential document mode requires private stdin/stdout pipes",
+        ));
+    }
+    let input = read_bounded_stdin()?;
+    let account = if args.rbw_json {
+        parse_rbw_account(&input, &args.rbw_map, args.password_only)?
+    } else {
+        serde_json::from_slice(&input).map_err(|_| {
+            Failure::permanent(
+                "Invalid Proton credential JSON; expected username, password, and optional totpSecret",
+            )
+        })?
+    };
+    let account = prepare_account(account, args.password_only)?;
     write_document(&account)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ValidateReport {
+    valid: bool,
+    username: Option<String>,
+    has_totp: bool,
+    totp_normalized: bool,
+    error: Option<&'static str>,
+}
+
+pub(super) fn validate(args: &ValidateArgs) -> Result<()> {
+    let outcome: Result<Account> = (|| {
+        if std::io::stdin().is_terminal() {
+            return Err(Failure::permanent(
+                "Validation requires a piped Proton credential JSON document on stdin",
+            ));
+        }
+        let input = read_bounded_stdin()?;
+        let account: Account = serde_json::from_slice(&input).map_err(|_| {
+            Failure::permanent(
+                "Invalid Proton credential JSON; expected username, password, and optional totpSecret",
+            )
+        })?;
+        prepare_account(account, args.password_only)
+    })();
+
+    match outcome {
+        Ok(account) => {
+            let has_totp = account.totp_secret.is_some();
+            if args.json {
+                let report = ValidateReport {
+                    valid: true,
+                    username: Some(account.username.clone()),
+                    has_totp,
+                    totp_normalized: has_totp,
+                    error: None,
+                };
+                let text = serde_json::to_string_pretty(&report)
+                    .map_err(|_| Failure::permanent("Cannot encode validation report"))?;
+                println!("{text}");
+            } else {
+                println!(
+                    "Valid Proton credential document for {} (totp: {})",
+                    account.username,
+                    if has_totp { "present" } else { "password-only" }
+                );
+            }
+            Ok(())
+        }
+        Err(err) => {
+            if args.json {
+                let report = ValidateReport {
+                    valid: false,
+                    username: None,
+                    has_totp: false,
+                    totp_normalized: false,
+                    error: Some(err.message),
+                };
+                if let Ok(text) = serde_json::to_string_pretty(&report) {
+                    println!("{text}");
+                }
+                return Err(Failure::silent_permanent());
+            }
+            Err(err)
+        }
+    }
 }
 
 pub(super) fn run(args: &EnrollArgs) -> Result<()> {
@@ -165,7 +350,7 @@ pub(super) fn run(args: &EnrollArgs) -> Result<()> {
         ));
     }
     if args.stdin && args.stdout {
-        return pipe_document(args.password_only);
+        return pipe_document(args);
     }
     let username = prompt("Proton account username: ")?;
     let password = prompt("Proton account password: ")?;

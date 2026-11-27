@@ -33,6 +33,17 @@ enum AuthCommand {
     Login(Args),
     /// Prompt securely and stream the account document to an encryption consumer.
     Enroll(enrollment::EnrollArgs),
+    /// Report supported subcommands and enrollment capabilities without touching secrets.
+    Capabilities(CapabilitiesArgs),
+    /// Validate a Proton enrollment JSON document on stdin without echoing secrets.
+    Validate(enrollment::ValidateArgs),
+}
+
+#[derive(ClapArgs)]
+struct CapabilitiesArgs {
+    /// Emit capability descriptor as JSON (default output is JSON).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(ClapArgs)]
@@ -66,6 +77,7 @@ struct Account {
 struct Failure {
     message: &'static str,
     retry: bool,
+    silent: bool,
 }
 
 impl Failure {
@@ -73,6 +85,15 @@ impl Failure {
         Self {
             message,
             retry: false,
+            silent: false,
+        }
+    }
+
+    fn silent_permanent() -> Self {
+        Self {
+            message: "",
+            retry: false,
+            silent: true,
         }
     }
 
@@ -80,6 +101,7 @@ impl Failure {
         Self {
             message,
             retry: true,
+            silent: false,
         }
     }
 }
@@ -414,14 +436,40 @@ fn run(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn capabilities(_args: &CapabilitiesArgs) -> Result<()> {
+    let descriptor = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "subcommands": ["login", "enroll", "capabilities", "validate"],
+        "enroll": {
+            "stdin": true,
+            "stdout": true,
+            "passwordOnly": true,
+            "rbwJson": true,
+            "maxDocumentBytes": MAX_BYTES,
+        }
+    });
+    let text = serde_json::to_string_pretty(&descriptor)
+        .map_err(|_| Failure::permanent("Cannot encode capability descriptor"))?;
+    println!("{text}");
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
-    let result = protection::Protection::acquire().and_then(|_protection| match cli.command {
-        AuthCommand::Login(args) => run(&args),
-        AuthCommand::Enroll(args) => enrollment::run(&args),
-    });
+    let result = match cli.command {
+        AuthCommand::Capabilities(args) => capabilities(&args),
+        AuthCommand::Login(args) => protection::Protection::acquire().and_then(|_| run(&args)),
+        AuthCommand::Enroll(args) => {
+            protection::Protection::acquire().and_then(|_| enrollment::run(&args))
+        }
+        AuthCommand::Validate(args) => {
+            protection::Protection::acquire().and_then(|_| enrollment::validate(&args))
+        }
+    };
     if let Err(error) = result {
-        eprintln!("proton-vpn-auth: {}", error.message);
+        if !error.silent {
+            eprintln!("proton-vpn-auth: {}", error.message);
+        }
         std::process::exit(if error.retry { 75 } else { 2 });
     }
 }
